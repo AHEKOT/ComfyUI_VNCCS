@@ -1,0 +1,1817 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+import vm from "node:vm";
+import { presetSelection } from "../web/character_presets.mjs";
+const common = fs.readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
+const traitSource = common.slice(common.indexOf("export function createTraitInput"), common.indexOf("// ── Debounce")).replace("export ", "");
+const messageSource = common.slice(common.indexOf("export function showMessage"), common.indexOf("export function createLoadingOverlay")).replace("export ", "");
+const cleanupSource = common.slice(common.indexOf("export function registerCleanup"), common.indexOf("// Each loader owns a guard")).replace("export ", "");
+const transport = fs.readFileSync(new URL("../web/vnccs_transport.js", import.meta.url), "utf8");
+const connectionSource = transport.slice(transport.indexOf("export function watchConnection")).replace("export ", "");
+const source = fs.readFileSync(new URL("../web/vnccs_background_creator.js", import.meta.url), "utf8");
+const pure = source.slice(source.indexOf("export const DEFAULT_EDITOR"), source.indexOf("// Gaussian viewport"));
+const { DEFAULT_EDITOR, MODEL_DEFAULTS, MOSS_GENERATION, clone, readState, editorDefaults, frameDimensions, sourceCameraView, CameraHistory, composePrompt, parsePrompt, legacySceneDescription, isTurboModel, modelPath } = vm.runInThisContext("(() => {" + pure.replaceAll("export ", "") + "\n;return { DEFAULT_EDITOR, MODEL_DEFAULTS, MOSS_GENERATION, clone, readState, editorDefaults, frameDimensions, sourceCameraView, CameraHistory, composePrompt, parsePrompt, legacySceneDescription, isTurboModel, modelPath }; })()");
+const widgetSource = source.slice(0, source.indexOf("function hideState")).replace(pure, "").replace(/\/\/ Gaussian viewport[\s\S]*?\/\/ Workspace widget\./, "");
+const entrySource = source.slice(source.indexOf("function hideState"));
+const BASE = "/vnccs/background-creator";
+const A = "a".repeat(32), B = "b".repeat(32), MODEL = "c".repeat(32), IMAGE = "d".repeat(32), CG = "e".repeat(32);
+const camera = { position: [0, 0.2, 2], target: [0, 0, 0], up: [0, 1, 0], fov: 42 };
+const state = (overrides = {}) => ({ schema_version: 2, background_id: A, selected_image_id: IMAGE, model_id: MODEL,
+    selected_cg_id: CG, step: "model", camera: clone(camera), editor: editorDefaults(), ...overrides });
+const background = (id = A, overrides = {}) => ({ schema_version: 1, background_id: id, name: "Evening room", revision: 3,
+    editor: editorDefaults(), selected_image_id: IMAGE, images: [{ image_id: IMAGE, width: 1600, height: 900, url: `${BASE}/backgrounds/${id}/images/${IMAGE}` }],
+    model: { model_id: MODEL, source_image_id: IMAGE }, cgs: [{ cg_id: CG, name: "Window view", model_id: MODEL,
+        width: 1600, height: 896, camera: clone(camera), url: `${BASE}/backgrounds/${id}/cg/${CG}/image` }], ...overrides });
+const scene = (id = A, overrides = {}) => ({ scene_id: "f".repeat(32), model_id: MODEL, background_id: id, camera: clone(camera),
+    objects: [{ object_id: B, locked: true, source_camera: clone(camera) }], ...overrides });
+const configuration = () => ({ installed: true, assets: [], loras: ["environment.safetensors"], samplers: ["euler"], schedulers: ["simple"] });
+const response = (value, status = 200) => ({ ok: status < 400, status, json: async () => clone(value) });
+const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const dataKey = key => key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+const abortCallbacks = new WeakMap();
+
+// Only the DOM operations used by the widget are emulated; no browser or GPU is involved.
+class Element {
+    constructor(tag = "div") {
+        this.tagName = tag.toUpperCase(); this.style = { setProperty(name, value) { this[name] = value; } }; this.dataset = {}; this.attributes = new Map();
+        this.listeners = new Map(); this.children = []; this.className = ""; this.type = "";
+        this.scrollTop = 0; this.scrollLeft = 0; this.disabled = false; this.hidden = false;
+        this.classList = {
+            contains: value => this.className.split(/\s+/).includes(value),
+            add: (...values) => values.forEach(value => this.classList.toggle(value, true)), remove: (...values) => values.forEach(value => this.classList.toggle(value, false)),
+            toggle: (value, enabled) => { const values = new Set(this.className.split(/\s+/).filter(Boolean));
+                const active = enabled ?? !values.has(value); active ? values.add(value) : values.delete(value); this.className = [...values].join(" "); return active; },
+        };
+    }
+    set innerHTML(html) {
+        this.replaceChildren(); const stack = [this];
+        for (const token of html.matchAll(/<\/?[a-z][^>]*>|[^<]+/gi)) {
+            if (!token[0].startsWith("<")) { stack.at(-1)._text = (stack.at(-1)._text || "") + token[0]; continue; }
+            if (token[0].startsWith("</")) { stack.pop(); continue; }
+            const tag = /^<(\w+)/.exec(token[0])[1], child = new Element(tag);
+            for (const attribute of token[0].slice(tag.length + 1, -1).matchAll(/([\w-]+)(?:="([^"]*)")?/g)) child.setAttribute(attribute[1], attribute[2] ?? "");
+            stack.at(-1).appendChild(child);
+            if (!["input", "img", "link", "br", "hr", "meta"].includes(tag) && !token[0].endsWith("/>")) stack.push(child);
+        }
+    }
+    get textContent() { return (this._text || "") + this.children.map(child => child.textContent).join(""); }
+    set textContent(value) { this.replaceChildren(); this._text = String(value); }
+    get value() {
+        if (this.tagName === "SELECT") return this._value === undefined ? this.options[0]?.value || "" : this.options.find(option => option.value === this._value)?.value || "";
+        return this._value ?? (this.tagName === "OPTION" ? this.textContent : "");
+    }
+    set value(value) { this._value = String(value); }
+    get validity() {
+        const value = Number(this.value), min = this.attributes.get("min"), max = this.attributes.get("max");
+        return { valid: this.value !== "" && Number.isFinite(value) && (min === undefined || value >= Number(min)) && (max === undefined || value <= Number(max)) };
+    }
+    get options() { return this.children.filter(child => child.tagName === "OPTION"); }
+    setAttribute(name, value) {
+        this.attributes.set(name, String(value));
+        if (name.startsWith("data-")) this.dataset[dataKey(name.slice(5))] = String(value);
+        else if (name === "aria-label") this.ariaLabel = String(value);
+        else if (["class", "value", "type", "name", "id"].includes(name)) this[name === "class" ? "className" : name] = String(value);
+        else if (["hidden", "disabled", "required"].includes(name)) this[name] = true;
+    }
+    getAttribute(name) { return this.attributes.get(name) ?? null; }
+    removeAttribute(name) {
+        this.attributes.delete(name);
+        if (name.startsWith("data-")) delete this.dataset[dataKey(name.slice(5))];
+        else if (name === "src") delete this.src;
+        else if (name === "class") this.className = "";
+        else if (["hidden", "disabled", "required"].includes(name)) this[name] = false;
+    }
+    hasAttribute(name) { return name.startsWith("data-") ? Object.hasOwn(this.dataset, dataKey(name.slice(5))) : this.attributes.has(name); }
+    matches(selector) {
+        return selector.split(",").some(part => {
+            part = part.trim();
+            if (part === "[inert]") return Boolean(this.inert);
+            if (part.startsWith(".")) return part.slice(1).split(".").every(value => this.classList.contains(value));
+            const attribute = /^\[([^=\]]+)(?:=["']?([^\]"']+)["']?)?\]$/.exec(part);
+            if (attribute) {
+                const value = attribute[1].startsWith("data-") ? this.dataset[dataKey(attribute[1].slice(5))] : this.attributes.get(attribute[1]);
+                return this.hasAttribute(attribute[1]) && (attribute[2] === undefined || value === attribute[2]);
+            }
+            return part === "*" || this.tagName.toLowerCase() === part;
+        });
+    }
+    querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
+    contains(element) { return element === this || this.children.some(child => child.contains(element)); }
+    appendChild(child) { if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child); child.parentElement = this; this.children.push(child); return child; }
+    before(sibling) { const parent = this.parentElement; if (!parent) return; sibling.parentElement = parent; parent.children.splice(parent.children.indexOf(this), 0, sibling); }
+    after(sibling) { const parent = this.parentElement; if (!parent) return; sibling.remove(); sibling.parentElement = parent; parent.children.splice(parent.children.indexOf(this) + 1, 0, sibling); }
+    append(...children) { for (const child of children) this.appendChild(child); }
+    replaceChildren(...children) { for (const child of this.children) child.parentElement = null; this.children = []; this.append(...children); }
+    remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; this.removed = true; }
+    addEventListener(type, callback, options = {}) {
+        const callbacks = this.listeners.get(type) || []; callbacks.push(callback); this.listeners.set(type, callbacks);
+        if (options.signal) {
+            if (!abortCallbacks.has(options.signal)) {
+                const callbacks = new Set(); abortCallbacks.set(options.signal, callbacks);
+                options.signal.addEventListener("abort", () => { for (const callback of callbacks) callback(); }, { once: true });
+            }
+            abortCallbacks.get(options.signal).add(() => this.removeEventListener(type, callback));
+        }
+    }
+    removeEventListener(type, callback) { this.listeners.set(type, (this.listeners.get(type) || []).filter(item => item !== callback)); }
+    fire(type, detail = {}) {
+        const event = { target: this, preventDefault() {}, stopPropagation() { this.stopped = true; }, ...detail }, results = [];
+        for (let element = this; element; element = element.parentElement) {
+            results.push(element[`on${type}`]?.(event));
+            for (const callback of element.listeners.get(type) || []) results.push(callback(event));
+            if (event.stopped) break;
+        }
+        return Promise.all(results);
+    }
+    dispatchEvent(event) { return this.fire(event.type, event); }
+    getClientRects() { for (let element = this; element; element = element.parentElement) if (element.hidden) return []; return [{}]; }
+    focus() { this.focused = true; }
+    blur() { this.onblur?.(); }
+    click() { return this.fire("click"); }
+    showModal() { this.open = true; }
+    close() { this.open = false; }
+    reportValidity() { return true; }
+}
+
+function harness(raw = JSON.stringify(state({ background_id: "", selected_image_id: "", model_id: "", selected_cg_id: "", camera: null }))) {
+    const calls = [], events = new Map(), timers = new Map(), drafts = new Map(), queued = [];
+    let extension, timerId = 0;
+    const window = new Element("window"), documents = new Map([[A, background()], [B, background(B)]]);
+    class Viewer {
+        static async create(host, options) { return new Viewer(host, options); }
+        constructor(host, options) { this.options = options; this.canvas = new Element("canvas"); this.controls = {}; this.camera = clone(camera); this.frames = []; this.loads = []; }
+        async setScene(value) { this.scene = value; this.loads.push(value); this.camera = { ...camera, position: [99, 99, 99] }; return { failures: [] }; }
+        setLighting(settings) { this.lighting = settings; }
+        setCaptureSettings(settings) { this.settings = settings; }
+        setCameraState(value, { emit = false } = {}) { this.camera = clone(value); this.frames.push(this.camera); if (emit) this.options.onStateChange({ camera: this.camera }); }
+        getCameraState() { return clone(this.camera); }
+        select() {}
+        resize() { this.resized = true; }
+        invalidate() { this.invalidated = true; }
+        async capturePreview(options) { this.captureOptions = options; return new Blob(["png"]); }
+        dispose() { this.disposed = true; }
+    }
+    const api = {
+        addEventListener(name, callback, options = {}) {
+            const callbacks = events.get(name) || []; callbacks.push(callback); events.set(name, callbacks);
+            options.signal?.addEventListener("abort", () => api.removeEventListener(name, callback), { once: true });
+        },
+        removeEventListener(name, callback) { const callbacks = (events.get(name) || []).filter(item => item !== callback); callbacks.length ? events.set(name, callbacks) : events.delete(name); },
+        apiURL: value => value,
+        async fetchApi(path, options = {}) {
+            calls.push({ path, options });
+            if (api.handle) { const result = await api.handle(path, options); if (result !== undefined) return result; }
+            if (path === `${BASE}/config`) return response(configuration());
+            if (path === `${BASE}/backgrounds`) return response({ backgrounds: [...documents.values()] });
+            const match = new RegExp(`^${BASE}/backgrounds/([a-f0-9]{32})(/models/[a-f0-9]{32})?$`).exec(path);
+            if (match && !options.method) {
+                const document = documents.get(match[1]);
+                if (!match[2]) return response(document);
+                const modelId = match[2].split("/").at(-1), model = (document.models || [document.model]).find(item => item?.model_id === modelId);
+                return response(scene(match[1], { model_id: modelId, source_image_id: model?.source_image_id }));
+            }
+            throw new Error(`Unexpected request: ${options.method || "GET"} ${path}`);
+        },
+        async queuePrompt(number, prompt, options) { queued.push({ number, prompt, options }); return { prompt_id: "import-prompt" }; },
+    };
+    const localStorage = { getItem: key => drafts.get(key) ?? null, setItem: (key, value) => drafts.set(key, value), removeItem: key => drafts.delete(key) };
+    const context = vm.createContext({
+        document: Object.assign(new Element("document"), { getElementById: () => true, createElement: tag => new Element(tag), head: new Element("head"), activeElement: null }),
+        window, localStorage, storage: { ...localStorage, setItem: (key, value) => { drafts.set(key, value); return true; } },
+        crypto: { randomUUID: () => "01234567-89ab-cdef-0123-456789abcdef", getRandomValues: value => value.fill(17) },
+        createControlCenterClient: () => ({ async fetchConfig() {}, startPolling() { this.polling = true; }, stopPolling() { this.polling = false; } }),
+        showMessage(container, text, error) {
+            const overlay = new Element(); overlay.className = "vnccs-common-message-overlay";
+            overlay.textContent = text; overlay.isError = error; container.appendChild(overlay); return overlay;
+        },
+        showModal(container, title, content, actions) {
+            const overlay = new Element(), modal = new Element(); modal.className = "vnccs-common-modal";
+            modal.appendChild(content(modal)); const buttons = actions.map(action => { const button = new Element("button"); button.type = "button"; button.className = "vnccs-common-modal-btn"; button.textContent = action.text; button.onclick = () => action.action?.(); modal.appendChild(button); return button; });
+            overlay.appendChild(modal); container.appendChild(overlay); return { overlay, modal, buttons };
+        },
+        SAKURA_THEME_CSS: "", SAKURA_INTERACTION_CSS: "", SAKURA_CREATOR_CONTROL_CSS: "", COMMON_CSS: "", injectStyles() {}, generateRandomSeed: () => 19,
+        setHelpText() {}, registerCleanup() {}, enableMiddleMouseCanvasPan() {}, attachHelpTooltips() {},
+        syncDOMWidgetWidthSoon() {}, syncDOMWidgetWidth: node => { if (!node.backgroundCreatorDOM._bound) { Object.defineProperty(node.backgroundCreatorDOM, "width", { get: () => node.size[0] }); node.backgroundCreatorDOM._bound = true; } },
+        animateWizardRows: (rows, apply) => apply(),
+        Event: class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } }, requestAnimationFrame() {},
+        URL, AbortController, FormData, Blob, console, api, vnccsApi: api, presetSelection, DEFAULT_EDITOR, MODEL_DEFAULTS, MOSS_GENERATION, clone, readState, editorDefaults, frameDimensions, sourceCameraView, composePrompt, parsePrompt, legacySceneDescription, isTurboModel, modelPath,
+        ResizeObserver: class { observe() {} disconnect() { this.disconnected = true; } },
+        BackgroundViewer: Viewer, CameraHistory,
+        app: { registerExtension: value => { extension = value; }, graphToPrompt: async () => context.graphPrompt },
+        setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
+        clearTimeout: id => timers.delete(id),
+    });
+    vm.runInContext(fs.readFileSync(new URL("../web/sakura_interactions.mjs", import.meta.url), "utf8").replaceAll("export ", ""), context);
+    vm.runInContext(traitSource, context);
+    vm.runInContext(messageSource + cleanupSource + connectionSource, context);
+    vm.runInContext(widgetSource.replace(/^import .*\n/gm, "").replaceAll("export ", "").replace("class BackgroundCreatorWidget", "globalThis.BackgroundCreatorWidget = class BackgroundCreatorWidget").replaceAll("import.meta.url", '"https://localhost/widget.mjs"'), context);
+    vm.runInContext(entrySource.replace(/^import .*\n/gm, ""), context);
+    class Node {
+        constructor() { this.id = 7; this.widgets = [{ name: "seed", value: 0 }, { name: "background_data", value: raw }]; this.size = [1600, 1000]; this.graph = { setDirtyCanvas() {} }; }
+        addDOMWidget(name, type, element, options) { const value = { name, element, options }; this.widgets.push(value); return value; }
+        setSize(size) { this.size = size; }
+        onNodeCreated() { this.created = true; }
+        onConfigure() { this.configured = true; }
+        onRemoved() { this.removed = true; }
+        onExecuted(message) { this.executed = message; }
+    }
+    extension.beforeRegisterNodeDef(Node, { name: "VNCCS_BackgroundCreator" });
+    const node = new Node(); node.onNodeCreated(); const widget = node.backgroundCreator;
+    const fireTimers = delay => { const pending = [...timers].filter(([, timer]) => timer.delay === delay); for (const [id, timer] of pending) { timers.delete(id); timer.callback(); } };
+    const emit = (name, detail) => { for (const callback of events.get(name) || []) callback({ detail }); };
+    return { node, widget, calls, api, events, timers, drafts, queued, documents, context, window, data: node.widgets[1],
+        emit: detail => emit("vnccs_background_creator", { node_id: "7", ...detail }), emitEvent: emit, fireTimers,
+        ready: async () => { fireTimers(0); await widget.operations; },
+        control: selector => widget.container.querySelector(selector),
+    };
+}
+
+test("state restores both stages and keeps nested defaults independent", () => {
+    const saved = state({ editor: { description: "A quiet room", generation: { steps: 31 }, attributes: { lighting: "Soft window light" } } });
+    const restored = readState(JSON.stringify(saved));
+    assert.equal(restored.editor.generation.steps, 31);
+    assert.equal(restored.editor.generation.sampler, "euler");
+    assert.equal(restored.editor.attributes.scene_type, "Interior");
+    assert.equal(restored.editor.attributes.lighting, "Soft window light");
+    assert.equal(restored.selected_cg_id, CG);
+    restored.editor.generation.lora_stack.push({ name: "a", strength: 1 });
+    assert.deepEqual(editorDefaults().generation.lora_stack, []);
+    for (const invalid of ["{broken", "[]", "null", JSON.stringify({ schema_version: 3 }), JSON.stringify(state({ model_id: "../model" })), JSON.stringify(state({ camera: {} }))]) assert.throws(() => readState(invalid));
+});
+
+test("Qwen and Moss use Creator type tabs and retain independent generation settings", async () => {
+    const qwen = { ...clone(DEFAULT_EDITOR.generation), steps: 31, cfg: 1.7, diffusion_model_name: "user/rooms.safetensors",
+        lora_stack: [{ name: "room.safetensors", strength: 0.6 }] };
+    const h = harness(JSON.stringify(state({ editor: editorDefaults({ generation: qwen }) }))); await h.ready();
+    assert.equal(h.control("[data-model-types]").classList.contains("vnccs-common-creator-tab-row"), true);
+    assert.deepEqual(h.widget.container.querySelectorAll("[data-model-type]").map(button => button.textContent), ["Qwen Image 2.1", "Moss"]);
+    await h.control('[data-model-type="moss"]').click();
+    assert.equal(h.widget.state.editor.generation.model_type, "moss");
+    assert.equal(h.widget.state.editor.generation.sampler, "er_sde"); assert.equal(h.widget.state.editor.generation.cfg, 2.5);
+    assert.equal(h.widget.state.editor.generation.diffusion_model_name, MOSS_GENERATION.diffusion_model_name);
+    assert.equal(h.control('[data-model-type="moss"]').getAttribute("aria-pressed"), "true");
+    assert.equal(h.control('[data-model-type="moss"]').classList.contains("is-active"), true);
+    assert.equal(h.control('[data-setting="generation.turbo"]').disabled, true);
+    assert.equal(h.widget.container.querySelectorAll("[data-qwen-only]").every(section => section.hidden), true);
+    assert.deepEqual(clone(h.widget.state.editor.generation.lora_stack), []);
+    const steps = h.control('[data-setting="generation.steps"]'); steps.value = "19"; steps.fire("input");
+    await h.control('[data-model-type="qi2"]').click();
+    assert.deepEqual(clone(h.widget.state.editor.generation), qwen);
+    assert.equal(h.widget.container.querySelectorAll("[data-qwen-only]").every(section => !section.hidden), true);
+    await h.control('[data-model-type="moss"]').click();
+    assert.equal(h.widget.state.editor.generation.steps, 19);
+    assert.equal(JSON.parse(h.data.value).editor.generation_profiles.qi2.steps, 31);
+});
+
+test("Moss and cached Qwen settings save and load through the selected background JSON", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.api.handle = (path, options) => {
+        if (options.method !== "PATCH") return;
+        const current = h.documents.get(A), data = JSON.parse(options.body);
+        assert.equal(path, `${BASE}/backgrounds/${A}`);
+        const saved = { ...current, ...data, revision: current.revision + 1 }; h.documents.set(A, saved); return response(saved);
+    };
+    await h.control('[data-model-type="moss"]').click();
+    await h.widget.persist();
+    const saved = h.documents.get(A);
+    assert.equal(saved.editor.generation.model_type, "moss"); assert.equal(saved.editor.generation_profiles.qi2.sampler, "euler");
+    const restored = state(); delete restored.editor; delete restored.model_settings;
+    const next = harness(JSON.stringify(restored)); next.documents.set(A, saved); await next.ready();
+    assert.equal(next.widget.state.editor.generation.model_type, "moss");
+    assert.equal(next.control('[data-model-type="moss"]').getAttribute("aria-pressed"), "true");
+    await next.control('[data-model-type="qi2"]').click();
+    assert.equal(next.widget.state.editor.generation.diffusion_model_name, DEFAULT_EDITOR.generation.diffusion_model_name);
+    assert.equal(next.widget.state.editor.generation.sampler, "euler");
+    assert.equal(h.drafts.size, 0); assert.equal(next.drafts.size, 0);
+});
+
+test("Moss inventory and missing-asset messages use its own model family", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.widget.config.diffusion_models = [DEFAULT_EDITOR.generation.diffusion_model_name, MOSS_GENERATION.diffusion_model_name];
+    h.widget.config.model_types = { moss: { assets: [{ category: "diffusion_models", installed: true },
+        { category: "text_encoders", installed: false, name: "qwen3.5_9b_w4a8_gptq.safetensors" }] } };
+    await h.control('[data-model-type="moss"]').click();
+    const card = h.control("[data-model-toggle]");
+    assert.equal(card.classList.contains("is-installed"), true); assert.match(card.textContent, /MOSS-Image/);
+    assert.equal(h.widget.modelEntries.some(entry => modelPath(entry) === DEFAULT_EDITOR.generation.diffusion_model_name), false);
+    assert.match(h.control("[data-model-picker]").textContent, /Missing: qwen3\.5_9b_w4a8_gptq/);
+    await h.control('[data-model-type="qi2"]').click();
+    assert.equal(h.widget.modelEntries.some(entry => modelPath(entry) === MOSS_GENERATION.diffusion_model_name), false);
+    assert.throws(() => readState(JSON.stringify(state({ editor: { generation: { model_type: "unknown" } } }))), /model type/);
+});
+
+test("capture sizes preserve landscape and portrait formats within renderer limits", () => {
+    for (const [aspect, ratio] of [["16:9", 16 / 9], ["9:16", 9 / 16], ["1:1", 1], ["21:9", 21 / 9]]) {
+        const size = frameDimensions(aspect, 2);
+        assert.equal(size.width % 16, 0); assert.equal(size.height % 16, 0);
+        assert.ok(Math.abs(size.width / size.height - ratio) < 0.03);
+        assert.ok(size.width >= 64 && size.height >= 64 && size.width <= 4096 && size.height <= 4096);
+    }
+    assert.throws(() => frameDimensions("0:9", 2));
+    assert.throws(() => frameDimensions("16:9", 0));
+});
+
+test("construction preserves configured bytes and restores saved camera after automatic fit", async () => {
+    const h = harness(); const constructionBytes = h.data.value;
+    assert.equal(h.widget.state, null); assert.equal(h.data.value, constructionBytes);
+    const selected = { ...camera, fov: 61, position: [1, 2, 3] };
+    h.data.value = JSON.stringify(state({ camera: selected })); h.node.onConfigure(); await h.ready();
+    assert.equal(h.node.created, true); assert.equal(h.node.configured, true);
+    assert.deepEqual(h.widget.viewer.camera, selected);
+    assert.equal(h.widget.canEditCamera(), true);
+    assert.equal(h.widget.viewer.scene.objects[0].locked, true);
+    assert.equal(h.node.backgroundCreatorDOM.options.serialize, false);
+    assert.equal(h.node.widgets[0].hidden, true); assert.equal(h.data.hidden, true);
+    assert.equal(h.control('[data-panel="model"]').hidden, false);
+    assert.equal(h.control('[data-panel="background"]').hidden, true);
+    assert.ok(h.calls.every(call => call.path.startsWith(BASE + "/")));
+    assert.deepEqual(h.queued, []);
+});
+
+test("FOV updates viewport, paired field and workflow continuously with one undo per gesture", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    for (const value of [35, 55]) {
+        h.widget.fov.value = String(value); h.widget.fov.fire("input");
+        assert.equal(h.widget.viewer.camera.fov, value);
+        assert.equal(h.widget.fovNumber.value, String(value));
+        assert.equal(JSON.parse(h.data.value).camera.fov, value);
+        assert.equal(h.widget.history.undoStack.length, 0);
+    }
+    h.widget.fovNumber.value = "65"; h.widget.fovNumber.fire("input");
+    assert.equal(h.widget.fov.value, "65");
+    await h.widget.fov.fire("change"); assert.equal(h.widget.history.undoStack.length, 1);
+    await h.widget.container.fire("keydown", { key: "z", ctrlKey: true }); assert.equal(h.widget.viewer.camera.fov, 42);
+    await h.widget.container.fire("keydown", { key: "z", ctrlKey: true, shiftKey: true }); assert.equal(h.widget.viewer.camera.fov, 65);
+    await h.control("[data-recenter]").click(); assert.deepEqual(h.widget.viewer.camera, sourceCameraView(camera));
+    assert.equal(h.widget.history.undoStack.length, 2);
+});
+
+const narrowSource = { position: [-0.55, 0.05, 3.3], target: [0, 0, 0], up: [0, 1, 0], fov: 15 };
+const cameraDistance = value => Math.hypot(...value.position.map((v, index) => v - value.target[index]));
+
+test("source view uses 60 degrees and a closer camera while retaining its focus-plane framing", () => {
+    for (const source of [narrowSource, { ...narrowSource, position: [9.45, -3.95, 10.3], target: [10, -4, 7] }, { ...narrowSource, fov: 5 }]) {
+        const original = clone(source), view = sourceCameraView(source);
+        assert.equal(view.fov, 60);
+        assert.ok(cameraDistance(view) < cameraDistance(source) / 4);
+        assert.deepEqual(view.target, source.target); assert.deepEqual(view.up, source.up);
+        const plane = value => cameraDistance(value) * Math.tan(value.fov * Math.PI / 360);
+        assert.ok(Math.abs(plane(view) - plane(source)) < 1e-12);
+        source.position.forEach((v, index) => {
+            const a = (v - source.target[index]) / cameraDistance(source);
+            const b = (view.position[index] - view.target[index]) / cameraDistance(view);
+            assert.ok(Math.abs(a - b) < 1e-12);
+        });
+        assert.deepEqual(source, original);
+    }
+});
+
+test("a newly opened model starts at its calibrated source view without regenerating it", async () => {
+    const h = harness(JSON.stringify(state({ camera: null, selected_cg_id: "" })));
+    h.documents.set(A, background(A, { cgs: [] }));
+    h.api.handle = path => path.endsWith(`/models/${MODEL}`) ? response(scene(A, { camera: narrowSource, objects: [{ object_id: B, source_camera: narrowSource }] })) : undefined;
+    await h.ready();
+    assert.deepEqual(h.widget.viewer.camera, sourceCameraView(narrowSource));
+    assert.equal(h.widget.fov.value, "60"); assert.equal(h.widget.fovNumber.value, "60");
+    assert.equal(h.widget.viewer.options.cameraDragScale, 0.7);
+    assert.equal(JSON.parse(h.data.value).camera_view_version, 1);
+    assert.equal(h.calls.some(call => call.options.method === "POST"), false);
+    await h.control("[data-recenter]").click();
+    assert.deepEqual(h.widget.viewer.camera, sourceCameraView(narrowSource));
+});
+
+test("untouched legacy source poses are calibrated once, including a changed lens", async () => {
+    for (const fov of [15, 60]) {
+        const h = harness(JSON.stringify(state({ camera: { ...narrowSource, fov }, selected_cg_id: "" })));
+        h.documents.set(A, background(A, { cgs: [] }));
+        h.api.handle = path => path.endsWith(`/models/${MODEL}`) ? response(scene(A, { objects: [{ object_id: B, source_camera: narrowSource }] })) : undefined;
+        await h.ready();
+        assert.deepEqual(h.widget.viewer.camera, sourceCameraView(narrowSource));
+        assert.equal(JSON.parse(h.data.value).camera_view_version, 1);
+        const adjusted = { ...narrowSource, fov: 27 };
+        h.data.value = JSON.stringify(state({ camera: adjusted, camera_view_version: 1, selected_cg_id: "" }));
+        h.node.onConfigure(); await h.ready();
+        assert.deepEqual(h.widget.viewer.camera, adjusted);
+    }
+});
+
+test("authored poses and completed CG cameras remain exact when loading narrow source models", async () => {
+    for (const [saved, cg] of [[{ ...narrowSource, target: [0.1, 0, 0] }, null], [narrowSource, CG]]) {
+        const h = harness(JSON.stringify(state({ camera: saved, selected_cg_id: cg || "" })));
+        const document = background(); document.cgs = cg ? [{ ...document.cgs[0], camera: narrowSource }] : [];
+        h.documents.set(A, document);
+        h.api.handle = path => path.endsWith(`/models/${MODEL}`) ? response(scene(A, { objects: [{ object_id: B, source_camera: narrowSource }] })) : undefined;
+        await h.ready(); assert.deepEqual(h.widget.viewer.camera, saved);
+        assert.deepEqual(h.widget.document.cgs, document.cgs);
+        await h.control("[data-recenter]").click();
+        assert.deepEqual(h.widget.viewer.camera, sourceCameraView(narrowSource));
+        assert.deepEqual(h.widget.document.cgs, document.cgs);
+    }
+});
+
+test("serialization replaces collected payload and queue synchronizes latest camera", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.widget.viewer.camera = { ...camera, fov: 80 };
+    const info = { widgets_values: [0, "stale"] }; h.node.onSerialize(info);
+    assert.equal(JSON.parse(info.widgets_values[1]).camera.fov, 80);
+    h.widget.viewer.camera = { ...camera, fov: 90 }; h.data.beforeQueued();
+    assert.equal(JSON.parse(h.data.value).camera.fov, 90);
+    assert.equal(JSON.parse(h.data.serializeValue()).camera.fov, 90);
+    h.widget.busy = true;
+    assert.throws(() => h.data.beforeQueued(), /running|busy|generation|import|operation/i);
+});
+
+test("RUN refreshes the background preview without advancing to Model and preserves original execution hooks", async () => {
+    const h = harness(JSON.stringify(state({ step: "background" }))); await h.ready();
+    const editor = clone(h.widget.state.editor), settings = clone(h.widget.state.model_settings), imageId = "8".repeat(32);
+    const document = background(A, { revision: 4, selected_image_id: imageId });
+    document.images.push({ image_id: imageId, width: 1600, height: 896, url: "/run-generated.png" });
+    h.documents.set(A, document);
+    h.emitEvent("executing", "999"); assert.equal(h.widget.busy, false);
+    h.emitEvent("executing", "7"); assert.equal(h.widget.busy, true);
+    assert.equal(h.control('[data-setting="scene_description"]').disabled, true);
+    h.emitEvent("vnccs.background.stage", { node_id: "999", background_id: A, progress: 90, message: "Unrelated node" });
+    assert.equal(h.widget.status.textContent, "Preparing background output…");
+    h.emitEvent("vnccs.background.stage", { node_id: "7", background_id: A, progress: 45, message: "Rendering background" });
+    assert.equal(h.widget.status.textContent, "Rendering background");
+    assert.equal(h.control("progress"), null); assert.equal(h.control("[data-generation-layer]").hidden, false);
+    const output = { background_preview: [{ background_id: A, image_id: imageId, request_image_id: IMAGE,
+        source: "generated", editor, model_settings: settings }] };
+    h.node.onExecuted(output); await h.widget.workflowCompletion;
+    assert.equal(h.node.executed, output);
+    assert.equal(h.widget.state.step, "background"); assert.equal(h.control('[data-panel="model"]').hidden, true);
+    assert.equal(h.widget.state.selected_image_id, imageId); assert.equal(h.widget.state.model_id, "");
+    assert.equal(h.control("[data-preview]").src, "/run-generated.png");
+    assert.equal(JSON.parse(h.data.value).selected_image_id, imageId);
+    assert.equal(h.widget.document.revision, 4); assert.equal(h.widget.busy, false); assert.equal(h.widget.unsaved, false);
+    assert.equal(h.control('[data-setting="scene_description"]').disabled, false);
+    assert.deepEqual(h.queued, []);
+});
+
+test("cached and uploaded RUN results keep their selected background and stage", async () => {
+    for (const source of ["cache", "upload"]) {
+        const h = harness(JSON.stringify(state({ step: "background" }))); await h.ready();
+        h.emitEvent("executing", "7");
+        h.node.onExecuted({ background_preview: [{ background_id: A, image_id: IMAGE, request_image_id: IMAGE, source,
+            editor: clone(h.widget.state.editor), model_settings: clone(h.widget.state.model_settings) }] });
+        await h.widget.workflowCompletion;
+        assert.equal(h.widget.state.step, "background"); assert.equal(h.widget.state.selected_image_id, IMAGE);
+        assert.match(h.widget.status.textContent, source === "cache" ? /reused from cache/ : /passed through/);
+        assert.equal(h.widget.busy, false);
+    }
+});
+
+test("late RUN completion cannot replace edits made after the queued request", async () => {
+    const h = harness(JSON.stringify(state({ step: "background" }))); await h.ready();
+    const queued = clone(h.widget.state.editor), document = background(A, { revision: 4 }); h.documents.set(A, document);
+    h.widget.state.editor.scene_description = "Keep my newer description"; h.widget.markEdited();
+    h.node.onExecuted({ background_preview: [{ background_id: A, image_id: "8".repeat(32), request_image_id: IMAGE,
+        source: "generated", editor: queued, model_settings: clone(h.widget.state.model_settings) }] });
+    await h.widget.workflowCompletion;
+    assert.equal(h.widget.state.editor.scene_description, "Keep my newer description");
+    assert.equal(h.widget.state.selected_image_id, IMAGE); assert.equal(h.widget.unsaved, true);
+    assert.equal(h.widget.document.revision, 4);
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, "Keep my newer description");
+});
+
+test("RUN errors and interruption release controls without changing the selected background", async () => {
+    for (const interrupted of [false, true]) {
+        const h = harness(JSON.stringify(state({ step: "background" }))); await h.ready();
+        h.emitEvent("executing", "7");
+        h.emitEvent(interrupted ? "execution_interrupted" : "execution_error", { node_id: "7", exception_message: "Decoder unavailable" });
+        await h.widget.workflowCompletion;
+        assert.equal(h.widget.state.background_id, A); assert.equal(h.widget.state.selected_image_id, IMAGE);
+        assert.equal(h.widget.state.step, "background"); assert.equal(h.widget.busy, false);
+        assert.match(h.widget.status.textContent, interrupted ? /stopped/ : /Decoder unavailable/);
+        assert.equal(h.control('[data-setting="scene_description"]').disabled, false);
+    }
+});
+
+test("failed or malformed restore preserves original bytes and blocks workflow execution", async () => {
+    for (const raw of ["{broken", '{"schema_version":3}', JSON.stringify(state({ camera: {} }))]) {
+        const h = harness(raw); await h.ready();
+        assert.equal(h.data.value, raw); assert.equal(h.widget.restoring, true);
+        assert.equal(h.data.serializeValue(), raw);
+        assert.throws(() => h.data.beforeQueued(), /restoring/i);
+    }
+    const raw = JSON.stringify(state()); const h = harness(raw);
+    h.api.handle = path => path === `${BASE}/backgrounds/${A}` ? response({ error: "Damaged document" }, 409) : undefined;
+    await h.ready(); assert.equal(h.data.value, raw); assert.equal(h.widget.restoring, true);
+    assert.match(h.widget.status.textContent, /Damaged document/);
+    assert.throws(() => h.data.beforeQueued(), /restoring/i);
+});
+
+test("an obsolete restore cannot overwrite a later configured background or camera", async () => {
+    const h = harness(JSON.stringify(state())), first = deferred(); let intercepted = false;
+    h.api.handle = path => { if (path === `${BASE}/config` && !intercepted) { intercepted = true; return first.promise; } };
+    h.fireTimers(0); await settle(); assert.equal(intercepted, true);
+    const selected = { ...camera, fov: 72 }, saved = JSON.stringify(state({ background_id: B, camera: selected }));
+    h.data.value = saved; h.node.onConfigure(); h.fireTimers(0);
+    first.resolve(response(configuration())); await h.widget.operations;
+    assert.equal(h.widget.state.background_id, B);
+    assert.equal(h.widget.scene.background_id, B);
+    assert.equal(h.widget.viewer.camera.fov, 72);
+    assert.equal(JSON.parse(h.data.value).background_id, B);
+});
+
+test("continuous edits save silently into the selected background JSON and preserve scroll positions", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const description = h.control('[data-setting="scene_description"]'), save = deferred(), status = h.widget.status.textContent;
+    description.value = "First description"; description.fire("input");
+    assert.equal(h.control("[data-saved]"), null);
+    assert.equal(h.widget.status.textContent, status);
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, "First description");
+    h.api.handle = (path, options) => path === `${BASE}/backgrounds/${A}` && options.method === "PATCH" ? save.promise : undefined;
+    const pending = h.widget.persist(); await settle();
+    description.value = "Latest description"; description.fire("input");
+    const panel = h.control(".bg-panel"), gallery = h.control(".bg-cg-list"); panel.scrollTop = 180; gallery.scrollTop = 95;
+    h.widget.render(); assert.equal(panel.scrollTop, 180); assert.equal(gallery.scrollTop, 95);
+    save.resolve(response(background(A, { revision: 4, editor: editorDefaults({ scene_description: "First description" }) })));
+    await pending;
+    assert.equal(h.widget.state.editor.scene_description, "Latest description");
+    assert.equal(h.widget.document.revision, 4); assert.equal(h.widget.unsaved, true);
+    h.api.handle = (path, options) => path === `${BASE}/backgrounds/${A}` && options.method === "PATCH" ? response(background(A, { revision: 5, editor: h.widget.state.editor })) : undefined;
+    await h.widget.persist(); assert.equal(h.widget.unsaved, false);
+    assert.equal(h.widget.document.editor.scene_description, "Latest description");
+    assert.equal(h.widget.status.textContent, status);
+    assert.equal(h.drafts.size, 0);
+});
+
+test("a background JSON save conflict retains the visible edit and its document revision", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const description = h.control('[data-setting="scene_description"]'); description.value = "Do not lose this edit"; description.fire("input");
+    h.api.handle = (path, options) => options.method === "PATCH" ? response({ error: "Background was modified elsewhere" }, 409) : undefined;
+    await assert.rejects(h.widget.persist(), /modified elsewhere/);
+    assert.equal(h.widget.document.revision, 3); assert.equal(h.widget.unsaved, true);
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, "Do not lose this edit");
+    assert.equal(h.widget.state.editor.scene_description, "Do not lose this edit");
+    assert.equal(h.control("[data-saved]"), null); assert.equal(h.drafts.size, 0);
+});
+
+test("switching backgrounds saves and reloads each background's scene and TripoSplat settings", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const other = background(B, { editor: editorDefaults({ scene_description: "An outdoor garden" }),
+        model_settings: { ...MODEL_DEFAULTS, steps: 12, seed: 13 } });
+    h.documents.set(B, other);
+    h.api.handle = (path, options) => {
+        if (options.method !== "PATCH") return;
+        const id = path.split("/").at(-1), current = h.documents.get(id), data = JSON.parse(options.body);
+        assert.equal(data.revision, current.revision);
+        const saved = { ...current, ...data, revision: current.revision + 1 }; h.documents.set(id, saved);
+        return response(saved);
+    };
+    const description = h.control('[data-setting="scene_description"]'); description.value = "My painted bedroom"; description.fire("input");
+    const steps = h.control('[data-model-setting="steps"]'); steps.value = "31"; steps.fire("input");
+    const select = h.control("[data-library]"); select.value = B; await select.fire("change");
+    assert.equal(h.documents.get(A).editor.scene_description, "My painted bedroom");
+    assert.equal(h.documents.get(A).model_settings.steps, 31);
+    assert.equal(h.widget.state.editor.scene_description, "An outdoor garden");
+    assert.equal(h.widget.state.model_settings.steps, 12); assert.equal(h.widget.state.model_settings.seed, 13);
+    select.value = A; await select.fire("change");
+    assert.equal(h.widget.state.editor.scene_description, "My painted bedroom");
+    assert.equal(h.widget.state.model_settings.steps, 31);
+    assert.equal(h.drafts.size, 0);
+});
+
+test("failed background selection keeps the previous background and re-enables its controls", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const loading = deferred();
+    h.api.handle = path => path === `${BASE}/backgrounds/${B}` ? loading.promise : undefined;
+    const select = h.control("[data-library]"); select.value = B; const pending = select.fire("change"); await settle();
+    assert.equal(h.widget.restoring, true);
+    assert.equal(h.control('[data-setting="scene_description"]').disabled, true);
+    loading.resolve(response({ error: "Cannot load background metadata" }, 500)); await pending;
+    assert.equal(h.widget.state.background_id, A); assert.equal(select.value, A);
+    assert.equal(h.widget.restoring, false);
+    assert.equal(h.control('[data-setting="scene_description"]').disabled, false);
+    assert.match(h.widget.status.textContent, /Cannot load background metadata/);
+});
+
+test("saved backup recovery exposes retained images and prevents editing damaged disk state", async () => {
+    const h = harness(JSON.stringify(state())); h.documents.set(A, background(A, { _recovery: { source: "backup" } })); await h.ready();
+    assert.equal(h.widget.restoring, false); assert.equal(h.widget.document._recovery.source, "backup");
+    assert.match(h.widget.status.textContent, /read-only|read only/i);
+    assert.equal(h.control('[data-action="background"]').disabled, true);
+    assert.equal(h.control("[data-upload]").disabled, true);
+    assert.equal(h.control('[data-setting="scene_description"]').disabled, true);
+});
+
+function variantBackground() {
+    const secondImage = "4".repeat(32), latest = "5".repeat(32), secondModel = "6".repeat(32), secondCG = "7".repeat(32);
+    const document = background();
+    document.images.push({ image_id: secondImage, width: 1024, height: 768, url: "/second-background.png" });
+    document.models = [{ model_id: MODEL, source_image_id: IMAGE }, { model_id: latest, source_image_id: IMAGE }, { model_id: secondModel, source_image_id: secondImage }];
+    document.model = document.models.at(-1);
+    document.cgs[0].source_image_id = IMAGE; document.cgs[0].camera.fov = 73;
+    document.cgs.push({ cg_id: secondCG, model_id: secondModel, source_image_id: secondImage, name: "Second variant view",
+        width: 1024, height: 768, camera: { ...camera, fov: 56 }, url: "/second-cg.png" });
+    return { document, secondImage, latest, secondModel, secondCG };
+}
+
+test("adopting a scene chooses the latest model and CG gallery belonging to its selected image", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const { document, latest } = variantBackground(); h.documents.set(A, document);
+    await h.widget.acceptDocument(document, true);
+    assert.equal(h.widget.state.selected_image_id, IMAGE); assert.equal(h.widget.state.model_id, latest);
+    assert.equal(h.widget.scene.model_id, latest); assert.equal(h.widget.state.selected_cg_id, CG);
+    assert.deepEqual(h.control("[data-cgs]").children.map(card => card.dataset.cgId), [CG]);
+    assert.equal(h.control("[data-cg-count]").textContent, "1");
+    await h.control("[data-cgs]").children[0].click();
+    assert.equal(h.widget.state.model_id, MODEL); assert.equal(h.widget.viewer.camera.fov, 73);
+    assert.equal(h.widget.state.selected_image_id, IMAGE); assert.equal(h.widget.scene.source_image_id, IMAGE);
+});
+
+test("accepting a new current preview uses its model and clears an output from another source", async () => {
+    const { document, secondImage, latest, secondModel, secondCG } = variantBackground(), h = harness(JSON.stringify(state()));
+    h.documents.set(A, document); await h.ready();
+    document.selected_image_id = secondImage;
+    await h.widget.acceptDocument(document, true);
+    assert.equal(h.widget.state.model_id, secondModel); assert.equal(h.widget.state.selected_cg_id, secondCG);
+    assert.equal(h.widget.scene.source_image_id, secondImage);
+    assert.equal(h.widget.host.hidden, false); assert.equal(h.widget.canEditCamera(), true);
+    assert.deepEqual(h.control("[data-cgs]").children.map(card => card.dataset.cgId), [secondCG]);
+    await h.control("[data-cgs]").children[0].click();
+    assert.equal(h.widget.state.selected_cg_id, secondCG); assert.equal(h.widget.viewer.camera.fov, 56);
+    document.selected_image_id = IMAGE;
+    await h.widget.acceptDocument(document, true);
+    assert.equal(h.widget.state.model_id, latest); assert.equal(h.widget.state.selected_cg_id, CG);
+    assert.deepEqual(h.control("[data-cgs]").children.map(card => card.dataset.cgId), [CG]);
+    assert.equal(JSON.parse(h.data.value).selected_image_id, IMAGE);
+});
+
+test("legacy CG visibility uses the current model when source binding is missing", async () => {
+    const { document, latest } = variantBackground(), h = harness(JSON.stringify(state({ model_id: latest })));
+    const legacyMatch = "8".repeat(32), legacyOther = "9".repeat(32);
+    document.cgs.push({ ...document.cgs[0], cg_id: legacyMatch, model_id: latest, source_image_id: undefined });
+    document.cgs.push({ ...document.cgs[1], cg_id: legacyOther, source_image_id: undefined });
+    h.documents.set(A, document); await h.ready();
+    assert.deepEqual(h.control("[data-cgs]").children.map(card => card.dataset.cgId), [CG, legacyMatch]);
+    assert.equal(h.control("[data-cg-count]").textContent, "2");
+});
+
+test("legacy model alias remains usable, while canonical empty models do not revive it", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    await h.widget.acceptDocument(background(), true); assert.equal(h.widget.state.model_id, MODEL);
+    await h.widget.acceptDocument(background(A, { models: [], cgs: [] }), true);
+    assert.equal(h.widget.state.model_id, ""); assert.equal(h.widget.state.selected_cg_id, "");
+    assert.equal(h.control("[data-cg-count]").textContent, "0"); assert.equal(h.control("[data-cg-empty]").hidden, false);
+});
+
+test("saving a view captures its camera and aspect then displays the finished CG without queueing", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const selectedCamera = { ...camera, fov: 58 }, cgId = "0".repeat(32), size = frameDimensions("4:3", 2);
+    const completed = background(A, { revision: 5 });
+    completed.cgs.push({ cg_id: cgId, name: "Desk", model_id: MODEL, camera: selectedCamera, ...size, url: "/finished-cg.png" });
+    h.widget.viewer.camera = selectedCamera;
+    h.widget.dialog = async () => ({ name: "Desk", aspect: "4:3", cg_prompt: "Complete the room and retain the camera." });
+    let payload;
+    h.api.handle = (path, options) => {
+        if (options.method === "PATCH") return response(background(A, { revision: 4, editor: h.widget.state.editor }));
+        if (path === `${BASE}/backgrounds/${A}/jobs`) {
+            assert.ok(options.body.get("image") instanceof Blob);
+            payload = JSON.parse(options.body.get("data")); return response({ job_id: B });
+        }
+        if (path === `${BASE}/jobs/${B}`) return response({ status: "completed", progress: 100, result: { document: completed } });
+    };
+    await h.control("[data-save-view]").click();
+    assert.equal(payload.action, "cg"); assert.equal(payload.model_id, MODEL); assert.deepEqual(payload.camera, selectedCamera);
+    assert.equal(h.widget.viewer.captureOptions.width, size.width); assert.equal(h.widget.viewer.captureOptions.height, size.height);
+    assert.deepEqual(clone(h.widget.viewer.captureOptions.cameraState), selectedCamera);
+    assert.equal(h.widget.state.selected_cg_id, cgId); assert.equal(h.widget.busy, false);
+    assert.deepEqual(clone(h.widget.state.frame), size);
+    assert.equal(h.widget.viewer.settings.width, size.width); assert.equal(h.widget.viewer.settings.height, size.height);
+    assert.deepEqual(JSON.parse(h.data.value).frame, size);
+    const cards = h.control("[data-cgs]").children; assert.equal(cards.length, 2);
+    assert.equal(cards.at(-1).querySelector("img").src, "/finished-cg.png");
+    assert.equal(cards.at(-1).classList.contains("selected"), true); assert.deepEqual(h.queued, []);
+});
+
+test("a finished CG from a historical model retains that model, frame and camera", async () => {
+    const historicalModel = "1".repeat(32), cgId = "0".repeat(32), size = frameDimensions("4:3", 2);
+    const h = harness(JSON.stringify(state({ model_id: historicalModel }))), original = background();
+    original.cgs[0].model_id = historicalModel; h.documents.set(A, original);
+    const sourceScene = scene(A, { model_id: historicalModel, source_image_id: IMAGE });
+    h.api.handle = path => path === `${BASE}/backgrounds/${A}/models/${historicalModel}` ? response(sourceScene) : undefined;
+    await h.ready(); assert.equal(h.widget.scene.model_id, historicalModel);
+    const selectedCamera = { ...camera, fov: 66 }, completed = clone(original);
+    completed.revision = 5;
+    completed.cgs.push({ cg_id: cgId, name: "Historical view", model_id: historicalModel, camera: selectedCamera, ...size, url: "/historical-cg.png" });
+    h.widget.viewer.camera = selectedCamera;
+    h.widget.dialog = async () => ({ name: "Historical view", aspect: "4:3", cg_prompt: "Preserve this composition." });
+    h.api.handle = (path, options) => {
+        if (options.method === "PATCH") return response({ ...original, revision: 4, editor: h.widget.state.editor });
+        if (path === `${BASE}/backgrounds/${A}/jobs`) return response({ job_id: B });
+        if (path === `${BASE}/jobs/${B}`) return response({ status: "completed", result: { document: completed } });
+        if (path === `${BASE}/backgrounds/${A}/models/${historicalModel}`) return response(sourceScene);
+    };
+    await h.control("[data-save-view]").click();
+    assert.equal(h.widget.document.model.model_id, MODEL);
+    assert.equal(h.widget.state.model_id, historicalModel); assert.equal(h.widget.scene.model_id, historicalModel);
+    assert.equal(h.widget.viewer.scene.model_id, historicalModel); assert.equal(h.widget.state.selected_cg_id, cgId);
+    assert.deepEqual(clone(h.widget.state.camera), selectedCamera); assert.deepEqual(clone(h.widget.state.frame), size);
+    assert.equal(h.widget.viewer.settings.width, size.width); assert.equal(h.widget.viewer.settings.height, size.height);
+    assert.equal(JSON.parse(h.data.value).model_id, historicalModel);
+});
+
+test("canceling Save View restores the previous CG frame after live aspect preview", async () => {
+    const priorFrame = { width: 1024, height: 768 }, h = harness(JSON.stringify(state({ frame: priorFrame }))); await h.ready();
+    assert.equal(h.widget.state.editor.aspect, "16:9");
+    h.widget.dialog = async (_title, fields) => {
+        fields.find(field => field.key === "aspect").oninput("9:16");
+        assert.ok(h.widget.viewer.settings.height > h.widget.viewer.settings.width);
+        return null;
+    };
+    await h.control("[data-save-view]").click();
+    assert.equal(h.widget.viewer.settings.width, priorFrame.width); assert.equal(h.widget.viewer.settings.height, priorFrame.height);
+    assert.deepEqual(clone(h.widget.state.frame), priorFrame); assert.deepEqual(h.queued, []);
+    assert.equal(h.calls.some(call => call.path.endsWith("/jobs")), false);
+});
+
+test("a late image upload cannot replace a newly configured background", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready(); const upload = deferred();
+    h.api.handle = path => path === `${BASE}/backgrounds/${A}/upload` ? upload.promise : undefined;
+    const file = h.control("[data-file]"); file.files = [new Blob(["image"], { type: "image/png" })];
+    const action = h.widget.change({ target: file }); await settle();
+    assert.equal(h.calls.some(call => call.path.endsWith("/upload")), true);
+    const selectedCamera = { ...camera, fov: 74 };
+    h.data.value = JSON.stringify(state({ background_id: B, camera: selectedCamera })); h.node.onConfigure(); await h.ready();
+    upload.resolve(response(background(A, { revision: 4 }))); await action;
+    assert.equal(h.widget.document.background_id, B); assert.equal(h.widget.state.background_id, B);
+    assert.deepEqual(h.widget.viewer.camera, selectedCamera); assert.equal(JSON.parse(h.data.value).background_id, B);
+    assert.equal(h.widget.busy, false);
+});
+
+for (const mode of ["new", "initial"]) test(`a late ${mode} background creation cannot replace reconfigured state`, async () => {
+    const initial = mode === "initial" ? state({ background_id: "", model_id: "", selected_cg_id: "", selected_image_id: "", camera: null }) : state();
+    const h = harness(JSON.stringify(initial)); await h.ready(); const creation = deferred();
+    h.widget.dialog = async () => ({ name: "Pending background" });
+    h.api.handle = (path, options) => path === `${BASE}/backgrounds` && options.method === "POST" ? creation.promise : undefined;
+    const action = mode === "new" ? h.control("[data-new]").click() : h.widget.ensureDocument(); await settle();
+    assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds` && call.options.method === "POST"), true);
+    h.data.value = JSON.stringify(state({ background_id: B })); h.node.onConfigure(); await h.ready();
+    creation.resolve(response(background("3".repeat(32)))); await action;
+    assert.equal(h.widget.document.background_id, B); assert.equal(h.widget.state.background_id, B);
+    assert.equal(JSON.parse(h.data.value).background_id, B); assert.equal(h.widget.busy, false);
+});
+
+test("removal preserves unsaved edits and disposes viewer, listeners and pending work", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready(); const viewer = h.widget.viewer;
+    const description = h.control('[data-setting="scene_description"]'); description.value = "Retained on removal"; description.fire("input");
+    h.widget.beginGesture(); h.node.onRemoved();
+    assert.equal(h.node.removed, true); assert.equal(h.widget.disposed, true);
+    assert.equal(h.widget.observer.disconnected, true); assert.equal(viewer.disposed, true);
+    assert.equal(h.events.size, 0); assert.equal(h.widget.events.signal.aborted, true);
+    assert.equal(h.widget.customSelects._removed, true); assert.equal(h.widget.container.removed, true);
+    assert.equal(h.timers.size, 0);
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, "Retained on removal");
+    assert.equal(h.drafts.size, 0);
+});
+
+test("live node resize retains the viewport and tracks both width and height", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready(); const container = h.widget.container, viewer = h.widget.viewer;
+    h.node.size = [1500, 1050]; h.node.onResize();
+    assert.equal(h.node.backgroundCreatorDOM.width, 1500); assert.equal(h.widget.container, container);
+    assert.equal(h.widget.viewer, viewer); assert.ok(Math.abs(parseFloat(h.widget.container.style.height) * 0.67 - 960) < 1e-6); assert.equal(viewer.resized, true);
+});
+
+const commonSource = fs.readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
+const creatorSource = fs.readFileSync(new URL("../web/vnccs_character_creator_v2.js", import.meta.url), "utf8");
+const clonerSource = fs.readFileSync(new URL("../web/vnccs_character_cloner.js", import.meta.url), "utf8");
+const sharedControls = commonSource.match(/export const SAKURA_CREATOR_CONTROL_CSS = `([\s\S]*?)`;/)[1];
+
+test("Background uses the exact Creator declarations for every shared control", () => {
+    const normalize = css => css.replaceAll("vnccs-common-creator-", "vnccs-creator-").replaceAll("vnccs-cloner-", "vnccs-creator-").replace(/\s+/g, "");
+    const rules = css => [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter(([, selector]) => selector.includes(".vnccs-")).map(([, selector, body]) => [normalize(selector), normalize(body)]);
+    const canonical = [creatorSource, clonerSource].flatMap(reference => rules(reference.slice(reference.indexOf("const STYLE = `"), reference.indexOf("`;", reference.indexOf("const STYLE = `")))
+        .replace(".vnccs-creator-toggle input:checked ~ ~ .vnccs-creator-toggle-label,\n", "")));
+    for (const [selector, declaration] of rules(sharedControls)) {
+        const body = declaration.replace("repeat(var(--tabs,3),minmax(0,1fr))", "repeat(3,minmax(0,1fr))")
+            .replace("calc((100%-(var(--tabs,3)-1)*8px)/var(--tabs,3))", "calc((100%-16px)/3)");
+        assert.ok(canonical.some(([key, value]) => key === selector && value === body), `Creator component differs: ${selector}`);
+    }
+    assert.doesNotMatch(source, /\.bg-(?:mode|toggle|lora|seed)(?:[ >.{]|$)/);
+    assert.doesNotMatch(source, /\.bg-generation (?:input|select)|input\[type=number\] \{ font-family/);
+    assert.ok(source.includes("createSakuraInteractions(this.container, node)"));
+    assert.ok(source.includes('input("Style", "style", "text"'));
+    assert.ok(source.includes('class="bg-field bg-description"'));
+    assert.ok(source.includes("showModal(this.container"));
+    assert.ok(source.includes("animateWizardRows("));
+    assert.ok(source.includes("captureView()") && source.includes("restoreView(view)"));
+    assert.doesNotMatch(source, /factory3d\/|unicanvas\/|installCustomSelects|Factory3DViewer/);
+});
+
+test("Background mounts the Creator component structure and real shared dropdowns", async () => {
+    const h = harness(); await h.ready();
+    const generation = h.control(".bg-generation");
+    assert.equal(generation.classList.contains("vnccs-common-creator-col"), true);
+    const grid = generation.querySelector(".vnccs-common-creator-gen-param-grid");
+    assert.equal(grid.children.length, 4);
+    for (const field of grid.children) assert.equal(field.classList.contains("vnccs-common-creator-gen-param-field"), true);
+    for (const setting of ["sampler", "scheduler", "cache_device", "cache_dtype"]) {
+        const select = h.control(`[data-setting="generation.${setting}"]`);
+        assert.equal(select.hidden, true);
+        const trigger = select.parentElement.querySelector(".vnccs-common-ui-select-trigger");
+        assert.equal(trigger.classList.contains("vnccs-common-creator-gen-param-select"), true);
+        assert.equal(trigger.classList.contains("vnccs-common-creator-btn"), false);
+        assert.equal(trigger.value, h.widget.state.editor.generation[setting]);
+    }
+    const steps = h.control('[data-setting="generation.steps"]');
+    assert.equal(steps.classList.contains("vnccs-common-creator-gen-param-input"), true);
+    assert.equal(steps.classList.contains("vnccs-common-creator-input"), false);
+    const range = h.control('[data-setting="generation.resolution_mp"]');
+    assert.equal(range.parentElement.classList.contains("vnccs-common-creator-resolution-field"), true);
+    assert.equal(range.classList.contains("vnccs-common-creator-slider"), false);
+    assert.equal(generation.querySelector("details"), null);
+    const dice = h.control("[data-random]");
+    assert.equal(dice.parentElement.classList.contains("vnccs-common-creator-seed-row"), true);
+    assert.equal(dice.querySelector("svg").getAttribute("fill"), "none");
+    assert.equal(dice.querySelector("rect").getAttribute("stroke"), "currentColor");
+    assert.equal(dice.querySelectorAll("circle").length, 5);
+    for (const key of ["prompt", "aesthetics", "negative"]) assert.equal(h.control(`[data-setting="${key}"]`), null);
+    assert.equal(h.control(".bg-bottom"), null);
+    const seed = h.control('[data-setting="generation.seed"]');
+    await dice.click();
+    assert.equal(Number(seed.value), 19); assert.equal(JSON.parse(h.data.value).editor.generation.seed, 19);
+});
+
+test("Creator cards and LoRA selectors reflect saved, edited and blocked states", async () => {
+    const saved = state({ step: "background", model_id: "", editor: editorDefaults({ generation: {
+        prompt_enhance: false, turbo: true, steps: 6, cfg: 1, lora_stack: [{ name: "environment.safetensors", strength: 0.7 }],
+    } }) });
+    const h = harness(JSON.stringify(saved)); await h.ready();
+    const enhancement = h.control('[data-setting="generation.prompt_enhance"]');
+    const card = enhancement.closest("[data-setting-card]");
+    assert.equal(card.classList.contains("is-selected"), false);
+    assert.equal(card.querySelector("[data-toggle-status]").textContent, "Disabled");
+    assert.equal(enhancement.parentElement.classList.contains("vnccs-common-creator-model-card-toggle"), true);
+    enhancement.checked = true; await enhancement.fire("input");
+    assert.equal(card.classList.contains("is-selected"), true);
+    assert.equal(card.querySelector("[data-toggle-status]").textContent, "Enabled");
+    assert.equal(JSON.parse(h.data.value).editor.generation.prompt_enhance, true);
+    const turbo = h.control('[data-setting="generation.turbo"]');
+    assert.equal(turbo.closest("[data-setting-card]").classList.contains("is-selected"), true);
+    turbo.checked = false; await turbo.fire("input");
+    assert.equal(JSON.parse(h.data.value).editor.generation.steps, 25);
+    assert.equal(turbo.closest("[data-setting-card]").classList.contains("is-selected"), false);
+    const lora = h.control('[data-lora="0"]'), item = lora.closest(".vnccs-common-creator-lora-item");
+    assert.equal(item.classList.contains("is-empty"), false);
+    const trigger = item.querySelector(".vnccs-common-ui-select-trigger");
+    assert.equal(trigger.classList.contains("vnccs-common-creator-select"), true);
+    assert.equal(trigger.classList.contains("vnccs-common-creator-gen-param-select"), false);
+    trigger.value = ""; trigger.onchange();
+    assert.equal(item.classList.contains("is-empty"), true);
+    assert.equal(JSON.parse(h.data.value).editor.generation.lora_stack.length, 5);
+    assert.equal(JSON.parse(h.data.value).editor.generation.lora_stack[0].name, "");
+    h.widget.busy = true; h.widget.updateControls();
+    assert.equal(enhancement.disabled, true); assert.equal(trigger.disabled, true);
+    h.widget.busy = false; h.widget.updateControls();
+    assert.equal(enhancement.disabled, false); assert.equal(trigger.disabled, false);
+    const model = h.control("[data-model-toggle]");
+    assert.equal(model.classList.contains("is-selected"), true);
+    h.widget.config.installed = false; h.widget.config.assets = [{ category: "vae", name: "vae.safetensors", installed: false }];
+    h.widget.fillChoices();
+    assert.equal(h.control("[data-model-toggle]").classList.contains("is-missing"), true);
+    assert.match(h.control("[data-model-picker]").textContent, /vae.safetensors/);
+});
+
+test("shared dropdown changes persist and retain restored names absent from the inventory", async () => {
+    const saved = state({ editor: editorDefaults({ generation: { sampler: "restored_sampler", scheduler: "restored_scheduler", lora_stack: [{ name: "unavailable.safetensors", strength: 0.65 }] } }) });
+    const h = harness(JSON.stringify(saved)); await h.ready();
+    for (const [selector, value] of [['[data-setting="generation.sampler"]', "restored_sampler"], ['[data-setting="generation.scheduler"]', "restored_scheduler"], ['[data-lora="0"]', "unavailable.safetensors"]]) {
+        const select = h.control(selector);
+        assert.equal(select.value, value);
+        assert.equal(select.parentElement.querySelector(".vnccs-common-ui-select-trigger").value, value);
+    }
+    const sampler = h.control('[data-setting="generation.sampler"]');
+    const trigger = sampler.parentElement.querySelector(".vnccs-common-ui-select-trigger");
+    trigger.value = "euler"; trigger.onchange();
+    assert.equal(JSON.parse(h.data.value).editor.generation.sampler, "euler");
+    assert.equal(JSON.parse(h.data.value).editor.generation.scheduler, "restored_scheduler");
+    assert.equal(JSON.parse(h.data.value).editor.generation.lora_stack[0].name, "unavailable.safetensors");
+    assert.equal(JSON.parse(h.data.value).editor.generation.lora_stack[0].strength, 0.65);
+});
+
+test("every action uses its Creator component without inheriting tab or vertical fill styles", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    for (const selector of ["[data-recenter]"]) {
+        const button = h.control(selector);
+        assert.equal(button.classList.contains("vnccs-common-creator-model-card-download"), true, selector);
+        assert.equal(button.classList.contains("vnccs-common-creator-tab"), false, selector);
+        assert.equal(button.classList.contains("vnccs-common-creator-btn"), false, selector);
+    }
+    assert.equal(h.control("[data-upload]").classList.contains("vnccs-common-creator-btn-upload"), true);
+    for (const selector of ['[data-action="background"]', '[data-action="model"]', "[data-save-view]", "[data-wizard]"]) {
+        const button = h.control(selector);
+        assert.equal(button.classList.contains("vnccs-common-creator-btn-primary"), true, selector);
+    }
+    for (const button of h.widget.container.querySelectorAll("button")) assert.equal(button.type, "button");
+    assert.match(source, /\.bg-panel>\*\s*\{[^}]*flex:0 0 auto/);
+    assert.match(source, /\.bg-panel>\.bg-cg-list\s*\{[^}]*flex:1 1 0/);
+    assert.match(source, /\.bg-camera-toolbar button\s*\{[^}]*flex:none;[^}]*height:34px/);
+    const toolbar = h.control(".bg-camera-toolbar");
+    assert.equal(toolbar.parentElement.classList.contains("bg-viewport-panel"), true);
+    assert.equal(toolbar.contains(h.control("[data-viewer]")), false);
+    assert.equal(h.control("[data-viewer]").parentElement.classList.contains("bg-viewport"), true);
+});
+
+test("stage and attribute indicators follow the selected value without requiring a rerender", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const nav = h.control("nav");
+    for (const [stage, index] of [["background", "0"], ["model", "1"], ["background", "0"]]) {
+        await h.control(`[data-step="${stage}"]`).click();
+        assert.equal(nav.style["--selected"], index); assert.equal(nav.style["--segment-index"], index);
+        const active = h.control(`[data-step="${stage}"]`);
+        assert.equal(active.classList.contains("is-active"), true);
+        assert.equal(active.getAttribute("aria-pressed"), "true");
+    }
+    const sceneType = h.control('[data-trait="scene_type"]');
+    await sceneType.children[1].click();
+    assert.equal(sceneType.style["--selected"], "1"); assert.equal(sceneType.style["--segment-index"], "1");
+    assert.equal(sceneType.children[1].getAttribute("aria-pressed"), "true");
+    assert.equal(JSON.parse(h.data.value).editor.attributes.scene_type, "Exterior");
+    assert.equal(h.control('[data-trait="time"]'), null);
+});
+
+test("decorating repeatedly keeps selectors, dice, traits and dialog buttons in their own components", async () => {
+    const h = harness(); await h.ready();
+    const modal = new Element(); modal.className = "vnccs-common-modal";
+    const confirm = new Element("button"); confirm.className = "vnccs-common-modal-btn vnccs-common-modal-btn-primary";
+    modal.appendChild(confirm); h.widget.container.appendChild(modal);
+    h.widget.decorateControls();
+    const before = h.widget.container.querySelectorAll("button").map(button => [button, button.className]);
+    h.widget.decorateControls(); h.widget.customSelects.syncSelects(); h.widget.decorateControls();
+    for (const [button, classes] of before) assert.equal(button.className, classes);
+    assert.equal(confirm.className, "vnccs-common-modal-btn vnccs-common-modal-btn-primary");
+    assert.equal(h.control("[data-random]").className, "vnccs-common-creator-seed-dice-btn");
+    for (const trigger of h.widget.container.querySelectorAll(".vnccs-common-ui-select-trigger")) {
+        assert.equal(trigger.classList.contains("vnccs-common-creator-model-card-download"), false);
+        assert.equal(trigger.classList.contains("vnccs-common-creator-tab"), false);
+    }
+});
+
+test("all persistent scroll regions retain both axes through navigation and state refreshes", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const positions = h.widget.container.querySelectorAll("[data-sakura-scroll]").map((element, index) => {
+        element.scrollTop = 120 + index; element.scrollLeft = 40 + index;
+        return [element, element.scrollTop, element.scrollLeft];
+    });
+    h.widget.setStep("background"); h.widget.render(); h.widget.setStep("model"); h.widget.render();
+    for (const [element, top, left] of positions) { assert.equal(element.scrollTop, top); assert.equal(element.scrollLeft, left); }
+});
+
+test("empty, working and archived states expose valid actions without blank image frames", async () => {
+    const empty = harness(); await empty.ready();
+    assert.equal(empty.control("[data-delete]").disabled, true);
+    assert.equal(empty.control('[data-action="model"]').disabled, true);
+    assert.equal(empty.control("[data-enlarge]").disabled, true);
+    assert.equal(empty.control("[data-new]").disabled, false);
+    assert.equal(empty.control("[data-model-source]").hidden, true);
+    assert.equal(empty.control("[data-model-empty]").hidden, false);
+    assert.equal(empty.control("[data-cgs]").hidden, true);
+    assert.equal(empty.control("[data-cg-empty]").hidden, false);
+    empty.widget.busy = true; empty.widget.jobId = "job"; empty.widget.updateControls();
+    assert.equal(empty.widget.container.getAttribute("aria-busy"), "true");
+    assert.equal(empty.control("[data-new]").disabled, true);
+    assert.equal(empty.control("[data-stop]"), null); assert.equal(empty.control("progress"), null); assert.equal(empty.control("footer"), null);
+    const archived = harness(JSON.stringify(state())); archived.documents.set(A, background(A, { archived: true })); await archived.ready();
+    assert.equal(archived.control('[data-action="model"]').disabled, true);
+    assert.equal(archived.control('[data-setting="scene_description"]').disabled, true);
+    assert.equal(archived.control("[data-new]").disabled, false);
+    assert.equal(archived.control('[data-step="background"]').disabled, false);
+});
+
+test("image errors retain saved assets and do not turn later refreshes into broken image placeholders", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const image = h.control("[data-preview]"), original = image.src, saved = JSON.stringify(h.widget.document);
+    let loads = 0;
+    Object.defineProperty(image, "src", { get: () => original, set: () => { loads++; } });
+    h.widget.render(); assert.equal(loads, 0);
+    await image.fire("error");
+    assert.equal(image.hidden, true); assert.equal(h.control("[data-empty]").hidden, false);
+    assert.match(h.control(".vnccs-common-creator-placeholder-title").textContent, /unavailable/);
+    assert.equal(JSON.stringify(h.widget.document), saved);
+    h.widget.render(); assert.equal(loads, 1);
+    assert.equal(image.hidden, false); assert.equal(h.control("[data-empty]").hidden, true);
+    const cards = h.control("[data-cgs]").children;
+    assert.equal(cards[0].getAttribute("aria-pressed"), "true");
+    assert.equal(cards[0].querySelector("img").loading, "lazy");
+});
+
+test("unfinished or invalid numeric edits never replace saved parameters with zero or NaN", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    for (const selector of ['[data-setting="generation.steps"]', '[data-setting="generation.seed"]', '[data-model-setting="steps"]', '[data-model-setting="guidance_scale"]', "[data-fov-number]"]) {
+        const control = h.control(selector), previous = control.value, bytes = h.data.value;
+        for (const value of ["", "Infinity", "-100"]) {
+            control.value = value; await control.fire("input");
+            assert.equal(h.data.value, bytes, `${selector}: ${value}`);
+            await control.fire("change"); assert.equal(control.value, previous);
+        }
+    }
+});
+
+test("rendering dependencies are local and loaded only when a model is opened", () => {
+    assert.ok(source.includes('import("./vendor/spark/three.module.js")'));
+    assert.ok(source.includes('import("./vendor/spark/spark.module.js")'));
+    assert.doesNotMatch(source, /^import .*vendor/m);
+    assert.ok(source.includes('syncDOMWidgetWidth(node, "background_ui")'));
+    assert.ok(source.includes('vnccs-common-creator-seed-row'));
+    assert.ok(source.includes('vnccs-common-creator-gen-param-grid'));
+});
+
+test("LoRA edits retain all five slots and restored entries beyond them", async () => {
+    const saved = state({ editor: editorDefaults({ generation: { lora_stack: [
+        { name: "first.safetensors", strength: 1 }, { name: "second.safetensors", strength: 0.5 }, { name: "third.safetensors", strength: 0.3 }, { name: "fourth.safetensors", strength: 0.4 }, { name: "fifth.safetensors", strength: 0.5 }, { name: "retained.safetensors", strength: 0.75 },
+    ] } }) });
+    const h = harness(JSON.stringify(saved)); await h.ready();
+    const first = h.control('[data-lora="0"]'); first.value = "environment.safetensors";
+    h.widget.input({ target: first });
+    assert.equal(JSON.parse(h.data.value).editor.generation.lora_stack[0].name, "environment.safetensors");
+    assert.equal(h.widget.state.editor.generation.lora_stack[5].name, "retained.safetensors");
+    assert.equal(JSON.parse(h.data.value).editor.generation.lora_stack[5].strength, 0.75);
+});
+
+test("pending background JSON writes guard page exit without separate browser copies", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.context.storage.setItem = () => { throw new Error("Separate recovery writes are forbidden"); };
+    const description = h.control('[data-setting="scene_description"]'); description.value = "Keep this draft";
+    h.widget.input({ target: description });
+    assert.equal(h.widget.unsaved, true); assert.equal(h.drafts.size, 0);
+    let blocked = false;
+    await h.window.fire("beforeunload", { preventDefault: () => { blocked = true; } });
+    assert.equal(blocked, true);
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, "Keep this draft");
+});
+
+const THREE = await import("../web/vendor/spark/three.module.js");
+const viewerSource = source.slice(source.indexOf("export class BackgroundViewer"), source.indexOf("// Workspace widget."));
+const ViewClass = vm.runInThisContext("(" + viewerSource.replace("export ", "") + ")");
+function cameraViewer(fov = 60) {
+    const viewer = Object.create(ViewClass.prototype);
+    viewer.THREE = THREE; viewer.camera = new THREE.PerspectiveCamera(fov, 16 / 9, 0.0001, 100000);
+    viewer.camera.position.set(0, 0, 2); viewer.target = new THREE.Vector3();
+    viewer.canvas = { getBoundingClientRect: () => ({ height: 400 }) };
+    viewer.options = { onStateChange: () => { viewer.updates = (viewer.updates || 0) + 1; } };
+    viewer.invalidate = () => {};
+    return viewer;
+}
+
+test("camera gestures update continuously and preserve position during look", () => {
+    const viewer = cameraViewer(), before = viewer.getCameraState();
+    viewer.moveCamera(20, 0, false);
+    assert.deepEqual(viewer.getCameraState().position, before.position);
+    assert.notDeepEqual(viewer.getCameraState().target, before.target);
+    assert.equal(viewer.updates, 1);
+    const target = viewer.target.clone();
+    viewer.moveCamera(0, 20, true);
+    assert.equal(viewer.updates, 2);
+    const positionDelta = viewer.camera.position.clone().sub(new THREE.Vector3().fromArray(before.position));
+    assert.ok(viewer.target.clone().sub(target).distanceTo(positionDelta) < 1e-8);
+});
+
+test("camera drag gain follows visible FOV and display size", () => {
+    const narrow = cameraViewer(30), wide = cameraViewer(60);
+    narrow.moveCamera(10, 0, false); wide.moveCamera(10, 0, false);
+    const angle = viewer => Math.atan2(viewer.target.x, 2 - viewer.target.z);
+    assert.ok(Math.abs(angle(wide) / angle(narrow) - Math.tan(Math.PI / 6) / Math.tan(Math.PI / 12)) < 1e-6);
+});
+
+function renderHarness(width = 2400, height = 1600) {
+    const frames = new Map(), timers = new Map(), errors = [], draws = [], buffers = [], copies = [];
+    let nextId = 0, now = 1000;
+    const host = new Element(); host.clientWidth = width; host.clientHeight = height; host.isConnected = true;
+    const document = new Element("document");
+    document.createElement = tag => {
+        const element = new Element(tag);
+        element.focus = () => { document.activeElement = element; };
+        element.setPointerCapture = () => {};
+        element.getBoundingClientRect = () => ({ width: host.clientWidth * 0.67, height: host.clientHeight * 0.67 });
+        element.getContext = () => ({ drawImage: (...args) => copies.push(args) });
+        element.toBlob = callback => callback(new Blob(["png"]));
+        return element;
+    };
+    class Renderer {
+        constructor({ canvas }) { this.canvas = canvas; }
+        setDrawingBufferSize(width, height, ratio) {
+            this.canvas.width = Math.floor(width * ratio); this.canvas.height = Math.floor(height * ratio);
+            buffers.push({ width, height, ratio });
+        }
+        render(scene, camera) { draws.push({ width: this.canvas.width, height: this.canvas.height, camera: camera.position.toArray(), fov: camera.fov }); }
+        dispose() { this.disposed = true; }
+    }
+    class Spark extends THREE.Object3D {
+        constructor() { super(); this.sorting = false; this.sortDirty = false; this.updates = 0; }
+        async update() { this.updates++; await this.onUpdate?.(); }
+        setDirty() {}
+        dispose() { this.disposed = true; }
+    }
+    const context = { document, window: { devicePixelRatio: 2 }, AbortController, performance: { now: () => now },
+        requestAnimationFrame: callback => { frames.set(++nextId, callback); return nextId; }, cancelAnimationFrame: id => frames.delete(id),
+        setTimeout: (callback, delay) => { timers.set(++nextId, { callback, delay }); return nextId; }, clearTimeout: id => timers.delete(id),
+    };
+    const Viewer = vm.runInNewContext("(" + viewerSource.replace("export ", "") + ")", context);
+    const viewer = new Viewer(host, { onError: error => errors.push(error), onStateChange() {} }, { ...THREE, WebGLRenderer: Renderer }, { SparkRenderer: Spark });
+    return { viewer, host, document, frames, timers, errors, draws, buffers, copies,
+        frame: (advance = 40) => { now += advance; const pending = [...frames.values()]; frames.clear(); for (const callback of pending) callback(now); },
+        timer: delay => { now += delay; const pending = [...timers].filter(([, timer]) => timer.delay === delay); for (const [id, timer] of pending) { timers.delete(id); timer.callback(); } },
+    };
+}
+
+test("viewport frames never await Spark sorting and stop when the scene is unchanged", () => {
+    const h = renderHarness();
+    h.viewer.spark.sorting = true;
+    for (let i = 0; i < 100; i++) h.viewer.invalidate();
+    assert.equal(h.frames.size, 1);
+    h.frame();
+    assert.equal(h.draws.length, 1);
+    assert.equal(h.viewer.spark.updates, 0);
+    assert.equal(h.frames.size, 0);
+    h.viewer.moveCamera(10, 0, false); h.frame();
+    assert.equal(h.draws.length, 2);
+    assert.equal(h.viewer.spark.updates, 0);
+    h.viewer.spark.sorting = false; h.viewer.spark.onDirty(); h.frame();
+    assert.equal(h.draws.length, 3); assert.equal(h.frames.size, 0);
+    assert.deepEqual(h.errors, []);
+});
+
+test("resize reuses the WebGL buffer and matches the original idle and interaction pixel budgets", async () => {
+    const h = renderHarness(); h.frame();
+    const idle = h.buffers.at(-1);
+    assert.ok(h.viewer.canvas.width * h.viewer.canvas.height <= 2200000);
+    assert.equal(idle.width, 2400); assert.equal(idle.height, 1350);
+    for (let i = 0; i < 100; i++) h.viewer.resize();
+    assert.equal(h.buffers.length, 1); assert.equal(h.frames.size, 0);
+    await h.viewer.canvas.fire("pointerdown", { button: 0, pointerId: 1, clientX: 10, clientY: 10 });
+    const interactive = h.buffers.at(-1);
+    assert.ok(h.viewer.canvas.width * h.viewer.canvas.height <= 1250000);
+    assert.ok(interactive.ratio < idle.ratio);
+    await h.viewer.canvas.fire("pointermove", { pointerId: 1, clientX: 40, clientY: 20 }); h.frame();
+    const renders = h.draws.length;
+    await h.viewer.canvas.fire("pointermove", { pointerId: 1, clientX: 60, clientY: 20 }); h.frame(10);
+    assert.equal(h.draws.length, renders); assert.equal(h.frames.size, 1);
+    h.frame(30); assert.equal(h.draws.length, renders + 1);
+    await h.viewer.canvas.fire("pointerup");
+    assert.equal(h.buffers.at(-1).ratio, interactive.ratio);
+    h.timer(180); h.frame();
+    assert.equal(h.buffers.at(-1).ratio, idle.ratio);
+    h.viewer.meshes = [{ numSplats: 300000, dispose() {} }];
+    await h.viewer.canvas.fire("wheel", { deltaY: 100 });
+    assert.ok(h.viewer.canvas.width * h.viewer.canvas.height <= 900000);
+    h.timer(180); h.frame();
+    assert.equal(h.buffers.at(-1).ratio, idle.ratio);
+});
+
+test("hidden viewports pause, reopen without reallocating, and dispose pending work", async () => {
+    const h = renderHarness(); h.frame();
+    const count = h.draws.length;
+    h.host.hidden = true; h.viewer.spark.onDirty(); h.frame();
+    assert.equal(h.draws.length, count); assert.equal(h.frames.size, 0);
+    h.host.hidden = false; h.viewer.invalidate(); h.frame();
+    assert.equal(h.draws.length, count + 1); assert.equal(h.buffers.length, 1);
+    h.document.hidden = true; h.viewer.spark.onDirty(); h.frame();
+    assert.equal(h.draws.length, count + 1);
+    h.document.hidden = false; await h.document.fire("visibilitychange"); h.frame();
+    assert.equal(h.draws.length, count + 2);
+    await h.viewer.canvas.fire("wheel", { deltaY: 100 });
+    h.viewer.dispose();
+    assert.equal(h.frames.size, 0); assert.equal(h.timers.size, 0);
+    assert.equal(h.viewer.renderer.disposed, true); assert.equal(h.viewer.spark.disposed, true);
+    assert.equal(h.viewer.spark.onDirty, null);
+    await h.document.fire("visibilitychange"); h.viewer.invalidate();
+    assert.equal(h.frames.size, 0);
+});
+
+test("full-size CG capture waits for worker sorting and restores the preview buffer and camera", async () => {
+    const h = renderHarness(); h.frame();
+    const previous = h.viewer.getCameraState(), idle = h.buffers.at(-1);
+    const cameraState = { ...previous, position: [2, 3, 4], target: [0, 0, 0], fov: 45 };
+    h.viewer.spark.sorting = true;
+    const capture = h.viewer.capturePreview({ width: 2048, height: 1024, cameraState });
+    await settle();
+    assert.equal(h.viewer.spark.updates, 0); assert.equal(h.copies.length, 0);
+    h.viewer.spark.sorting = false; h.timer(16); await settle();
+    const blob = await capture;
+    assert.ok(blob instanceof Blob);
+    assert.equal(h.viewer.spark.updates, 1);
+    assert.deepEqual(h.draws.at(-1), { width: 2048, height: 1024, camera: [2, 3, 4], fov: 45 });
+    assert.equal(h.copies[0][3], 2048); assert.equal(h.copies[0][4], 1024);
+    assert.deepEqual(h.viewer.getCameraState(), previous);
+    assert.deepEqual(h.buffers.at(-1), idle); assert.equal(h.viewer.capturing, false);
+    h.frame(); assert.equal(h.draws.at(-1).width, Math.floor(idle.width * idle.ratio));
+});
+
+test("capture restores the camera and preview after a sorting failure", async () => {
+    const h = renderHarness(); h.frame();
+    const previous = h.viewer.getCameraState(), idle = h.buffers.at(-1);
+    h.viewer.spark.onUpdate = () => { throw new Error("Sort worker failed"); };
+    await assert.rejects(h.viewer.capturePreview({ width: 2048, height: 1024, cameraState: { ...previous, fov: 35 } }), /Sort worker failed/);
+    assert.equal(h.viewer.capturing, false);
+    assert.deepEqual(h.viewer.getCameraState(), previous); assert.deepEqual(h.buffers.at(-1), idle);
+    assert.equal(h.copies.length, 0);
+});
+
+test("a stalled or removed sort cannot leave a CG capture pending indefinitely", async () => {
+    const stalled = renderHarness(); stalled.viewer.spark.sorting = true;
+    const capture = stalled.viewer.capturePreview({ width: 1024, height: 1024 });
+    await settle(); stalled.frame(15001); stalled.timer(16);
+    await assert.rejects(capture, /sorting timed out/);
+    assert.equal(stalled.viewer.capturing, false); assert.equal(stalled.copies.length, 0);
+    const removed = renderHarness(); removed.viewer.spark.sorting = true;
+    const pending = removed.viewer.capturePreview({ width: 1024, height: 1024 });
+    await settle(); removed.viewer.dispose(); removed.timer(16);
+    await assert.rejects(pending, /viewer was removed/);
+    assert.equal(removed.frames.size, 0); assert.equal(removed.copies.length, 0);
+});
+
+test("Background stage has a growing preview and no duplicate stage or description controls", async () => {
+    const h = harness(); await h.ready();
+    for (const selector of ["[data-back]", "[data-open-model]", "[data-connected]", '[data-setting="description"]', "[data-thumbnails]"]) assert.equal(h.control(selector), null);
+    assert.equal(h.control(".bg-generation").querySelector(".vnccs-common-creator-tab-row"), h.control("[data-model-types]"));
+    assert.equal(h.control("[data-model-types]").children.length, 2);
+    assert.equal(h.widget.container.querySelectorAll("[data-lora]").length, 5);
+    assert.equal(h.widget.container.querySelectorAll('[data-action="model"]').length, 1);
+    assert.equal(h.control('[data-action="model"]').closest('[data-panel="model"]') !== null, true);
+    assert.equal(h.control('[data-setting="cg_prompt"]').closest(".bg-cg-panel") !== null, true);
+    assert.match(source, /\.bg-panel>\.bg-preview\s*\{[^}]*flex:none;[^}]*width:100%;[^}]*height:auto;[^}]*aspect-ratio:16\/9;[^}]*min-height:0/);
+});
+
+test("legacy stored images do not create preview history or navigation in the enlarged view", async () => {
+    const { document, secondImage, secondModel } = variantBackground(), h = harness(JSON.stringify(state()));
+    h.documents.set(A, document); await h.ready();
+    await h.control('[data-step="background"]').click();
+    assert.equal(h.control('[data-variant]'), null);
+    assert.equal(h.control('[data-variant-count]'), null);
+    await h.control("[data-enlarge]").click();
+    const preview = h.control("[data-large-preview]");
+    assert.equal(preview.src, document.images[0].url);
+    assert.equal(h.control(".bg-image-dialog").classList.contains("vnccs-common-modal"), true);
+    assert.equal(h.control('.bg-image-dialog').querySelector('[data-variant]'), null);
+    document.selected_image_id = secondImage;
+    await h.widget.acceptDocument(document, true);
+    assert.equal(preview.src, "/second-background.png");
+    assert.equal(h.widget.state.selected_image_id, secondImage); assert.equal(h.widget.state.model_id, secondModel);
+    assert.equal(JSON.parse(h.data.value).selected_cg_id, document.cgs.at(-1).cg_id);
+    assert.equal(h.control('[data-variant-count]'), null);
+    await h.control("[data-close-preview]").click();
+    assert.equal(h.control("[data-large-preview]"), null); assert.equal(h.widget.dialogs.size, 0);
+});
+
+test('replacing a preview with the same image ID refreshes both images without a history counter', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const editor = clone(h.widget.state.editor);
+    await h.control('[data-enlarge]').click();
+    const document = clone(h.widget.document), image = document.images.find(image => image.image_id === IMAGE);
+    image.url += '?v=5'; document.revision++;
+    await h.widget.acceptDocument(document, true);
+    assert.equal(h.control('[data-preview]').src, image.url);
+    assert.equal(h.control('[data-large-preview]').src, image.url);
+    assert.equal(h.control('[data-variants]'), null);
+    assert.equal(h.widget.state.selected_image_id, IMAGE);
+    assert.deepEqual(clone(h.widget.state.editor), editor);
+    assert.equal(document.images.length, 1);
+    await h.control('[data-close-preview]').click(); h.node.onRemoved();
+});
+
+test("legacy prompt data stays recoverable while scene edits use the middle panel", async () => {
+    const legacy = editorDefaults({ prompt: "A quiet room\nKeep the red desk", aesthetics: "Old lighting", negative: "Old exclusions", attributes: { location: "Tokyo" } });
+    const h = harness(JSON.stringify(state({ editor: legacy }))); await h.ready();
+    const field = h.control('[data-setting="scene_description"]');
+    assert.match(field.value, /Keep the red desk/);
+    field.value += "\nMy exact camera and brushwork instructions."; await field.fire("input");
+    await h.control('[data-trait="scene_type"]').children[1].click();
+    const prompt = composePrompt(h.widget.state.editor);
+    assert.match(prompt, /Time: Day/); assert.match(prompt, /Interior\/Exterior: Exterior/);
+    assert.match(prompt, /My exact camera and brushwork instructions\./);
+    for (const key of ['prompt','aesthetics','negative']) {
+        assert.equal(h.control(`[data-setting="${key}"]`), null);
+        assert.equal(JSON.parse(h.data.value).editor[key], legacy[key]);
+    }
+    const reopened = harness(h.data.value); await reopened.ready();
+    assert.equal(reopened.control('[data-setting="scene_description"]').value, field.value);
+    assert.equal(composePrompt(reopened.widget.state.editor), prompt);
+});
+
+test("model cards select installed catalog and local models and retain a missing saved choice", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.widget.config.diffusion_models = ["QI2/qwen_image_2.1_int8_convrot.safetensors", "custom/room.safetensors", "qwen_image_2.1_turbo_int8_convrot.safetensors"];
+    h.widget.ccState.config = { models: [
+        { name: "Qwen Image 2.1", kind: "QI2", type: "unet", local_path: "models/diffusion_models/qwen_image_2.1_int8_convrot.safetensors", status: "missing" },
+        { name: "Qwen Image 2.1 Turbo", kind: "QI2", type: "unet", local_path: "models/diffusion_models/qwen_image_2.1_turbo_int8_convrot.safetensors", status: "installed" },
+    ] };
+    h.widget.render();
+    assert.match(h.control("[data-model-toggle]").textContent, /Qwen Image 2.1/);
+    assert.equal(h.control("[data-model-toggle]").classList.contains("is-installed"), true);
+    await h.control("[data-model-toggle]").click(); assert.equal(h.control("[data-model-toggle]").getAttribute("aria-expanded"), "true");
+    const choice = h.control('[data-model-choice="custom/room.safetensors"]'); await choice.fire("keydown", { key: "Enter" });
+    assert.equal(JSON.parse(h.data.value).editor.generation.diffusion_model_name, "custom/room.safetensors");
+    assert.equal(h.control("[data-model-toggle]").getAttribute("aria-expanded"), "false");
+    await h.control('[data-model-choice="qwen_image_2.1_turbo_int8_convrot.safetensors"]').click();
+    assert.equal(h.widget.state.editor.generation.steps, 8); assert.equal(h.widget.state.editor.generation.turbo, false);
+    assert.equal(h.control('[data-setting="generation.turbo"]').disabled, true);
+    h.widget.busy = true; h.widget.updateControls();
+    assert.equal(h.control("[data-model-toggle]").getAttribute("aria-disabled"), "true");
+    h.widget.busy = false; h.widget.state.editor.generation.diffusion_model_name = "retained/absent.safetensors"; h.widget.render();
+    assert.match(h.control("[data-model-toggle]").textContent, /retained\/absent/);
+    assert.equal(h.control('[data-model-choice="retained/absent.safetensors"]').disabled, true);
+    assert.equal(h.widget.state.editor.generation.diffusion_model_name, "retained/absent.safetensors");
+});
+
+test("model bundle download uses the shared Control Center route and preserves selection on errors", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const entry = { name: "Missing QI2", kind: "QI2", type: "unet", local_path: "models/diffusion_models/missing.safetensors", status: "missing" };
+    h.widget.ccState.config = { models: [entry], clip: [{ name: "QI2 encoder", kind: "QI2", status: "missing" }], vae: [{ name: "QI2 VAE", kind: "QI2", status: "installed" }] }; h.widget.render();
+    const downloads = [];
+    h.api.handle = (path, options) => { if (path === "/vnccs/control_center/download") { assert.equal(options.headers["X-VNCCS-CSRF"], "1"); downloads.push(JSON.parse(options.body)); return response({ status: "queued" }); } };
+    await h.control('[data-download-model="Missing QI2"]').click();
+    assert.deepEqual(downloads.map(item => [item.category, item.name]), [["models", "Missing QI2"], ["clip", "QI2 encoder"]]);
+    assert.equal(h.widget.cc.polling, true);
+    assert.equal(h.control('[data-download-model="Missing QI2"]').disabled, true);
+    h.widget.ccState.downloadStatus = {}; h.widget.render();
+    const selected = h.widget.state.editor.generation.diffusion_model_name;
+    h.api.handle = path => path === "/vnccs/control_center/download" ? response({ error: "Disk is full" }, 500) : undefined;
+    await h.control('[data-download-model="Missing QI2"]').click();
+    assert.match(h.widget.status.textContent, /Disk is full/);
+    assert.equal(h.widget.state.editor.generation.diffusion_model_name, selected);
+    assert.equal(h.widget.ccState.downloadStatus["cc_models_Missing QI2"].status, "error");
+    h.widget.dispose(); assert.equal(h.widget.cc.polling, false);
+});
+
+test("old workflows lose only the removed IMAGE socket and retain authored scene state", async () => {
+    const saved = state({ editor: editorDefaults({ prompt: "Keep this exact prompt" }) });
+    const h = harness(JSON.stringify(saved)); await h.ready();
+    h.node.inputs = [{ name: "image", type: "IMAGE", link: 12 }, { name: "mask", type: "MASK", link: 13 }];
+    const removed = [];
+    h.node.removeInput = index => { removed.push(h.node.inputs[index]); h.node.inputs.splice(index, 1); };
+    h.data.value = JSON.stringify(saved); h.node.onConfigure(); await h.ready();
+    assert.deepEqual(removed, [{ name: "image", type: "IMAGE", link: 12 }]);
+    assert.deepEqual(h.node.inputs, [{ name: "mask", type: "MASK", link: 13 }]);
+    assert.equal(h.widget.state.editor.prompt, "Keep this exact prompt");
+    assert.equal(h.widget.state.selected_image_id, IMAGE);
+    assert.equal(h.control("[data-connected]"), null);
+    assert.equal(h.queued.length, 0);
+    assert.doesNotMatch(source, /prepareConnected|connectedImagePrompt|importToken|queuePrompt/);
+});
+
+test("the middle scene fields retain their order and compose the structured prompt without a bottom panel", async () => {
+    const description = "A large, circular stone table sits in a spacious futuristic room with reflective water and purple flowers.";
+    const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: "Anime, digital art, cel shaded", scene_description: description, attributes: { time: "Night", scene_type: "Interior" } }) })));
+    await h.ready();
+    assert.equal(composePrompt(h.widget.state.editor), `Style: Anime, digital art, cel shaded\nTime: Day\nInterior/Exterior: Interior\nScene description: ${description}`);
+    assert.deepEqual(h.control('.bg-attributes').querySelectorAll('.bg-field').map(field => field.children[0].textContent), ["Style", "Interior/Exterior", "Scene description"]);
+    assert.equal(h.control('.bg-attributes').querySelector('[data-setting="aspect"]'), null);
+    assert.equal(h.control('.bg-generation').contains(h.control('[data-setting="aspect"]')), true);
+    const style = h.control('[data-setting="style"]'); style.value = 'Watercolor, paper texture'; await style.fire('input');
+    const field = h.control('[data-setting="scene_description"]'); field.value = 'A new scene\nwith its exact details.'; await field.fire('input');
+    const expected = 'Style: Watercolor, paper texture\nTime: Day\nInterior/Exterior: Interior\nScene description: A new scene with its exact details.';
+    assert.equal(composePrompt(h.widget.state.editor), expected);
+    const reopened = harness(h.data.value); await reopened.ready();
+    assert.equal(composePrompt(reopened.widget.state.editor), expected);
+    assert.equal(h.control('.bg-bottom'), null);
+});
+
+test("scene description migration retains legacy data and never resurrects cleared details", () => {
+    const old = { description: "Original authored room", attributes: { architecture: "stone arches", lighting: "blue ceiling panels", location: "Tokyo" } };
+    const editor = editorDefaults(old), bytes = JSON.stringify(editor);
+    assert.match(editor.scene_description, /Original authored room/); assert.match(editor.scene_description, /stone arches/);
+    assert.deepEqual(editorDefaults(JSON.parse(bytes)), editor);
+    assert.equal(editor.description, old.description); assert.equal(editor.attributes.lighting, old.attributes.lighting);
+    editor.scene_description = "";
+    assert.equal(composePrompt(editor).split('\n').at(-1), 'Scene description: ');
+    assert.equal(editorDefaults(editor).scene_description, '');
+});
+
+test("variant cards open inline Creator trait fields and retain edits in the background JSON", async () => {
+    const h = harness(JSON.stringify(state({ step: "background" }))); await h.ready();
+    h.api.handle = (path, options) => {
+        if (options.method !== 'PATCH') return;
+        const current = h.documents.get(A), data = JSON.parse(options.body);
+        assert.equal(data.revision, current.revision);
+        const saved = { ...current, ...data, revision: current.revision + 1 };
+        h.documents.set(A, saved); return response(saved);
+    };
+    const cards = h.control('[data-variation-cards]');
+    assert.deepEqual(cards.children.map(item => item.children[0].textContent), ["Morning", "Evening", "Night"]);
+    assert.ok(cards.querySelectorAll('[data-edit-variation]').every(button => button.textContent === ""));
+    assert.equal(h.control('[data-variation-editor]').hidden, true);
+    assert.equal(h.control('.bg-meta'), null);
+    assert.equal(h.control('[data-dimensions]'), null);
+    await h.control('[data-edit-variation="morning"]').click();
+    assert.equal(h.control('.vnccs-common-modal'), null);
+    assert.equal(h.control('[data-variation-editor]').hidden, false);
+    assert.equal(h.control('.bg-source').contains(h.control('[data-variation-editor]')), true);
+    assert.equal(h.control('[data-edit-variation="morning"]').getAttribute('aria-expanded'), 'true');
+    assert.equal(h.control('[data-variation-editor]').querySelectorAll('select').length, 0);
+    assert.equal(h.control('[data-variation-editor]').querySelectorAll('.vnccs-common-creator-trait-row').length, 3);
+    assert.equal(h.control('[data-variation-field="time"]').value, 'Morning');
+    await h.control('[aria-label="Choose weather presets"]').click();
+    const modal = h.control('.vnccs-common-modal');
+    await modal.querySelectorAll('.vnccs-common-creator-tag-chip').find(chip => chip.textContent === 'Light rain').click();
+    await modal.querySelectorAll('button').find(button => button.textContent === 'Apply').click();
+    const detail = h.control('[data-variation-field="additional_details"]'); detail.value = 'Keep the blue curtains.'; await detail.fire('input');
+    const saved = JSON.parse(h.data.value).editor.variants;
+    assert.equal(saved[0].weather, 'Light rain'); assert.equal(saved[0].additional_details, 'Keep the blue curtains.');
+    assert.ok(saved.slice(1).every(card => card.weather === ''));
+    await h.widget.persist(); assert.deepEqual(h.documents.get(A).editor.variants, saved);
+    const reopened = harness(h.data.value); await reopened.ready();
+    assert.deepEqual(JSON.parse(reopened.data.value).editor.variants, saved);
+});
+
+test("adding, renaming and switching inline variants preserves other cards and authored settings", async () => {
+    const h = harness(JSON.stringify(state({ step: "background" }))); await h.ready();
+    const before = clone(h.widget.state.editor);
+    await h.control('[data-add-variation]').click();
+    assert.equal(h.control('.vnccs-common-modal'), null);
+    const name = h.control('[data-variation-name]'); name.value = 'Rainy dawn'; await name.fire('input');
+    for (const [key,value] of Object.entries({ time:'Dawn',weather:'Drizzle',additional_details:'Mist over the river.' })) {
+        const input = h.control(`[data-variation-field="${key}"]`); input.value=value; await input.fire('input');
+    }
+    const editor = JSON.parse(h.data.value).editor;
+    assert.equal(editor.variants.length, 4); assert.deepEqual(editor.variants.slice(0, 3), before.variants);
+    assert.equal(editor.variants[3].name, 'Rainy dawn'); assert.equal(editor.scene_description, before.scene_description);
+    await h.control('[data-edit-variation="evening"]').click();
+    assert.equal(h.control('[data-variation-field="time"]').value, 'Evening');
+    await h.control('[aria-label="Choose time presets"]').click();
+    const modal = h.control('.vnccs-common-modal');
+    await modal.querySelectorAll('.vnccs-common-creator-tag-chip').find(chip => chip.textContent === 'Midnight').click();
+    await modal.querySelectorAll('button').find(button => button.textContent === 'Cancel').click();
+    assert.deepEqual(JSON.parse(h.data.value).editor, editor);
+    await h.control('[data-close-variation]').click();
+    assert.equal(h.control('[data-variation-editor]').hidden, true);
+    assert.deepEqual(JSON.parse(h.data.value).editor, editor);
+    await h.control('[data-add-variation]').click();
+    const ids = h.widget.state.editor.variants.map(card=>card.id);
+    assert.equal(new Set(ids).size,ids.length,'Repeated Add clicks must not duplicate card IDs');
+    h.node.onRemoved(); assert.equal(h.widget.dialogs.size, 0);
+});
+
+test('variant arrows scroll the single strip and update their edge states', async () => {
+    const h = harness(JSON.stringify(state({ step:'background' })));await h.ready();
+    const list=h.control('[data-variation-cards]');list.clientWidth=500;list.scrollWidth=1200;
+    list.scrollBy=({left})=>{list.scrollLeft=Math.min(700,Math.max(0,list.scrollLeft+left));h.widget.updateVariantScroll();};
+    h.widget.updateVariantScroll();
+    assert.equal(h.control('[data-scroll-variation="-1"]').disabled,true);
+    assert.equal(h.control('[data-scroll-variation="1"]').disabled,false);
+    await h.control('[data-scroll-variation="1"]').click();assert.equal(list.scrollLeft,400);
+    await h.control('[data-scroll-variation="1"]').click();assert.equal(list.scrollLeft,700);
+    assert.equal(h.control('[data-scroll-variation="1"]').disabled,true);
+    await h.control('[data-scroll-variation="-1"]').click();assert.equal(list.scrollLeft,300);
+});
+
+test('an old preset picker cannot modify another background after restoration', async () => {
+    const h=harness(JSON.stringify(state({step:'background'})));await h.ready();
+    await h.control('[data-edit-variation="morning"]').click();
+    await h.control('[aria-label="Choose weather presets"]').click();
+    const modal=h.control('.vnccs-common-modal');
+    await modal.querySelectorAll('.vnccs-common-creator-tag-chip').find(chip=>chip.textContent==='Snow').click();
+    await h.widget.acceptDocument(h.documents.get(B),true);
+    const before=h.data.value;
+    await modal.querySelectorAll('button').find(button=>button.textContent==='Apply').click();
+    assert.equal(h.data.value,before);
+    assert.ok(h.widget.state.editor.variants.every(card=>card.weather===''));
+    assert.equal(h.widget.dialogs.size,0);h.node.onRemoved();
+});
+
+test('default and custom variant deletion persists through reload, including the final card', async () => {
+    const saved = state({ step: 'background' });
+    saved.editor.variants.push({ id: 'rain', name: 'Rainy dawn', time: 'Dawn', weather: 'Rain', additional_details: 'Keep the curtains.', custom: true });
+    const h = harness(JSON.stringify(saved)); await h.ready();
+    const original = clone(h.documents.get(A));
+    h.api.handle = (path, options) => {
+        if (options.method !== 'PATCH') return;
+        const current = h.documents.get(A), data = JSON.parse(options.body);
+        assert.equal(data.revision, current.revision);
+        const saved = { ...current, ...data, revision: current.revision + 1 };
+        h.documents.set(A, saved); return response(saved);
+    };
+    for (const id of ['morning', 'rain', 'evening', 'night']) {
+        const remaining = clone(h.widget.state.editor.variants.filter(card => card.id !== id));
+        const remove = h.control(`[data-delete-variation="${id}"]`);
+        assert.match(remove.getAttribute('aria-label'), /^Delete .+ variant$/);
+        await remove.click();
+        assert.equal(h.control('.vnccs-common-modal'), null, 'Deleting must not open the edit dialog');
+        assert.deepEqual(JSON.parse(h.data.value).editor.variants, remaining, 'Workflow mirror updates immediately');
+        await h.widget.persist();
+        assert.deepEqual(h.documents.get(A).editor.variants, remaining);
+        const reopened = harness(h.data.value); reopened.documents.set(A, clone(h.documents.get(A))); await reopened.ready();
+        assert.deepEqual(JSON.parse(reopened.data.value).editor.variants, remaining, 'Deleted defaults must not return');
+        assert.equal(reopened.control('[data-variation-cards]').children.length, remaining.length);
+        reopened.node.onRemoved();
+    }
+    assert.deepEqual(h.documents.get(A).images, original.images);
+    assert.deepEqual(h.documents.get(A).cgs, original.cgs);
+    assert.equal(h.control('[data-add-variation]').disabled, false);
+    h.widget.dialog = async () => ({ name: 'New rain', time: 'Day', weather: 'Rain', additional_details: '' });
+    await h.control('[data-add-variation]').click();
+    assert.equal(h.widget.state.editor.variants.length, 1);
+    await h.widget.persist(); h.node.onRemoved();
+});
+
+test('variant deletion stays locked during generation and retains its draft when saving fails', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const before = clone(h.widget.state.editor.variants);
+    h.widget.busy = true; h.widget.updateControls();
+    await h.control('[data-delete-variation="morning"]').click();
+    assert.deepEqual(clone(h.widget.state.editor.variants), before);
+    h.widget.busy = false; h.widget.updateControls();
+    await h.control('[data-delete-variation="morning"]').click();
+    h.api.handle = (path, options) => options.method === 'PATCH' ? response({ error: 'Disk full' }, 500) : undefined;
+    await assert.rejects(h.widget.persist(), /Disk full/);
+    assert.deepEqual(JSON.parse(h.data.value).editor.variants, before.slice(1));
+    assert.equal(h.widget.unsaved, true);
+    assert.deepEqual(h.documents.get(A).editor.variants, before);
+    h.node.onRemoved();
+});
+
+test('older workflows gain Prompt LIST socket without changing the image slot or its links', async () => {
+    const h = harness();
+    const image = { name: 'image', type: 'IMAGE', links: [23] };
+    h.node.outputs = [image];
+    h.node.addOutput = (name, type, options) => h.node.outputs.push({name,type,...options});
+    h.node.onConfigure(); await h.ready();
+    assert.equal(h.node.outputs[0], image);
+    assert.deepEqual(image.links, [23]);
+    assert.equal(h.node.outputs[1].name, 'Prompt'); assert.equal(h.node.outputs[1].type, 'STRING');
+    h.node.onConfigure(); await h.ready();
+    assert.equal(h.node.outputs.length, 2);
+});
+
+test('generation uses the existing Creator scan styles instead of footer progress controls', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    for (const selector of ['footer', 'progress', '[data-stop]']) assert.equal(h.control(selector), null);
+    const creator = fs.readFileSync(new URL('../web/vnccs_character_creator_v2.js', import.meta.url), 'utf8');
+    const common = fs.readFileSync(new URL('../web/vnccs_common.js', import.meta.url), 'utf8');
+    const rules = creator.slice(creator.indexOf('.vnccs-creator-generation-layer {'), creator.indexOf('.vnccs-creator-preview-loading {'));
+    assert.ok(common.includes(rules.replaceAll('vnccs-creator-', 'vnccs-common-creator-')));
+    for (const rule of creator.split('\n').filter(line => line.startsWith('@keyframes vnccs-creator-generation-'))) assert.ok(common.includes(rule.replaceAll('vnccs-creator-', 'vnccs-common-creator-')));
+    const image = h.control('[data-preview]'), previous = image.src;
+    h.widget.startPreviewGeneration();
+    assert.equal(h.control('[data-generation-layer]').hidden, false);
+    assert.equal(h.control('.vnccs-common-creator-generation-base').src, previous);
+    assert.equal(h.control('.bg-preview').getAttribute('aria-busy'), 'true');
+    h.widget.stopPreviewGeneration();
+    assert.equal(h.control('[data-generation-layer]').hidden, true);
+    assert.equal(image.src, previous); assert.equal(h.control('.bg-preview').getAttribute('aria-busy'), null);
+});
+
+test('the completed preview uses the same synchronized reveal and cleans animations on reload', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const animations = [], pending = [];
+    for (const selector of ['.vnccs-common-creator-generation-new', '.vnccs-common-creator-generation-base', '.vnccs-common-creator-generation-scan']) {
+        const control = h.control(selector); control.decode = async () => {};
+        control.animate = (frames, options) => {
+            const done = deferred(); const animation = { frames, options, finished: done.promise, cancel() { done.resolve(); this.cancelled = true; } };
+            animations.push(animation); pending.push(done); return animation;
+        };
+    }
+    h.widget.startPreviewGeneration();
+    const reveal = h.widget.revealGeneratedPreview('/new-background.png'); await settle();
+    assert.equal(h.control('[data-generation-layer]').classList.contains('is-revealing'), true);
+    assert.equal(animations.length, 3);
+    assert.deepEqual(Array.from(animations[0].frames, frame => frame.clipPath), ['inset(0 0 100% 0)', 'inset(0 0 0% 0)']);
+    assert.deepEqual(Array.from(animations[1].frames, frame => frame.clipPath), ['inset(0% 0 0 0)', 'inset(100% 0 0 0)']);
+    assert.deepEqual(Array.from(animations[2].frames, frame => frame.transform), ['translateY(-100%)', 'translateY(-50%)', 'translateY(0)']);
+    assert.ok(animations.every(animation => animation.options.duration === 1350 && animation.options.easing === 'cubic-bezier(0.4, 0, 0.2, 1)'));
+    h.node.onConfigure();
+    assert.equal(await reveal, false); assert.ok(animations.every(animation => animation.cancelled));
+    await h.ready(); assert.equal(h.control('[data-generation-layer]').hidden, true);
+});
+
+test('normal completion keeps the reveal visible until the new preview is installed', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const animations = [];
+    for (const control of h.widget.container.querySelectorAll('.vnccs-common-creator-generation-img,.vnccs-common-creator-generation-scan')) {
+        control.animate = () => { const animation = { finished: Promise.resolve(), cancel() { this.cancelled = true; } }; animations.push(animation); return animation; };
+    }
+    h.widget.startPreviewGeneration();
+    assert.equal(await h.widget.revealGeneratedPreview('/new-background.png'), true);
+    assert.equal(h.control('[data-generation-layer]').hidden, false);
+    h.widget.stopPreviewGeneration();
+    assert.equal(h.control('[data-generation-layer]').hidden, true);
+    assert.ok(animations.every(animation => animation.cancelled));
+});
+
+test('empty and interrupted generations restore the existing preview and keep user settings', async () => {
+    const h = harness(); await h.ready(); const raw = h.data.value;
+    h.widget.startPreviewGeneration(); assert.equal(h.control('[data-empty]').hidden, true);
+    h.widget.stopPreviewGeneration(); assert.equal(h.control('[data-empty]').hidden, false);
+    assert.equal(h.data.value, raw);
+    h.widget.jobId = B; h.widget.busy = true; h.widget.activeAction = 'background'; h.widget.updateControls();
+    assert.equal(h.control('[data-action="background"]').textContent, 'Generating...');
+    let cancelled = false;
+    h.api.handle = (path, options) => { if (path === `${BASE}/jobs/${B}/cancel`) { assert.equal(options.method, 'POST'); cancelled = true; return response({}); } };
+    h.emitEvent('execution_interrupted', {}); await settle();
+    assert.equal(cancelled, true, 'Standard ComfyUI interruption still cancels the owned preview job');
+    assert.equal(h.data.value, raw);
+});
+
+test('preview errors use the common Creator message instead of an invisible footer', async () => {
+    const h = harness(); await h.ready();
+    h.widget.message('Decoder unavailable', true);
+    const notification = h.control('.vnccs-common-message-overlay');
+    assert.match(notification.textContent, /Decoder unavailable/); assert.equal(notification.querySelector('.vnccs-common-message-box').classList.contains('error'), true);
+    assert.equal(h.widget.status.textContent, 'Decoder unavailable');
+    assert.equal(h.control('footer'), null);
+    h.widget.message('Decoder unavailable', true);
+    assert.equal(h.widget.container.querySelectorAll('.vnccs-common-message-overlay').length, 1);
+});
+
+for (const status of ['failed', 'cancelled']) test(`${status} preview jobs restore the original image and Generate button`, async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const previous = h.control('[data-preview]').src, raw = h.data.value;
+    h.api.handle = (path, options) => {
+        if (path === `${BASE}/backgrounds/${A}/jobs`) return response({ job_id: B });
+        if (path === `${BASE}/jobs/${B}`) return response({ status, error: status === 'failed' ? 'Decoder failed' : undefined });
+    };
+    await assert.rejects(h.widget.runJob('background'), status === 'failed' ? /Decoder failed/ : /Generation stopped/);
+    assert.equal(h.widget.busy, false); assert.equal(h.control('[data-generation-layer]').hidden, true);
+    assert.equal(h.control('[data-action="background"]').textContent, 'Generate background');
+    assert.equal(h.control('[data-action="background"]').disabled, false);
+    assert.equal(h.control('[data-preview]').src, previous); assert.equal(h.data.value, raw);
+});
+
+test('reduced motion keeps the same preview handoff without animated effects', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    h.window.matchMedia = () => ({ matches: true });
+    for (const image of h.widget.container.querySelectorAll('.vnccs-common-creator-generation-img')) image.animate = () => assert.fail('Reduced motion must not run the reveal animation');
+    h.widget.startPreviewGeneration();
+    assert.equal(await h.widget.revealGeneratedPreview('/new-background.png'), true);
+    h.widget.stopPreviewGeneration(); assert.equal(h.control('[data-generation-layer]').hidden, true);
+});
+
+test('workflow pass-through of an uploaded background does not animate a false generation', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    h.widget.document.images[0].settings = { source: 'upload' };
+    h.emitEvent('executing', '7');
+    assert.equal(h.widget.busy, true); assert.equal(h.control('[data-generation-layer]').hidden, true);
+    assert.equal(h.control('[data-action="background"]').textContent, 'Workflow busy...');
+    h.emitEvent('execution_interrupted', {}); await h.widget.workflowCompletion;
+    assert.equal(h.control('[data-action="background"]').textContent, 'Generate background');
+    assert.equal(h.control('[data-generation-layer]').hidden, true);
+});
+
+function savedVariantSet(editor, { source = IMAGE, id = '1'.repeat(32) } = {}) {
+    return { set_id: id, source_image_id: source, variants: clone(editor.variants),
+        images: [{ name: 'Original', url: '/original.png' }, ...editor.variants.map(card => ({ name: card.name, url: `/sets/${id}/${card.id}.png` }))] };
+}
+
+test('new backgrounds omit Day while explicitly saved Day settings survive', async () => {
+    assert.deepEqual(editorDefaults().variants.map(card => card.name), ['Morning', 'Evening', 'Night']);
+    const day = { id: 'day', name: 'Day', time: 'Day', weather: 'Rain', additional_details: 'Lit interior.' };
+    const saved = editorDefaults({ variants: [day] });
+    assert.deepEqual(saved.variants, [day]);
+});
+
+test('saved variant previews match card IDs, parameters and source across reopening and reordering', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))), saved = h.documents.get(A);
+    const set = savedVariantSet(saved.editor); saved.generated_sets = [set]; await h.ready();
+    assert.equal(h.control('[data-variation-image="morning"]').src, set.images[1].url);
+    assert.equal(h.control('[data-variation-image="morning"]').hidden, false);
+    h.widget.state.editor.variants.reverse(); h.widget.state.editor.variants[0].name = 'After dark'; h.widget.render();
+    assert.equal(h.control('[data-variation-image="night"]').src, set.images[3].url);
+    h.widget.state.editor.variants[0].weather = 'Rain'; h.widget.render();
+    assert.equal(h.control('[data-variation-image="night"]').hidden, true);
+    h.widget.state.selected_image_id = '9'.repeat(32); h.widget.render();
+    assert.ok(h.widget.container.querySelectorAll('[data-variation-image]').every(image => image.hidden));
+    h.node.onRemoved();
+});
+
+test('completed background sets refresh cards without overwriting unsaved fields or the main preview', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const original = h.control('[data-preview]').src, revision = h.widget.document.revision;
+    h.widget.state.editor.scene_description = 'My unfinished scene'; h.widget.markEdited();
+    const saved = h.documents.get(A); saved.generated_sets = [savedVariantSet(saved.editor)]; saved.revision++;
+    h.emitEvent('vnccs.background.set', { background_id: B, source_image_id: IMAGE }); await settle();
+    assert.equal(h.widget.document.revision, revision);
+    h.emitEvent('vnccs.background.set', { background_id: A, source_image_id: IMAGE }); await settle();
+    assert.equal(h.widget.document.revision, saved.revision);
+    assert.equal(h.widget.state.editor.scene_description, 'My unfinished scene');
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, 'My unfinished scene');
+    assert.equal(h.control('[data-preview]').src, original);
+    assert.equal(h.control('[data-variation-image="morning"]').src, saved.generated_sets[0].images[1].url);
+    assert.equal(h.widget.unsaved, true); h.node.onRemoved();
+});
+
+test('late set updates and concurrent authored changes cannot rebase another background draft', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    const pending = deferred(); h.api.handle = path => path === `${BASE}/backgrounds/${A}` ? pending.promise : undefined;
+    const refresh = h.widget.refreshGeneratedSet({ background_id: A, source_image_id: IMAGE }); await settle();
+    await h.widget.acceptDocument(h.documents.get(B));
+    const saved = h.documents.get(A); saved.generated_sets = [savedVariantSet(saved.editor)]; saved.revision++;
+    pending.resolve(response(saved)); await refresh;
+    assert.equal(h.widget.document.background_id, B);
+    assert.ok(h.widget.container.querySelectorAll('[data-variation-image]').every(image => image.hidden));
+    h.api.handle = null; await h.widget.acceptDocument(clone(saved));
+    const priorRevision = h.widget.document.revision;
+    saved.editor.scene_description = 'Another editor changed this'; saved.revision++;
+    h.widget.state.editor.scene_description = 'My draft';
+    await h.widget.refreshGeneratedSet({ background_id: A, source_image_id: IMAGE });
+    assert.equal(h.widget.document.revision, priorRevision);
+    assert.equal(h.widget.state.editor.scene_description, 'My draft');
+    h.node.onRemoved();
+});
+
+test('restoration error message remains dismissible while authored controls stay locked', async () => {
+    const raw = JSON.stringify(state({ step: 'background' })), h = harness(raw);
+    h.api.handle = path => { if (path === `${BASE}/config`) throw new TypeError('Failed to fetch'); };
+    await h.ready();
+    const overlay = h.control('.vnccs-common-message-overlay'), ok = overlay.querySelector('button');
+    assert.equal(h.widget.restoring, true);
+    assert.equal(h.control('[data-action="background"]').disabled, true);
+    assert.equal(h.data.value, raw);
+    assert.equal(ok.disabled, false, 'Dismissing an error must not depend on backend readiness');
+    await ok.click(); assert.equal(h.control('.vnccs-common-message-overlay'), null);
+    assert.equal(h.data.value, raw); h.node.onRemoved();
+});
+
+test('New background starts with fresh variants instead of copying the previous list', async () => {
+    const h = harness(JSON.stringify(state({ step: 'background' }))); await h.ready();
+    h.widget.state.editor.variants.push({ id: 'day', name: 'Day', time: 'Day', weather: '', additional_details: '' });
+    h.widget.state.editor.variants[0].weather = 'Rain';
+    h.widget.state.editor.style = 'My preferred style'; h.widget.markEdited();
+    let created;
+    h.widget.dialog = async () => ({ name: 'Fresh background' });
+    h.api.handle = (path, options) => {
+        if (options.method === 'PATCH') {
+            const payload = JSON.parse(options.body), saved = { ...h.documents.get(A), ...payload, revision: 4 };
+            h.documents.set(A, saved); return response(saved);
+        }
+        if (path === `${BASE}/backgrounds` && options.method === 'POST') {
+            created = JSON.parse(options.body);
+            return response(background(B, { editor: created.editor, model: null, models: [], images: [], cgs: [], selected_image_id: '' }));
+        }
+    };
+    await h.control('[data-new]').click();
+    assert.deepEqual(created.editor.variants.map(card => card.name), ['Morning', 'Evening', 'Night']);
+    assert.ok(created.editor.variants.every(card => card.weather === '' && card.additional_details === ''));
+    assert.equal(created.editor.style, 'My preferred style');
+    assert.equal(h.documents.get(A).editor.variants[0].weather, 'Rain');
+    assert.equal(h.widget.state.background_id, B); h.node.onRemoved();
+});
+
+test('reconnection retries a failed restoration without writes and releases the controls', async () => {
+    const saved = state({ step: 'background' }); saved.editor.scene_description = 'Keep this pending scene';
+    const raw = JSON.stringify(saved), h = harness(raw);
+    h.api.handle = path => { if (path === `${BASE}/config`) throw new TypeError('Failed to fetch'); };
+    await h.ready(); assert.equal(h.widget.restoreFailed, true);
+    const ok = h.control('.vnccs-common-message-overlay').querySelector('button'); await ok.click();
+    assert.equal(h.data.value, raw); h.api.handle = null;
+    h.emitEvent('reconnecting'); h.emitEvent('status', {}); await h.widget.operations;
+    assert.equal(h.widget.restoring, false); assert.equal(h.widget.restoreFailed, false);
+    assert.equal(h.control('[data-action="background"]').disabled, false);
+    assert.equal(h.widget.state.editor.scene_description, 'Keep this pending scene');
+    assert.equal(h.calls.some(call => ['POST', 'PATCH', 'DELETE'].includes(call.options.method)), false);
+    const beforeRemoval = h.calls.length; h.node.onRemoved();
+    h.emitEvent('reconnected'); await h.window.fire('focus');
+    assert.equal(h.calls.length, beforeRemoval); assert.equal(h.events.size, 0);
+});
+
+test('only the untouched legacy default Day is removed from restored cards', () => {
+    const plain = { id:'day',name:'Day',time:'Day',weather:'',additional_details:'' };
+    const previous = { variants:[...editorDefaults().variants,plain] }, retained = clone(previous);
+    assert.deepEqual(editorDefaults(previous).variants.map(card=>card.name), ['Morning','Evening','Night']);
+    assert.deepEqual(previous,retained,'Normalization must not mutate the saved input');
+    for (const authored of [{...plain,weather:'Rain'},{...plain,additional_details:'Lamps on'},{...plain,id:'custom-day'},{...plain,custom:{retained:true}}]) {
+        assert.deepEqual(editorDefaults({variants:[authored]}).variants,[authored]);
+    }
+});
+
+test('saved selection and fields render before server metadata arrives', async () => {
+    const saved = state({ step:'background', background_name:'My restored background' });
+    saved.editor.scene_description='Keep this scene during restore';
+    const raw=JSON.stringify(saved), h=harness(raw), metadata=deferred();
+    h.api.handle=path=>path===`${BASE}/config`?metadata.promise:undefined;
+    h.fireTimers(0);await settle();
+    assert.equal(h.control('[data-library]').value,A,'The saved background must already be selected while metadata is pending');
+    assert.equal(h.control('[data-library]').children.find(option=>option.value===A).textContent,'My restored background');
+    assert.equal(h.control('[data-setting="scene_description"]').value,'Keep this scene during restore');
+    assert.equal(h.control('[data-preview]').hidden,false);
+    assert.equal(h.control('[data-preview]').src,`${BASE}/backgrounds/${A}/images/${IMAGE}`);
+    assert.equal(h.control('[data-empty]').hidden,true);
+    assert.equal(h.data.value,raw,'Early rendering must not write into the workflow');
+    assert.equal(h.widget.restoring,true);assert.equal(h.control('[data-action="background"]').disabled,true);
+    metadata.resolve(response(configuration()));await h.widget.operations;
+    assert.equal(h.control('[data-library]').value,A);
+    assert.equal(JSON.parse(h.data.value).background_name,'Evening room');h.node.onRemoved();
+});
+
+test('legacy workflow references stay selected while loading and empty selections stay empty', async () => {
+    const h=harness(JSON.stringify(state({step:'background'}))), metadata=deferred();
+    h.api.handle=path=>path===`${BASE}/config`?metadata.promise:undefined;
+    h.fireTimers(0);await settle();
+    assert.equal(h.control('[data-library]').value,A);
+    assert.match(h.control('[data-library]').children.find(option=>option.value===A).textContent,/Loading saved background/);
+    metadata.resolve(response(configuration()));await h.widget.operations;
+    assert.equal(h.widget.state.background_name,'Evening room');h.node.onRemoved();
+    const blank=harness();await blank.ready();
+    assert.equal(blank.widget.state.background_id,'');assert.equal(blank.control('[data-library]').value,'');
+    assert.equal(blank.control('[data-preview]').hidden,true);blank.node.onRemoved();
+});
+
+test('saved display names are bounded without accepting invalid cached metadata', () => {
+    for(const name of [[],{},15,'x'.repeat(97)])assert.throws(()=>readState(JSON.stringify(state({background_name:name}))),/saved background name/);
+    assert.equal(readState(JSON.stringify(state({background_name:'🌄'.repeat(96)}))).background_name,'🌄'.repeat(96));
+});

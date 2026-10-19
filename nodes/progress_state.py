@@ -72,6 +72,8 @@ def record_progress(scope, event, run_id=None):
         _revision += 1
         state["revision"] = _revision
         state["updated"] = time.monotonic()
+        if isinstance(event.get("background_id"), str) and re.fullmatch(r"[a-f0-9]{32}", event["background_id"]):
+            state["background_id"] = event["background_id"]
         stage = str(event.get("stage", ""))
         if stage == "error":
             state["error"] = {"message": str(event.get("message", ""))[:4000], "stage": state["active_stage"]}
@@ -110,6 +112,8 @@ def record_progress(scope, event, run_id=None):
             for key in ("processing_index", "processing_indices"):
                 if key in event:
                     state["stages"][stage][key] = deepcopy(event[key])
+            if "labels" in event or "labels" in previous:
+                state["stages"][stage]["labels"] = [str(label)[:96] for label in event.get("labels", previous.get("labels", []))[:65]]
             # The byte budget covers the whole node, not each stage separately.
             remaining = MAX_IMAGE_CHARS
             for value in reversed(list(state["stages"].values())):

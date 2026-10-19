@@ -324,3 +324,127 @@ You will find all your sprites inside ComfyUI in:`ComfyUI\output\VNCCS\Character
 
 Be careful with them, and do not delete them by accident while cleaning your disk!
 ![Header](images/v3/footer.png)
+
+
+## Background Creator
+
+**VNCCS Background Creator** belongs to the main VNCCS package. It runs without
+VNCCS-Utils, UniCanvas or 3D Factory. Update both VNCCS packages together when moving
+from the earlier Utils implementation, then reload the ComfyUI frontend.
+
+The **Background** stage uses the same Sakura controls as the other Creators:
+select or create an environment, describe its attributes, run the background wizard,
+upload an image inside the widget, or generate a background with Qwen Image 2.1 or
+MOSS-Image. The model-type tabs retain separate generation settings in each
+background's JSON.
+The node has no IMAGE input. In the Background stage, RUN outputs the selected
+background without advancing to Model: fresh generated previews are reused,
+stale previews are regenerated, and uploaded images pass through unchanged.
+Settings are saved in the selected background's JSON.
+The **Model** stage reconstructs the complete environment with TripoSplat. Compose a
+camera view, adjust FOV, use Recenter, then Save view to generate and retain a finished CG.
+In the Model stage, workflow execution outputs the selected completed CG.
+
+QI2 uses the existing ComfyUI Qwen Image 2.1 nodes and model folders. Defaults are
+the INT8 ConvRot diffusion model and Qwen3-VL encoder, BF16 VAE, Euler/simple, 25 steps,
+CFG 1, prompt enhancement and GPU INT8 cache. The optional Viggle Turbo adapter
+uses six steps. Select models through the Creator card picker backed by Control
+Center and the local model inventory. Five LoRA slots retain their positions.
+The large preview supports variant navigation and click-to-enlarge. The full
+prompt is editable; older scene descriptions remain preserved in its assembled
+text. No character-specific LoRA is applied automatically.
+
+Moss follows the supplied text-to-image workflow: MOSS-Image SFT INT8 ConvRot,
+Qwen3.5 9B W4A8 GPTQ (`moss_image` encoder), Flux2 small VAE, 25 steps, CFG 2.5,
+`er_sde`/`simple` and an empty Flux2 latent. It uses VNCCS's background prompt
+enhancer and the same four-field prompt format. Qwen cache and Viggle acceleration
+controls are hidden for Moss. Install these files in ComfyUI's registered model
+folders:
+
+- `diffusion_models/moss_image_sft_int8_convrot.safetensors`
+- `text_encoders/qwen3.5_9b_w4a8_gptq.safetensors`
+- `vae/flux2-vae_small.safetensors`
+
+The middle panel contains Style, Interior/Exterior and Scene description. The base background always uses Day; time is configured in the variant cards below the preview. The generated prompt retains four ordered fields:
+
+```text
+Style: Anime, digital art, cel shaded
+Time: Day
+Interior/Exterior: Interior
+Scene description: A complete description of the environment.
+```
+
+Prompt enhancement changes only the scene description. Legacy authored text and
+attributes remain preserved when opening earlier scenes.
+The VNCCS INFO logger prints the full enhancer system/input/output and the final
+positive and negative inference prompts as readable blocks. Cached RUN outputs
+show the saved inference prompt; uploaded images report that inference is skipped.
+Background Generator logs each named variant prompt before encoding it.
+The Generate background button and RUN share an input-based cache key stored
+with the image's settings in the background JSON. Prompt, model type, weights,
+LoRA, seed and sampling changes invalidate generated previews; inactive profiles,
+camera and TripoSplat settings do not. Older generated previews without a key are
+regenerated once, preserving legacy assets. Background Creator has one working
+preview: generation and upload replace it without a history counter or arrows.
+Legacy images and source files referenced by models or generated sets remain intact.
+
+The empty **Morning**, **Evening**, and **Night** cards form one horizontal
+strip with scroll arrows. Selecting a card opens an inline editor directly under
+the strip inside the left column, with
+Character Creator's tag fields and preset buttons for Time, Weather, and
+Additional Details. Weather starts empty;
+custom cards can be added. Each card has a delete control, including the defaults.
+Deleting the last card leaves an empty list; Background Generator then upscales
+and saves only Original. Card changes are saved in the selected background JSON;
+deletion preserves existing images and generated sets. Day is already the base
+preview; only the untouched legacy default Day is removed. Authored Day variants
+remain editable. New backgrounds start with fresh default cards. Once Background Generator
+saves a complete set, its matching card previews update automatically and return
+after reopening. Previews match the source image, card ID and generation parameters.
+The **Prompt** socket outputs a ComfyUI STRING **LIST**, with one JSON entry per
+card containing its name, parameters, editing prompt and source identity.
+
+**VNCCS Background Generator** takes `pipe`, `background`, and `prompt`. Connect
+the Control Center pipe and the Background Creator's image and Prompt outputs.
+It uses the same generator widget, settings, gallery, stage chain and Regenerate
+controls as the character generators:
+
+1. Always upscale the original with the configured native SeedVR settings.
+2. Generate every variant from that same upscaled original in the selected QI2,
+   Klein9b or MiniMax H3 editing model. No character or pose adapter is added.
+3. Optionally upscale only the new variants; the original is never upscaled twice.
+
+The gallery includes Original followed by every named card. The `backgrounds`
+and `variations` outputs are IMAGE lists so different native sizes are retained.
+Complete PNG sets are published to `VNCCS/scenes/NAME/background/sets/SET_ID/`,
+with ordered filenames, all parameters and model/sampler settings recorded in
+`NAME.json`. Every run creates an immutable set; failures preserve earlier sets
+and the authored scene. Stage caches use the existing scoped generator cache
+format inside the background folder. Regenerate reuses completed stages and can
+replace one variant without regenerating the others.
+
+Install TripoSplat weights in the configured ComfyUI model folders:
+
+- `diffusion_models/triposplat_fp16.safetensors`
+- `vae/triposplat_vae_decoder_fp16.safetensors`
+- `vae/flux2-vae.safetensors`
+- `clip_vision/dino_v3_vit_h.safetensors`
+
+The widget reports missing weights. Existing files in registered model subfolders
+are resolved by their unique filename. Background Creator preserves the complete
+input and does not require a background-removal model, torchvision or a separate
+native reconstruction package. It uses the existing PyTorch environment.
+
+User data stays in `output/VNCCS/scenes/NAME/`: the named JSON document and validated
+backup own immutable background variants, model snapshots, raw camera captures and
+finished CG images. IDs, revisions, cameras and saved workflow state remain readable.
+Removing an item from the selector archives it without deleting assets. Conflicting
+or failed saves retain authored data; damaged JSON can open a validated backup read-only.
+Earlier split libraries and Factory scaffold scenes are copied on access, with original
+files retained. The old scene reader does not import Utils. Rollback must restore the
+previous package pair; retain a copy of the output directory before changing versions.
+
+TripoSplat's inference core is vendored under its original license and recorded upstream
+commit in `data/triposplat`. The background-only build omits segmentation and replaces
+image normalization with equivalent PyTorch/NumPy operations. The local Spark/Three.js
+renderer and their licenses are in `web/vendor/spark`; no CDN is required.

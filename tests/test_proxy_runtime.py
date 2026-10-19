@@ -983,3 +983,16 @@ def test_regenerate_lock_cannot_resurrect_an_expired_live_context(empty_contexts
     now[0] = context.TTL_SECONDS + 1
     with context.generator_execution_lock('5', 'expired:5'):
         assert context._get_generator_context('5', 'expired:5') is None
+
+
+def test_background_progress_retains_labels_and_owner_after_reconnect():
+    scope = progress.begin_progress('background:5', 5, 'run')
+    progress.record_progress(scope, event(stage='background_generation', background_id='a' * 32,
+        labels=['Original', 'Morning', 'Rainy dawn'], images=['source']), 'run')
+    progress.record_progress(scope, event(stage='background_generation', images=['dawn'], replace_images=True, preview_start=2), 'run')
+    snapshot = progress.progress_snapshot(scope)
+    assert snapshot['background_id'] == 'a' * 32
+    assert snapshot['stages']['background_generation']['labels'] == ['Original', 'Morning', 'Rainy dawn']
+    assert snapshot['stages']['background_generation']['images'] == ['source', '', 'dawn']
+    progress.begin_progress(scope, 5, 'new-run')
+    assert 'background_id' not in progress.progress_snapshot(scope)

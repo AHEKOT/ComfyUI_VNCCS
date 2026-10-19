@@ -423,3 +423,6 @@ FodyWeavers.xsd
 *.msp
 *.DS_Store
 node.zip
+
+# Runtime backgrounds, immutable models, CGs and recovery files
+output/VNCCS/scenes/
