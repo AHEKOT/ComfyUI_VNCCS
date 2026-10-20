@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import shutil
 import threading
 import time
 import unicodedata
@@ -321,6 +322,13 @@ def archive_background(background_id, expected_revision=None):
         return _commit(directory, document, previous)
 
 
+def delete_background(background_id, expected_revision=None):
+    with _LOCK:
+        directory, document, _ = _editable(background_id, expected_revision)
+        shutil.rmtree(directory)
+        return {"ok": True, "name": document["name"], "background_id": document["background_id"], "deleted": True}
+
+
 def _image_bytes(image):
     if not isinstance(image, Image.Image):
         raise ValueError("Background Creator requires a PIL image")
@@ -514,7 +522,7 @@ DEFAULT_EDITOR = {
     "attributes": {
         "scene_type": "Interior", "time": "Day",
     },
-    "aspect": "16:9", "style": "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain", "aesthetics": "", "negative": "",
+    "aspect": "16:9", "style": "", "aesthetics": "", "negative": "",
     "variants": [{"id": name.lower(), "name": name, "time": name, "weather": "", "additional_details": ""}
                  for name in ("Morning", "Evening", "Night")],
     "generation": {
@@ -1739,9 +1747,9 @@ def register_routes(routes):
 
     @routes.delete(base + "/backgrounds/{background_id}")
     @respond
-    def archive(info, payload, image):
+    def delete(info, payload, image):
         ensure_idle(info["background_id"])
-        return public_document(archive_background(info["background_id"]))
+        return delete_background(info["background_id"])
 
     @routes.post(base + "/backgrounds/{background_id}/upload")
     @respond

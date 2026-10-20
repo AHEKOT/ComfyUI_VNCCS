@@ -35,9 +35,10 @@ const config = { installed: true, assets: [], diffusion_models: ["qwen_image_2.1
     model_types: { moss: { installed: true, assets: [{ category: "diffusion_models", installed: true }, { category: "text_encoders", installed: true }, { category: "vae", installed: true }] } },
     loras: ["scenery/Painted_Backgrounds.safetensors", "scenery/Warm_Light.safetensors"], samplers: ["euler", "er_sde", "dpmpp_2m"], schedulers: ["simple", "normal"] };
 const creatorSource = await readFile(join(project, "web/vnccs_character_creator_v2.js"), "utf8");
-const { STYLE_PICKER_CSS } = await import("../../web/character_styles.mjs?v=style-mix-8");
+const { STYLE_PICKER_CSS } = await import("../../web/character_styles.mjs?v=style-mix-9");
 const styleCatalog = JSON.parse(await readFile(join(project,"background_template/background_styles.json"),"utf8"));
 config.styles = styleCatalog.groups.flatMap(group => group.styles);
+const expectedStyleCount = config.styles.length;
 const coverAssets = new Map(), coverRequests = [];
 const commonSource = await readFile(join(project, "web/vnccs_common.js"), "utf8");
 const creatorTheme = commonSource.match(/export const SAKURA_THEME_CSS = `([\s\S]*?)`;/)[1];
@@ -172,7 +173,9 @@ const server = createServer(async (request, response) => {
                 const data = JSON.parse(raw); mutations.push(data);
                 document.editor = data.editor; document.selected_image_id = data.selected_image_id; document.revision++;
             }
-            content = JSON.stringify(document);
+            content = request.method === "DELETE"
+                ? JSON.stringify({ ok: true, name: document.name, background_id: document.background_id, deleted: true })
+                : JSON.stringify(document);
         }
         else if (url.pathname === "/queue") content = JSON.stringify({queue_running:[],queue_pending:[]});
         else if (url.pathname === "/vnccs/control_center/check") content = JSON.stringify(catalog);
@@ -198,24 +201,20 @@ const settle = async () => { await page.evaluate(() => new Promise(resolve => re
 const capture = async (name, animations = "disabled") => {
     await page.waitForFunction(() => [...document.fonts].some(font => font.family === 'Sora' && font.status === 'loaded'), null, { timeout: 20000 });
     await page.evaluate(() => document.fonts.ready); await settle(); await page.locator("#host").screenshot({ path: join(output, name + ".png"), animations }); };
-const setVariantField=async(key,value)=>{
-    const input=page.locator('[data-variation-field="'+key+'"]');
+const setVariantField=async(key,value,id='morning')=>{
+    const input=page.locator(`[data-variation="${id}"] [data-variation-field="${key}"]`);
     await input.locator('..').locator('.vnccs-common-creator-trait-values').click();
     await input.fill(value);await input.press('Tab');
 };
-const variantEditorClearance=async()=>page.evaluate(()=>{
-    const editor=document.querySelector('[data-variation-editor]');
-    const rect=editor.getBoundingClientRect(), controls=[...editor.querySelectorAll('.vnccs-common-creator-trait-add')].map(element=>element.getBoundingClientRect());
-    const clipped=[];
-    for(let parent=editor.parentElement;parent;parent=parent.parentElement){
-        const style=getComputedStyle(parent);
-        if(!parent.classList.contains('bg-panel') && !/(auto|scroll|hidden|clip)/.test(style.overflowY))continue;
-        const bounds=parent.getBoundingClientRect(), scale=bounds.height/parent.offsetHeight;
-        const bottom=bounds.bottom-(parseFloat(style.borderBottomWidth)+parseFloat(style.paddingBottom))*scale;
-        if(rect.bottom>bottom+1 || controls.some(control=>control.bottom+4*scale>bottom+1))clipped.push({parent:parent.className,bottom,editorBottom:rect.bottom,controlBottom:controls.at(-1).bottom});
-    }
-    return clipped;
-});
+const variantCardLayout=async()=>page.locator('.bg-variation-item').evaluateAll(cards=>cards.map(card=>{
+    const preview=card.querySelector('.bg-variation-preview').getBoundingClientRect(),settings=card.querySelector('.bg-variation-settings'),bounds=settings.getBoundingClientRect();
+    const rows=[...settings.querySelectorAll('.vnccs-common-creator-trait-row')].map(row=>{
+        const rowBounds=row.getBoundingClientRect(),label=row.querySelector('.vnccs-common-creator-trait-label').getBoundingClientRect();
+        const editor=row.querySelector('.vnccs-common-creator-trait-editor').getBoundingClientRect(),add=row.querySelector('.vnccs-common-creator-trait-add').getBoundingClientRect();
+        return {top:rowBounds.top,bottom:rowBounds.bottom,height:rowBounds.height,separated:label.right<=editor.left+1&&editor.right<=add.left+1};
+    });
+    return {id:card.dataset.variation,width:card.getBoundingClientRect().width,preview:{top:preview.top,bottom:preview.bottom},settings:{top:bounds.top,bottom:bounds.bottom},belowPreview:bounds.top>=preview.bottom-1,rows,overflow:card.scrollWidth>card.clientWidth+1||settings.scrollWidth>settings.clientWidth+1};
+}));
 const previewNavigation=async name=>{
     const dialog=page.getByRole('dialog'), viewport=dialog.locator('[data-preview-viewport]'), image=dialog.locator('[data-large-preview]');
     await image.waitFor({state:'visible'});await image.evaluate(image=>image.decode());
@@ -383,9 +382,11 @@ try {
         assert.equal(await page.locator('.bg-meta,[data-dimensions]').count(),0,'The background preview has no image dimensions label');
         const stripRows=await page.locator('.bg-variation-item').evaluateAll(cards=>cards.map(card=>card.getBoundingClientRect().top));
         assert.ok(stripRows.every(top=>Math.abs(top-stripRows[0])<1),'Variant cards always use one row');
+        const variantPlaceholders=await page.locator('[data-variation-image]').evaluateAll(images=>images.map(image=>({src:image.src,hidden:image.hidden,placeholder:image.classList.contains('is-placeholder')})));
+        assert.ok(variantPlaceholders.every(image=>!image.hidden&&image.placeholder&&/VNCCS_Background_Mannequin_Interior\.png$/.test(image.src)),'Empty variants use the matching synthetic interior preview');
         assert.equal(await page.locator('[data-scroll-variation]').count(),2);
         const variantContrast=await page.evaluate(()=>{
-            const card=document.querySelector('[data-edit-variation]'), label=card.closest('.bg-variation-item').querySelector(':scope>span'), style=getComputedStyle(card);
+            const card=document.querySelector('[data-view-variation]'), label=card.closest('.bg-variation-item').querySelector(':scope>span'), style=getComputedStyle(card);
             const channels=color=>color.startsWith('color(srgb')?color.match(/[\d.]+/g).map(Number).map(value=>value*255):color.match(/[\d.]+/g).map(Number);
             const luminance=color=>channels(color).slice(0,3).map(value=>value/255).map(value=>value<=.04045?value/12.92:((value+.055)/1.055)**2.4).reduce((sum,value,index)=>sum+value*[.2126,.7152,.0722][index],0);
             const contrast=(first,second)=>{const values=[luminance(first),luminance(second)].sort((a,b)=>b-a);return (values[0]+.05)/(values[1]+.05);};
@@ -395,7 +396,7 @@ try {
         report.scenarios.at(-1).variantContrast=variantContrast;
         assert.notEqual(variantContrast.background,'rgba(0, 0, 0, 0)','Unselected cards have a visible filled surface');
         assert.ok(variantContrast.borderWidth>=.99 && variantContrast.borderContrast>=3,'Unselected card outlines retain a full rendered pixel and 3:1 contrast without hovering');
-        assert.ok(variantContrast.labelSize>=13 && variantContrast.labelContrast>=4.5,'Variant names remain readable');
+        assert.ok(variantContrast.labelSize>=12 && variantContrast.labelContrast>=4.5,'Variant names remain readable');
         if(width===1600){
             await page.locator('#host').evaluate(host=>host.style.zoom='.5');
             await capture('variant-cards-zoom-50');
@@ -447,35 +448,22 @@ try {
         for (const label of measured.labels) assert.ok(label.gap >= 2, `Scene field label overlaps its control: ${label.text}`);
         assert.ok(measured.fonts.includes('Sora'), 'The actual Creator font must be loaded');
         if (width >= 1280) { assert.ok(measured.preview.width > 400); assert.ok(measured.preview.height > 240); }
-        await page.locator('[data-edit-variation="morning"]').click();
-        assert.equal(await page.getByRole('dialog').count(),0);
-        assert.equal(await page.locator('[data-variation-editor]').isVisible(),true);
-        await page.waitForFunction(()=>{
-            const editor=document.querySelector('[data-variation-editor]').getBoundingClientRect(), viewport=document.querySelector('.bg-background').getBoundingClientRect();
-            return editor.top>=viewport.top-1 && editor.bottom<=viewport.bottom+1;
-        },null,{timeout:5000});
-        const editorPlacement=await page.evaluate(()=>{
-            const source=document.querySelector('.bg-source'), editor=document.querySelector('[data-variation-editor]'), strip=source.querySelector('.bg-variation-strip');
-            const bounds=editor.getBoundingClientRect(), column=source.getBoundingClientRect();
-            return {insideSource:source.contains(editor),afterStrip:strip.nextElementSibling===editor,insideColumn:bounds.left>=column.left && bounds.right<=column.right,
-                fields:[...editor.querySelectorAll('.vnccs-common-creator-trait-row')].map(row=>({top:row.getBoundingClientRect().top,bottom:row.getBoundingClientRect().bottom})),
-                panels:[...document.querySelectorAll('.bg-background>.bg-panel')].map(panel=>({width:panel.getBoundingClientRect().width,height:panel.getBoundingClientRect().height}))};
+        assert.equal(await page.locator('[data-variation-editor]').count(),0,'The separate variant editor is removed');
+        assert.equal(await page.locator('.bg-variation-settings').count(),3,'Every card always contains its settings');
+        const cardLayout=await variantCardLayout();
+        assert.ok(cardLayout.every(card=>card.belowPreview&&!card.overflow),'Every settings block stays below and inside its own card');
+        assert.ok(cardLayout.every(card=>card.rows.length===3&&card.rows.every((field,index,fields)=>field.separated&&(!index||field.top>=fields[index-1].bottom-1))),'Each card keeps Time, Weather and Additional Details in separate non-overlapping columns');
+        for(const key of ['width'])assert.ok(Math.max(...cardLayout.map(card=>card[key]))-Math.min(...cardLayout.map(card=>card[key]))<=1,'Variant cards keep equal widths');
+        for(const group of ['preview','settings'])for(const key of ['top','bottom'])assert.ok(Math.max(...cardLayout.map(card=>card[group][key]))-Math.min(...cardLayout.map(card=>card[group][key]))<=1,`Variant ${group} ${key} edges stay aligned`);
+        const navAlignment=await page.locator('.bg-variation-strip').evaluate(strip=>{
+            const preview=strip.querySelector('.bg-variation-preview').getBoundingClientRect(),target=(preview.top+preview.bottom)/2;
+            return [...strip.querySelectorAll('[data-scroll-variation]')].map(button=>{const bounds=button.getBoundingClientRect();return Math.abs((bounds.top+bounds.bottom)/2-target);});
         });
-        assert.ok(editorPlacement.insideSource && editorPlacement.afterStrip && editorPlacement.insideColumn,'The editor stays directly below the cards inside the left column');
-        assert.equal(editorPlacement.fields.length,3);
-        assert.ok(editorPlacement.fields.every((field,index,fields)=>!index || field.top>=fields[index-1].bottom-1),'Time, Weather and Additional Details retain three separate full-width rows');
-        if(width>=1280)for(let index=1;index<3;index++){
-            assert.ok(Math.abs(editorPlacement.panels[index].width-measured.panels[index].width)<1,'Opening a variant does not resize adjacent columns');
-            assert.ok(editorPlacement.panels[index].height>=measured.panels[index].height-1,'The node may grow to fit the editor while adjacent columns keep their full height');
-        }
-        const inlineOverflow=await page.locator('[data-variation-editor]').evaluate(panel=>[panel,...panel.querySelectorAll('.vnccs-common-creator-trait-row')].some(element=>element.scrollWidth>element.clientWidth+1));
-        assert.equal(inlineOverflow,false,'Inline variant fields fit every widget width');
+        assert.ok(navAlignment.every(offset=>offset<=1),'Variant arrows stay vertically centered on the preview row');
         await capture('variant-inline-'+width);
-        if(width===1280)await page.locator('[data-variation-editor]').screenshot({path:join(output,'variant-editor.png')});
-        assert.deepEqual(await variantEditorClearance(),[],'The complete variant editor and button focus rings stay inside the panel padding');
-        report.scenarios.at(-1).editor={nodeSize:await page.evaluate(()=>[...widget.node.size]),placement:editorPlacement};
-        if(width>=1280)assert.equal(await page.locator('.bg-panel').evaluateAll(panels=>panels.some(p=>p.scrollHeight>p.clientHeight+1||p.scrollTop!==0)),false,'Opening the inline editor does not create panel scrolling');
-        await page.locator('[data-close-variation]').click();
+        if(width===1280)await page.locator('.bg-variation-strip').screenshot({path:join(output,'variant-cards-with-fields.png')});
+        report.scenarios.at(-1).variantCards={nodeSize:await page.evaluate(()=>[...widget.node.size]),layout:cardLayout};
+        if(width>=1280)assert.equal(await page.locator('.bg-panel').evaluateAll(panels=>panels.some(p=>p.scrollHeight>p.clientHeight+1||p.scrollTop!==0)),false,'Always-visible variant fields do not create panel scrolling');
     }
     await page.evaluate(() => setup({ width: 1600, height: 1000 }));
     const mainBeforeSet=await page.locator('[data-preview]').getAttribute('src');
@@ -492,15 +480,15 @@ try {
     await page.waitForFunction(()=>[...document.querySelectorAll('[data-variation-image]')].every(image=>!image.hidden && image.complete && image.naturalWidth));
     assert.deepEqual(await page.locator('[data-variation-image]').evaluateAll(images=>images.map(image=>image.getAttribute('src'))),previewURLs,'Saved card previews return after reopening the workflow');
     report.variantResults={completedEvent:true,reload:true,mainPreviewPreserved:true,fixtureImages:true};
-    const cards=await page.locator('[data-edit-variation]').evaluateAll(cards=>cards.map(card=>card.dataset.editVariation));
+    const cards=await page.locator('[data-view-variation]').evaluateAll(cards=>cards.map(card=>card.dataset.viewVariation));
     for(const [index,id] of cards.entries()){
-        await page.locator(`[data-edit-variation="${id}"]`).click();
+        await page.locator(`[data-view-variation="${id}"]`).click();
         assert.equal(await page.getByRole('dialog').locator('[data-large-preview]').getAttribute('src'),previewURLs[index],'Each generated card opens its own image');
         await page.evaluate(()=>widget.render());
         assert.equal(await page.getByRole('dialog').locator('[data-large-preview]').getAttribute('src'),previewURLs[index],'A render must not replace a modal variant with the base background');
         if(!index)report.variantPreviewNavigation=await previewNavigation('variant-preview-zoomed');
         await page.getByRole('dialog').locator('[data-close-preview]').click();
-        assert.equal(await page.locator('[data-variation-editor]').isVisible(),true,'Inline editing remains available after viewing a generated result');
+        assert.equal(await page.locator(`[data-variation="${id}"] .bg-variation-settings`).isVisible(),true,'Card settings remain visible after viewing a generated result');
     }
     await page.locator('[data-model-toggle]').click(); await capture('model-picker');
     await page.locator('[data-model-choice="user/Scenery.safetensors"]').click();
@@ -528,33 +516,28 @@ try {
     assert.equal(formatted, 'Style: Anime, digital art, cel shaded\nTime: Day\nInterior/Exterior: Interior\nScene description: A large, circular stone table sits in the center of a spacious, futuristic room with a high, arched ceiling featuring blue sky panels. The floor is made of water or a reflective surface, creating a mirror-like effect. On either side of the table are rectangular planters filled with vibrant purple flowers. In the background, there are several statues of figures in various poses, standing on pedestals. The room is illuminated by soft, ambient lighting from the ceiling and recessed lights, giving it a serene and mysterious atmosphere.');
     await capture('scene-fields');
     assert.deepEqual(await page.locator('[data-variation-cards] .bg-variation-item>span').allTextContents(), ['Morning','Evening','Night']);
-    await page.locator('[data-edit-variation="morning"]').click();
-    await page.locator('[data-close-preview]').click();
-    assert.equal(await page.getByRole('dialog').count(),0,'Selecting a variant opens an inline editor');
-    assert.equal(await page.locator('[data-variation-editor]').isVisible(),true);
-    assert.equal(await page.locator('[data-variation-field="time"]').inputValue(),'Morning');
-    assert.equal(await page.locator('[data-variation-field="weather"]').inputValue(),'');
-    assert.equal(await page.locator('[data-variation-editor] select').count(),0);
-    await page.getByRole('button',{name:'Choose weather presets',exact:true}).click();
+    assert.equal(await page.locator('[data-variation-editor]').count(),0);
+    assert.equal(await page.locator('[data-variation="morning"] [data-variation-field="time"]').inputValue(),'Morning');
+    assert.equal(await page.locator('[data-variation="morning"] [data-variation-field="weather"]').inputValue(),'');
+    assert.equal(await page.locator('.bg-variation-settings select').count(),0);
+    await page.locator('[data-variation="morning"]').getByRole('button',{name:'Choose weather presets',exact:true}).click();
     await page.getByRole('dialog').getByRole('button',{name:'Light rain',exact:true}).click();
     await capture('variant-presets');
     await page.getByRole('dialog').getByRole('button',{name:'Apply',exact:true}).click();
     await setVariantField('additional_details','Keep the curtains open.');
     await capture('variant-parameters');
-    assert.deepEqual(await variantEditorClearance(),[],'Editing the last field must retain clearance below its focused button');
-    const traitStyle=await page.evaluate(()=>{
-        const row=widget.container.querySelector('[data-variation-fields] .vnccs-common-creator-trait-row');
-        const reference=row.cloneNode(true);for(const element of [reference,...reference.querySelectorAll('*')])element.setAttribute('class',(element.getAttribute('class')||'').replaceAll('vnccs-common-creator-','vnccs-creator-'));
-        Object.assign(reference.style,{position:'absolute',left:'-100000px',width:row.clientWidth+'px'});widget.container.append(reference);
-        const properties=['height','minHeight','paddingTop','paddingBottom','columnGap','borderBottomWidth'];
-        const values=element=>Object.fromEntries(properties.map(key=>[key,getComputedStyle(element)[key]]));
-        const result={actual:values(row),reference:values(reference)};reference.remove();return result;
+    assert.ok((await variantCardLayout()).every(card=>!card.overflow),'Editing fields keeps every card within its width');
+    const variantType=await page.evaluate(()=>{
+        const panel=widget.container.querySelector('.bg-variation-settings'),row=panel.querySelector('.vnccs-common-creator-trait-row');
+        const rounded=element=>Math.round(parseFloat(element));
+        return {panelHeight:rounded(getComputedStyle(panel).height),rowHeight:rounded(getComputedStyle(row).height),labelSize:rounded(getComputedStyle(row.querySelector('.vnccs-common-creator-trait-label')).fontSize),addSize:rounded(getComputedStyle(row.querySelector('.vnccs-common-creator-trait-add')).width)};
     });
-    assert.deepEqual(traitStyle.actual,traitStyle.reference,'Inline traits use Character Creator styling');
+    assert.deepEqual(variantType,{panelHeight:216,rowHeight:54,labelSize:11,addSize:34},'Variant typography and controls use the compact aligned card scale');
     await page.locator('[data-add-variation]').click();
-    await page.locator('[data-variation-name]').fill('Rainy dawn');
-    await setVariantField('time','Dawn');await setVariantField('weather','Fog');
-    assert.equal(await page.locator('[data-edit-variation]').count(),4);
+    const addedId=await page.evaluate(()=>widget.state.editor.variants.at(-1).id);
+    await page.locator(`[data-variation="${addedId}"] [data-variation-name]`).fill('Rainy dawn');
+    await setVariantField('time','Dawn',addedId);await setVariantField('weather','Fog',addedId);
+    assert.equal(await page.locator('[data-variation]').count(),4);
     const strip=page.locator('[data-variation-cards]');
     await strip.evaluate(list=>list.scrollTo({left:0,behavior:'instant'}));
     await page.waitForFunction(()=>!document.querySelector('[data-scroll-variation="1"]').disabled);
@@ -564,8 +547,6 @@ try {
     await page.waitForFunction(()=>document.querySelector('[data-variation-cards]').scrollLeft<5);
     assert.equal(await page.getByRole('dialog').count(),0);
     await capture('variant-cards');
-    await page.locator('[data-close-variation]').click();
-    assert.equal(await page.locator('[data-variation-editor]').isVisible(),false);
     const deleteStyle = await page.evaluate(() => {
         const reference = document.createElement('div'); reference.className='vnccs-creator-container';
         const button = document.createElement('button'); button.className='vnccs-style-delete'; reference.append(button);
@@ -695,15 +676,15 @@ try {
     await page.reload();await page.waitForFunction(()=>window.ready);await page.evaluate(()=>setup());
     assert.deepEqual(await page.locator('[data-variation-cards] .bg-variation-item>span').allTextContents(),['Evening','Night']);
     for(const name of ['Evening','Night'])await page.getByRole('button',{name:'Delete '+name+' variant',exact:true}).click();
-    assert.equal(await page.locator('[data-edit-variation]').count(),0);
+    assert.equal(await page.locator('[data-variation]').count(),0);
     assert.equal(await page.locator('[data-add-variation]').evaluate(button=>document.activeElement===button),true,'Focus moves to Add variant after the final deletion');
     await page.evaluate(()=>widget.persist());await capture('variants-empty');
     await page.reload();await page.waitForFunction(()=>window.ready);await page.evaluate(()=>setup());
-    assert.equal(await page.locator('[data-edit-variation]').count(),0,'Deleted defaults stay deleted after JSON reload');
+    assert.equal(await page.locator('[data-variation]').count(),0,'Deleted defaults stay deleted after JSON reload');
     assert.equal(await page.evaluate(()=>widget.document.images.length),imagesBeforeDeletion);
     await page.locator('[data-add-variation]').click();
     await page.locator('[data-variation-name]').fill('Rainy dawn');
-    await page.evaluate(()=>widget.persist());assert.equal(await page.locator('[data-edit-variation]').count(),1);
+    await page.evaluate(()=>widget.persist());assert.equal(await page.locator('[data-variation]').count(),1);
     report.variantDeletion={defaults:true,custom:true,lastCard:true,reload:true,sourceImagesPreserved:true};
 
     for(const width of [1180,1600]) {
@@ -743,9 +724,18 @@ try {
         widget.state.editor.variants[0].weather='Light rain';widget.markEdited();widget.render();
     });
     await page.locator('[data-new]').click();
-    await page.getByRole('dialog').getByLabel('Background name').fill('New defaults');
-    await page.getByRole('dialog').getByRole('button',{name:'Create',exact:true}).click();
+    const newDialog=page.getByRole('dialog',{name:'New Background',exact:true});
+    assert.equal(await newDialog.locator('label').count(),0,'Creation matches Character Creator and does not add a redundant field label');
+    const nameInput=newDialog.getByPlaceholder('Name...', {exact:true});
+    assert.equal(await nameInput.inputValue(),'');
+    await capture('new-background-dialog');
+    await nameInput.fill('New defaults');
+    await newDialog.getByRole('button',{name:'Create',exact:true}).click();
     await page.waitForFunction(()=>widget.document.name==='New defaults');
+    assert.equal(await page.locator('.vnccs-style-name').textContent(),'None');
+    assert.deepEqual(await page.evaluate(()=>({style:widget.state.editor.style,styleId:widget.state.editor.style_id})),{style:'',styleId:undefined});
+    assert.deepEqual(await page.locator('[data-setting="scene_description"],[data-setting="front"],[data-setting="back"],[data-setting="left"],[data-setting="right"],[data-setting="negative"]').evaluateAll(fields=>fields.map(field=>field.value)),['','','','','',''],'New clears every authored scene field in the visible form');
+    assert.deepEqual(await page.evaluate(()=>widget.state.editor.attributes),{scene_type:'Interior',time:'Day'});
     assert.deepEqual(await page.locator('.bg-variation-item>span').allTextContents(),['Morning','Evening','Night']);
     assert.equal(await page.evaluate(()=>widget.state.editor.variants.every(card=>card.weather==='')),true,'New does not copy the previous variant parameters');
     const neutralPlaceholders=await page.locator('[data-setting="front"],[data-setting="back"],[data-setting="left"],[data-setting="right"]').evaluateAll(fields=>Object.fromEntries(fields.map(field=>[field.dataset.setting,field.placeholder])));
@@ -758,7 +748,17 @@ try {
     assert.doesNotMatch(Object.values(neutralPlaceholders).join(' '),/garage|toolbox|tires|paint cans|workbench/i);
     await capture('new-background-defaults');
     await page.locator('.bg-attributes').screenshot({path:join(output,'neutral-background-field-placeholders.png'),animations:'disabled'});
-    report.newBackground={legacyDayCopied:false,freshVariants:true};
+    report.newBackground={legacyDayCopied:false,freshVariants:true,defaultStyle:'none'};
+    await page.locator('[data-delete]').click();
+    const deleteDialog=page.getByRole('dialog',{name:'Delete Background',exact:true});
+    assert.equal(await deleteDialog.locator('input,textarea,select').count(),0,'Deletion confirmation has no editable fields');
+    assert.match(await deleteDialog.textContent(),/PERMANENTLY DELETE/);
+    assert.match(await deleteDialog.textContent(),/This action cannot be undone/);
+    await capture('delete-background-confirmation');
+    await deleteDialog.getByRole('button',{name:'CONFIRM DELETE',exact:true}).click();
+    await page.waitForFunction(()=>widget.document?.name==='Evening room');
+    assert.equal(await page.locator('[data-library]').inputValue(),backgroundId,'Deleting selects the next saved background like Character Creator');
+    report.deleteBackground={editableConfirmation:false,permanent:true,nextSelected:true};
     assert.ok(mutations.length > 0, 'Edits still save into the selected background JSON');
     assert.deepEqual(retiredRequests, []); report.retiredModelRequests=retiredRequests;
     await page.evaluate(()=>setup({width:1280,height:800}));
@@ -773,6 +773,7 @@ try {
     await capture('wizard-fit');await page.evaluate(()=>wizardFitRun);
     await page.locator('.vnccs-style-summary').click();
     await page.waitForFunction(()=>document.querySelector('.vnccs-style-status')?.textContent.includes('styles'));
+    await page.locator('.vnccs-style-size-slider').evaluate(input=>{input.value='250';input.dispatchEvent(new Event('input',{bubbles:true}));});
     await settle();await capture('style-library');
     const libraryFit=await page.locator('.vnccs-style-content').evaluate(content=>({height:content.clientHeight,scroll:content.scrollHeight,width:content.clientWidth,scrollWidth:content.scrollWidth,overflow:getComputedStyle(content).overflowY}));
     assert.ok(libraryFit.scroll>libraryFit.height+1&&libraryFit.scrollWidth<=libraryFit.width+1&&libraryFit.overflow==='auto',JSON.stringify(libraryFit));
@@ -791,18 +792,34 @@ try {
     const categoryStyle=await page.locator('.vnccs-style-gallery .vnccs-common-ui-select-trigger').evaluate(button=>({background:getComputedStyle(button).backgroundColor,color:getComputedStyle(button).color,font:getComputedStyle(button).fontFamily}));
     assert.ok(categoryStyle.background!=='rgb(239, 239, 239)'&&categoryStyle.background!=='rgb(255, 255, 255)'&&categoryStyle.color!=='rgb(0, 0, 0)'&&categoryStyle.font.includes('Sora'),JSON.stringify(categoryStyle));
     report.styleLibraryCategory=categoryStyle;
+    await page.getByRole('button',{name:'New style',exact:true}).click();
+    report.styleEditorFit=await page.locator('.vnccs-style-editor').evaluate(editor=>{
+        const content=editor.parentElement,preview=editor.querySelector('.vnccs-style-placeholder');
+        const fields=[...editor.querySelectorAll(':scope>.vnccs-creator-field')],actions=editor.querySelector(':scope>.vnccs-style-toolbar');
+        return {width:editor.clientWidth,contentWidth:content.clientWidth,scrollWidth:editor.scrollWidth,height:editor.clientHeight,contentHeight:content.clientHeight,
+            labels:[...editor.querySelectorAll('.vnccs-creator-label')].map(label=>label.textContent),
+            previewBeforeFields:fields.every(field=>preview.offsetLeft+preview.offsetWidth<field.offsetLeft),
+            fieldsAligned:fields.every(field=>field.offsetLeft===fields[0].offsetLeft&&field.offsetWidth===fields[0].offsetWidth),
+            actionsAligned:actions.offsetLeft===fields[0].offsetLeft};
+    });
+    assert.ok(report.styleEditorFit.width>=Math.min(1000,report.styleEditorFit.contentWidth-6),JSON.stringify(report.styleEditorFit));
+    assert.ok(report.styleEditorFit.scrollWidth<=report.styleEditorFit.width+1&&report.styleEditorFit.height<=report.styleEditorFit.contentHeight+1,JSON.stringify(report.styleEditorFit));
+    assert.deepEqual(report.styleEditorFit.labels,['Name','Short description','Reference','Style prompt']);
+    assert.equal(report.styleEditorFit.previewBeforeFields&&report.styleEditorFit.fieldsAligned&&report.styleEditorFit.actionsAligned,true,JSON.stringify(report.styleEditorFit));
+    await capture('style-editor');
+    await page.getByRole('button',{name:'Back to library',exact:true}).click();
     const beforeCovers=await page.evaluate(()=>widget.node.widgets.find(item=>item.name==='background_data').value);
     await page.evaluate(()=>{widget.styleInfo.custom_style='';});
     await page.getByRole('button',{name:'Generate all previews',exact:true}).click();
-    await page.waitForFunction(()=>document.querySelector('.vnccs-style-status')?.textContent==='Saved all 100 style previews.');
-    assert.equal(coverRequests.length,100);
-    assert.equal(new Set(coverRequests.map(payload=>payload.style_id)).size,100);
+    await page.waitForFunction(expected=>document.querySelector('.vnccs-style-status')?.textContent===`Saved all ${expected} style previews.`,expectedStyleCount);
+    assert.equal(coverRequests.length,expectedStyleCount);
+    assert.equal(new Set(coverRequests.map(payload=>payload.style_id)).size,expectedStyleCount);
     assert.ok(coverRequests.every(payload=>payload.node_id==='7'&&payload.editor.generation&&payload.editor.scene_description!==undefined));
     assert.equal(await page.evaluate(()=>widget.node.widgets.find(item=>item.name==='background_data').value),beforeCovers,'Generating covers leaves the authored background unchanged');
-    assert.equal(await page.locator('.vnccs-style-preview-image').count(),100);
+    assert.equal(await page.locator('.vnccs-style-preview-image').count(),expectedStyleCount);
     await page.locator('.vnccs-style-content').evaluate(content=>{content.scrollTop=0;});
     await settle();await capture('background-style-covers-generated');
-    report.backgroundStyleCovers={styles:100,requests:coverRequests.length,source:'mock inference; real gallery and HTTP requests'};
+    report.backgroundStyleCovers={styles:expectedStyleCount,requests:coverRequests.length,source:'mock inference; real gallery and HTTP requests'};
     await page.getByRole('button',{name:'Close',exact:true}).click();
     const beforeModelCatalog=await page.evaluate(()=>[...widget.config.diffusion_models]);
     await page.evaluate(()=>{widget.config.diffusion_models.push(...Array.from({length:30},(_,i)=>`scenery/Model_${i}.safetensors`));widget.modelPickerOpen=true;widget.renderModelPicker();});
@@ -810,6 +827,20 @@ try {
     assert.ok(modelLibrary.scroll>modelLibrary.height&&modelLibrary.choices>=30&&modelLibrary.pages===0,JSON.stringify(modelLibrary));
     report.modelLibrary=modelLibrary;await capture('model-library');
     await page.evaluate(models=>{widget.config.diffusion_models=models;widget.modelPickerOpen=false;widget.renderModelPicker();},beforeModelCatalog);
+    report.backgroundMannequins=[];
+    for(const sceneType of ['Interior','Exterior']){
+        await page.evaluate(type=>{
+            setup({width:1280,height:800,empty:true}).then(()=>{
+                widget.state.editor.attributes.scene_type=type;widget.render();widget.busy=true;widget.startPreviewGeneration();widget.updateControls();window.mannequinReady=true;
+            });
+        },sceneType);
+        await page.waitForFunction(()=>window.mannequinReady&&widget.previewGeneration?.base.complete);
+        const mannequin=await page.evaluate(()=>({src:widget.previewGeneration.base.src,uses:widget.previewGeneration.layer.classList.contains('uses-mannequin'),empty:widget.container.querySelector('[data-empty]').hidden}));
+        assert.match(mannequin.src,new RegExp(`VNCCS_Background_Mannequin_${sceneType}\\.png$`));
+        assert.equal(mannequin.uses,true);assert.equal(mannequin.empty,true);
+        report.backgroundMannequins.push({sceneType,...mannequin});await capture('background-mannequin-'+sceneType.toLowerCase());
+        await page.evaluate(()=>{window.mannequinReady=false;widget.stopPreviewGeneration();});
+    }
     report.standardStates=[];
     for(const state of ['empty','populated','missing-model','busy']){
         await page.evaluate(empty=>setup({width:1280,height:800,empty}),state==='empty');

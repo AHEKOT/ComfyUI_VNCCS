@@ -90,7 +90,9 @@ export const STYLE_PICKER_CSS = `
     background: var(--bg-surface); color: var(--text-primary); text-align: left;
 }
 .vnccs-style-card > .vnccs-style-placeholder { width: 100%; height: 100%; border-radius: 0; }
-.vnccs-style-editor > .vnccs-style-placeholder { width: min(100%, 220px); }
+.vnccs-style-editor > .vnccs-style-placeholder {
+    grid-row: 1 / span 5; width: 100%; max-width: 320px; align-self: start; justify-self: center;
+}
 .vnccs-style-card-label {
     position: absolute; inset: auto 0 0; padding: 26px 12px 12px; font-size: 13px;
     font-weight: 600; background: linear-gradient(transparent, rgba(0,0,0,.8));
@@ -108,7 +110,18 @@ export const STYLE_PICKER_CSS = `
     width: 28px; height: 28px; padding: 0; font-size: 20px; line-height: 1;
 }
 .vnccs-creator-container .vnccs-style-delete:hover:not(:disabled) { color: var(--error); }
-.vnccs-creator-container .vnccs-style-editor { max-width: 720px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+.vnccs-creator-container .vnccs-style-editor {
+    width: min(100%, 1440px); margin: 0 auto; display: grid;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 16px 24px; align-content: start;
+}
+.vnccs-style-editor > .vnccs-creator-field {
+    display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0;
+}
+.vnccs-style-editor > .vnccs-style-toolbar { grid-column: 2; }
+.vnccs-style-editor .vnccs-creator-label {
+    color: var(--text-secondary); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em;
+}
 .vnccs-creator-container .vnccs-style-editor textarea { height: auto; min-height: 160px; resize: vertical; }
 .vnccs-creator-container .vnccs-style-gallery [hidden] { display: none; }
 .vnccs-creator-container .vnccs-style-gallery :focus-visible,
@@ -468,7 +481,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             editor.append(preview);
             const fields = {};
             for (const [key, label, limit] of [["label", "Name", 100], ["description", "Short description", 240], ["reference", "Reference", 500], ["prompt", "Style prompt", 16000]]) {
-                const wrapper = make("label", "vnccs-creator-field", label);
+                const wrapper = make("label", "vnccs-creator-field");
+                wrapper.append(make("span", "vnccs-creator-label", label));
                 const input = make(key === "prompt" ? "textarea" : "input", key === "prompt" ? "vnccs-creator-textarea" : "vnccs-creator-input");
                 input.value = style[key] || "";
                 input.maxLength = limit;

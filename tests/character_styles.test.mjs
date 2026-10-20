@@ -381,6 +381,8 @@ test("New style creates fields without an existing ID", async () => {
     const overlay = find(ctx.host, "vnccs-style-gallery");
     walk(overlay).find(el => el.textContent === "New style").onclick();
     const editor = find(overlay, "vnccs-style-editor");
+    assert.deepEqual(walk(editor).filter(el => el.className === "vnccs-creator-label").map(el => el.textContent),
+        ["Name", "Short description", "Reference", "Style prompt"]);
     const inputs = walk(editor).filter(el => ["input", "textarea"].includes(el.tagName));
     inputs[0].value = "<b>Mine</b>"; inputs[3].value = "Pencil";
     await editor.onsubmit({ preventDefault() {} });
@@ -583,7 +585,7 @@ test("Custom style opens all fields and generates only its saved preview with se
     assert.equal(editor.hidden, false); assert.equal(grid.hidden, true);
     const fields = walk(editor).filter(el => ["input", "textarea"].includes(el.tagName));
     assert.equal(fields.length, 4);
-    assert.deepEqual(walk(editor).filter(el => el.tagName === "label").map(el => el.textContent),
+    assert.deepEqual(walk(editor).filter(el => el.className === "vnccs-creator-label").map(el => el.textContent),
         ["Name", "Short description", "Reference", "Style prompt"]);
     assert.equal(fields[3].value, "Ink");
     fields[0].value = "My ink"; fields[1].value = "Dry brush"; fields[2].value = "My drawing";

@@ -1,10 +1,12 @@
-import { createStylePicker, STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-8";
+import { createStylePicker, STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-9";
 import { app } from "../../scripts/app.js";
 import { vnccsApi, watchConnection } from "./vnccs_transport.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { presetSelection } from "./character_presets.mjs?v=legacy-tags-1";
 import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, createTraitInput, injectStyles, showModal, registerCleanup, createRequestGuard, generateRandomSeed, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, animateWizardRows, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
 
+const BACKGROUND_MANNEQUIN_INTERIOR_URL = new URL("./assets/VNCCS_Background_Mannequin_Interior.png", import.meta.url).href;
+const BACKGROUND_MANNEQUIN_EXTERIOR_URL = new URL("./assets/VNCCS_Background_Mannequin_Exterior.png", import.meta.url).href;
 const CREATOR_ZOOM = 0.67;
 const CREATOR_MIN_HEIGHT = 840;
 const GENERATION_PANEL_WIDTH = (1280 / CREATOR_ZOOM - 24) * .35;
@@ -44,26 +46,37 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-background-cre
 .vnccs-background-creator .bg-preview>[data-empty] { padding:18px; }
 .vnccs-background-creator .bg-variation-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .vnccs-background-creator .bg-variation-head button { padding:6px 12px; }
-.vnccs-background-creator .bg-variation-strip { display:grid; grid-template-columns:32px minmax(0,1fr) 32px; gap:8px; align-items:center; }
+.vnccs-background-creator .bg-variation-strip { position:relative; min-width:0; }
 .vnccs-background-creator .bg-variation-cards { display:flex; gap:10px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:thin; scrollbar-color:var(--accent-border) transparent; scroll-snap-type:x proximity; padding:2px; }
-.vnccs-background-creator .bg-variation-item { display:flex; flex-direction:column; gap:7px; flex:0 0 calc((100% - 20px)/3); min-width:160px; scroll-snap-align:start; }
-.vnccs-background-creator .bg-variation-scroll { width:32px; height:32px; }
-.vnccs-background-creator .bg-variation-item>span { color:var(--text-primary); font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.vnccs-background-creator .bg-variation-item { display:grid; grid-template-rows:18px auto 216px; align-content:start; gap:7px; flex:0 0 calc((100% - 20px)/3); min-width:220px; scroll-snap-align:start; }
+.vnccs-background-creator .bg-variation-scroll { position:absolute; top:var(--variation-nav-top,80px); z-index:4; width:36px; height:36px; padding:8px; border-radius:50%; background:color-mix(in srgb,var(--bg-primary) 88%,transparent); border:1px solid color-mix(in srgb,var(--accent) 45%,var(--accent-border)); box-shadow:0 5px 18px rgba(0,0,0,.42),0 0 14px color-mix(in srgb,var(--accent) 22%,transparent); backdrop-filter:blur(8px); transform:translateY(-50%); }
+.vnccs-background-creator .bg-variation-scroll[data-scroll-variation="-1"] { left:8px; }
+.vnccs-background-creator .bg-variation-scroll[data-scroll-variation="1"] { right:8px; }
+.vnccs-background-creator .bg-variation-scroll:hover:not(:disabled) { border-color:var(--accent); background:color-mix(in srgb,var(--bg-hover) 92%,transparent); }
+.vnccs-background-creator .bg-variation-scroll:disabled { opacity:.28; }
+.vnccs-background-creator .bg-variation-item>span { padding-left:4px; color:var(--text-primary); font-size:12px; line-height:18px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .vnccs-background-creator .bg-variation-preview { position:relative; }
-.vnccs-background-creator [data-edit-variation] { position:relative; display:block; width:100%; aspect-ratio:16/9; min-height:52px; padding:0; background:var(--bg-surface); border:2px solid color-mix(in srgb,var(--accent-lavender) 60%,var(--bg-surface)); border-radius:var(--radius-md); }
-.vnccs-background-creator [data-edit-variation]:hover { border-color:var(--accent); background:var(--bg-hover); }
-.vnccs-background-creator [data-edit-variation][aria-expanded=true] { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
+.vnccs-background-creator [data-view-variation] { position:relative; display:block; width:100%; aspect-ratio:16/9; min-height:52px; padding:0; background:var(--bg-surface); border:2px solid color-mix(in srgb,var(--accent-lavender) 60%,var(--bg-surface)); border-radius:var(--radius-md); overflow:hidden; }
+.vnccs-background-creator [data-view-variation]:hover:not(:disabled) { border-color:var(--accent); background:var(--bg-hover); }
+.vnccs-background-creator [data-view-variation]:disabled { opacity:1; cursor:default; }
 .vnccs-background-creator [data-variation-image] { position:absolute; inset:0; display:block; width:100%; height:100%; object-fit:cover; border-radius:10px; pointer-events:none; }
+.vnccs-background-creator [data-variation-image].is-placeholder { opacity:.64; filter:saturate(.9) brightness(.88); }
 .vnccs-background-creator .bg-variation-delete { position:absolute; top:8px; right:8px; border:1px solid var(--accent-border); border-radius:6px; background:var(--bg-primary); color:var(--text-primary); cursor:pointer; width:28px; height:28px; padding:0; font-size:20px; line-height:1; }
 .vnccs-background-creator .bg-variation-delete:hover:not(:disabled) { color:var(--error); }
 .vnccs-background-creator .selected { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent); }
 
-.vnccs-background-creator .bg-variation-editor { border-top:1px solid var(--accent-border); padding-top:10px; }
-.vnccs-background-creator .bg-variation-editor-head { display:flex; align-items:center; gap:12px; }
-.vnccs-background-creator .bg-variation-editor-head label { display:flex; align-items:center; gap:12px; flex:1; color:var(--text-secondary); }
-.vnccs-background-creator .bg-variation-editor-head input { flex:1; }
-.vnccs-background-creator .bg-variation-editor-head>[data-close-variation] { flex:0 0 auto; width:auto; }
-.vnccs-background-creator .bg-variation-fields { display:flex; flex-direction:column; gap:0; }
+.vnccs-background-creator .bg-variation-settings { display:grid; grid-template-rows:repeat(4,54px); height:216px; padding:0 9px; border:1px solid var(--accent-border); border-radius:var(--radius-md); background:rgba(255,255,255,.025); box-sizing:border-box; }
+.vnccs-background-creator .bg-variation-name { display:grid; grid-template-columns:80px minmax(0,1fr); align-items:center; gap:7px; min-width:0; height:54px; padding:7px 0; border-bottom:1px solid var(--accent-border); box-sizing:border-box; }
+.vnccs-background-creator .bg-variation-name .vnccs-common-creator-label { min-width:0; font-size:9px; line-height:1.15; white-space:nowrap; }
+.vnccs-background-creator .bg-variation-name input { width:100%; min-width:0; min-height:36px; height:36px; padding:7px 10px; font-size:11px; text-overflow:ellipsis; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-row { grid-template-columns:minmax(62px,30%) minmax(0,1fr) 34px; gap:7px; min-width:0; min-height:54px; height:54px; padding:7px 0; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-label { min-width:0; font-size:11px; line-height:1.15; overflow-wrap:anywhere; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-editor,
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-values { min-width:0; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-values { flex-wrap:nowrap; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-token { max-width:100%; min-width:0; padding:6px 9px; font-size:11px; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-empty { max-width:100%; font-size:11px; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.vnccs-background-creator .bg-variation-settings .vnccs-common-creator-trait-add { width:34px; height:34px; font-size:18px; }
 .vnccs-background-creator .bg-attributes>.bg-description { flex:1 1 0; min-height:100px; }
 .vnccs-background-creator .bg-description textarea { flex:1; min-height:64px; resize:none; }
 .vnccs-background-creator .bg-description textarea:focus { background:rgba(255,255,255,0.04); box-shadow:none; }
@@ -105,7 +118,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-background-cre
 export const DEFAULT_EDITOR = Object.freeze({
     description: "", scene_description: "", front: "", back: "", left: "", right: "", prompt: "", attributes: { scene_type: "Interior", time: "Day" },
     variants: ["Morning", "Evening", "Night"].map(name => ({ id: name.toLowerCase(), name, time: name, weather: "", additional_details: "" })),
-    aspect: "16:9", style: "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain", aesthetics: "", negative: "",
+    aspect: "16:9", style: "", aesthetics: "", negative: "",
     generation: { model_type: "qi2", steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, resolution_mp: 2, seed_mode: "fixed", turbo: false, turbo_previous_settings: null, prompt_enhance: true, cache_device: "gpu", cache_dtype: "int8", lora_stack: [], diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors" },
 });
 export const MOSS_GENERATION = Object.freeze({ model_type: "moss", steps: 25, cfg: 2.5, sampler: "er_sde", scheduler: "simple", turbo: false,
@@ -219,7 +232,6 @@ export class BackgroundCreatorWidget {
                     <button data-upload>Upload image</button>
                     <div class="bg-variation-head"><span class="vnccs-common-creator-section-title">Variants</span><button type="button" data-add-variation>Add variant</button></div>
                     <div class="bg-variation-strip"><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-variation="-1" aria-label="Scroll variants left"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14 6-6 6 6 6"/></svg></button><div class="bg-variation-cards" data-variation-cards data-sakura-scroll="background-variants"></div><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-variation="1" aria-label="Scroll variants right"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 6 6 6-6 6"/></svg></button></div>
-                <div class="bg-variation-editor" data-variation-editor hidden><div class="bg-variation-editor-head"><label><span class="vnccs-common-creator-label">Variant name</span><input class="vnccs-common-creator-input" data-variation-name aria-label="Variant name" maxlength="96"></label><button type="button" class="vnccs-common-creator-model-card-download" data-close-variation>Close</button></div><div class="bg-variation-fields" data-variation-fields></div></div>
                 </section>
                 <section class="bg-panel bg-attributes"><div class="vnccs-common-creator-section-title">Scene attributes</div><button class="primary bg-wide" data-wizard>Background wizard</button>
                     <div class="bg-field" data-style-picker></div>
@@ -269,10 +281,6 @@ export class BackgroundCreatorWidget {
         for (const region of this.container.querySelectorAll(".bg-step,.bg-panel")) region.dataset.sakuraScroll = region.className;
         this.on(this.container, "click", event => this.click(event));
         this.on(this.container.querySelector("[data-variation-cards]"), "scroll", () => this.updateVariantScroll(), { passive: true });
-        const variantEditor = this.container.querySelector("[data-variation-editor]");
-        this.on(variantEditor, "focusin", () => requestAnimationFrame(() => {
-            if (!this.disposed && !variantEditor.hidden && variantEditor.contains(document.activeElement)) variantEditor.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-        }));
         for (const image of this.container.querySelectorAll("[data-preview]")) this.on(image, "error", () => {
             image.hidden = true; delete image.dataset.sourceURL;
             const empty = this.container.querySelector("[data-empty]"); empty.hidden = false;
@@ -347,12 +355,12 @@ export class BackgroundCreatorWidget {
         const layer = this.container.querySelector("[data-generation-layer]"), frame = layer.parentElement;
         const base = layer.querySelector(".vnccs-common-creator-generation-base"), next = layer.querySelector(".vnccs-common-creator-generation-new"), scan = layer.querySelector(".vnccs-common-creator-generation-scan");
         const image = this.container.querySelector("[data-preview]"), existing = image.hidden ? "" : image.src;
+        const mannequin = this.state?.editor?.attributes?.scene_type === "Exterior" ? BACKGROUND_MANNEQUIN_EXTERIOR_URL : BACKGROUND_MANNEQUIN_INTERIOR_URL;
         this.previewGeneration = { epoch: this.epoch, layer, frame, base, next, scan, animations: [] };
-        if (existing) base.src = existing; else base.removeAttribute("src");
-        base.hidden = !existing; base.style.clipPath = "inset(0% 0 0 0)";
+        base.src = existing || mannequin; base.hidden = false; base.style.clipPath = "inset(0% 0 0 0)";
         next.removeAttribute("src"); next.style.clipPath = "inset(0 0 100% 0)";
         scan.style.transform = "translateY(-100%)";
-        layer.classList.remove("is-revealing"); layer.hidden = false;
+        layer.classList.toggle("uses-mannequin", !existing); layer.classList.remove("is-revealing"); layer.hidden = false;
         frame.setAttribute("aria-busy", "true"); this.container.querySelector("[data-empty]").hidden = true;
     }
     stopPreviewGeneration() {
@@ -360,7 +368,7 @@ export class BackgroundCreatorWidget {
         if (!owner) return;
         this.previewGeneration = null;
         for (const animation of owner.animations) animation.cancel();
-        owner.layer.classList.remove("is-revealing"); owner.layer.hidden = true;
+        owner.layer.classList.remove("is-revealing", "uses-mannequin"); owner.layer.hidden = true;
         owner.base.removeAttribute("src"); owner.next.removeAttribute("src"); owner.frame.removeAttribute("aria-busy");
         this.container.querySelector("[data-empty]").hidden = !this.container.querySelector("[data-preview]").hidden;
     }
@@ -416,6 +424,10 @@ export class BackgroundCreatorWidget {
         for (const control of this.container.querySelectorAll("button,input,select,textarea")) {
             if (!control.closest("[data-background-error],[data-background-wizard]")) control.disabled = locked;
         }
+        for (const button of this.container.querySelectorAll("[data-view-variation]")) {
+            const card = this.state?.editor.variants.find(card => card.id === button.dataset.viewVariation);
+            button.disabled = locked || !card || !this.variantPreview(card);
+        }
         for (const card of this.container.querySelectorAll("[data-model-toggle],[data-model-choice]")) {
             card.disabled = locked || (card.hasAttribute("data-model-choice") && !card.classList.contains("is-installed"));
             if (card.getAttribute("role") === "button") { card.setAttribute("aria-disabled", String(card.disabled)); card.tabIndex = card.disabled ? -1 : 0; }
@@ -441,7 +453,7 @@ export class BackgroundCreatorWidget {
         this.updateVariantScroll();
     }
 
-    invalidateRestore() { ++this.epoch; this.wizardDialog?.overlay.remove(); this.stopPreviewGeneration(); this.restoring = true; this.busy = false; this.activeAction = ""; this.workflowRun = null; this.unsaved = false; this.jobId = ""; clearTimeout(this.saveTimer); this.updateControls(); }
+    invalidateRestore() { ++this.epoch; this.wizardDialog?.overlay.remove(); this.stopPreviewGeneration(); this.restoring = true; this.busy = false; this.activeAction = ""; this.workflowRun = null; this.unsaved = false; this.jobId = ""; clearTimeout(this.saveTimer); delete this.container.querySelector("[data-variation-cards]").dataset.cards; this.updateControls(); }
     restore() {
         const epoch = ++this.epoch; this.restoring = true; this.restoreFailed = false;
         this.operations = this.operations.catch(() => {}).then(async () => {
@@ -586,7 +598,7 @@ export class BackgroundCreatorWidget {
         const key = JSON.stringify(choices);
         if (!this.stylePicker) {
             this.styleInfo = {};
-            this.stylePicker = createStylePicker({ host: this.container, catalog: { groups: [] },
+            this.stylePicker = createStylePicker({ host: this.container, catalog: { default_style: "none", groups: [] },
                 getInfo: () => this.styleInfo,
                 save: () => {
                     if (this.restoring || this.busy || this.disposed) return;
@@ -603,7 +615,7 @@ export class BackgroundCreatorWidget {
                     }
                     this.markEdited(); this.render();
                 },
-                catalogURL: () => BASE + "/styles", showGenerateAll: true,
+                catalogURL: () => BASE + "/styles", showGenerateAll: true, allowNone: () => true,
                 getPreviewPayload: () => {
                     if (this.restoring || this.busy || this.disposed) throw new Error("Background Creator is busy");
                     return { node_id: String(this.node.id), editor: clone(this.state.editor) };
@@ -621,10 +633,11 @@ export class BackgroundCreatorWidget {
         }
         if (key !== this.styleCatalogKey) {
             this.styleCatalogKey = key;
-            this.stylePicker.setCatalog({ groups: [{ label: "Background styles", styles: choices.map(style => ({ ...style, description: style.description || style.prompt, user: style.id.startsWith("user_") })) }] });
+            this.stylePicker.setCatalog({ default_style: "none", groups: [{ label: "Background styles", styles: choices.map(style => ({ ...style, description: style.description || style.prompt, user: style.id.startsWith("user_") })) }] });
         }
-        Object.assign(this.styleInfo, { style: editor.style_id || "custom", custom_style: editor.custom_style ?? (editor.style_id ? "" : editor.style),
-            style_label: editor.style_id || "Custom style", style_description: editor.style, style_prompt: editor.style });
+        const selectedStyle = editor.style_id || (editor.style ? "custom" : "none");
+        Object.assign(this.styleInfo, { style: selectedStyle, custom_style: editor.custom_style ?? (editor.style_id ? "" : editor.style),
+            style_label: selectedStyle === "none" ? "None" : editor.style_id || "Custom style", style_description: editor.style, style_prompt: editor.style });
         if (!this.stylePicker.customInput.contains?.(document.activeElement)) this.stylePicker.setValue(this.styleInfo.style);
     }
     randomizeSeedIfNeeded() {
@@ -657,11 +670,10 @@ export class BackgroundCreatorWidget {
         this.catalog = (this.catalog || []).filter(item => item.background_id !== document.background_id);
         if (!document.archived) this.catalog.push(document);
         if (adopt) {
-            const previousId = this.state.background_id;
-            if (previousId !== document.background_id) this.activeVariationId = "";
             this.state.background_id = document.background_id; this.state.selected_image_id = document.selected_image_id;
             this.state.editor = editorDefaults(document.editor);
             this.state.revision = document.revision;
+            delete this.container.querySelector("[data-variation-cards]").dataset.cards;
         }
         if (this.state.background_id === document.background_id) this.state.background_name = document.name;
         if (epoch !== this.epoch || this.disposed) return;
@@ -669,7 +681,10 @@ export class BackgroundCreatorWidget {
     }
 
     updateVariantScroll() {
-        const list = this.container.querySelector("[data-variation-cards]");
+        const list = this.container.querySelector("[data-variation-cards]"), strip = list.closest(".bg-variation-strip");
+        const preview = list.querySelector(".bg-variation-preview");
+        if (Number.isFinite(preview?.offsetTop) && Number.isFinite(preview?.offsetHeight))
+            strip.style.setProperty("--variation-nav-top", `${preview.offsetTop + preview.offsetHeight / 2}px`);
         for (const button of this.container.querySelectorAll("[data-scroll-variation]")) {
             const atEdge = Number(button.dataset.scrollVariation) < 0 ? list.scrollLeft <= 1 : list.scrollLeft + list.clientWidth >= list.scrollWidth - 1;
             button.disabled = this.busy || this.restoring || atEdge;
@@ -705,25 +720,6 @@ export class BackgroundCreatorWidget {
         return null;
     }
 
-    renderVariantEditor() {
-        const panel = this.container.querySelector("[data-variation-editor]"), fields = panel.querySelector("[data-variation-fields]");
-        const card = this.state.editor.variants.find(card => card.id === this.activeVariationId);
-        panel.hidden = !card;
-        if (card !== this.variantEditorCard) {
-            fields.replaceChildren(); this.variantEditorCard = card;
-            if (card) for (const [key, label] of VARIANT_FIELDS) {
-                const control = createTraitInput({ prefix: "vnccs-common-creator", label, key, target: card, removable: true,
-                    save: () => { if (this.variantEditorCard === card && !this.restoring && !this.disposed && !this.busy) this.markEdited(); },
-                    choose: input => this.openVariantPresets(key, input, card),
-                });
-                control.input.dataset.variationField = key; control.input.maxLength = key === "time" ? 200 : key === "weather" ? 500 : 8000;
-                fields.appendChild(control.element);
-            }
-        }
-        const name = panel.querySelector("[data-variation-name]");
-        if (card && document.activeElement !== name) name.value = card.name;
-    }
-
     openVariantPresets(key, input, card) {
         const [, label, values] = VARIANT_FIELDS.find(field => field[0] === key), epoch = this.epoch;
         const items = values.map(value => ({ tag: value, label: value })), selected = presetSelection(input.value, [{ items }]);
@@ -737,7 +733,7 @@ export class BackgroundCreatorWidget {
             }
             return grid;
         }, [{ text: "Cancel", action: close }, { text: "Apply", class: "primary", action: () => {
-            if (!this.disposed && !this.restoring && !this.busy && epoch === this.epoch && this.variantEditorCard === card
+            if (!this.disposed && !this.restoring && !this.busy && epoch === this.epoch && this.state.editor.variants.includes(card)
                 && !this.document?._recovery && !this.document?.archived) {
                 input.value = selected.value(); input.dispatchEvent(new Event("input"));
             }
@@ -754,33 +750,56 @@ export class BackgroundCreatorWidget {
         const view = this.customSelects.captureView();
         const editor = this.state.editor;
         const cardList = this.container.querySelector("[data-variation-cards]");
-        const cardKey = JSON.stringify(editor.variants.map(card => [card.id, card.name]));
+        const cardKey = JSON.stringify(editor.variants.map(card => card.id));
         if (cardList.dataset.cards !== cardKey) {
             cardList.replaceChildren(); cardList.dataset.cards = cardKey;
             for (const card of editor.variants) {
-                const item = document.createElement("div"); item.className = "bg-variation-item";
-                const name = document.createElement("span"); name.textContent = card.name; name.title = card.name;
+                const item = document.createElement("div"); item.className = "bg-variation-item"; item.dataset.variation = card.id;
+                const name = document.createElement("span"); name.dataset.variationTitle = ""; name.textContent = card.name; name.title = card.name;
                 const preview = document.createElement("div"); preview.className = "bg-variation-preview";
-                const button = document.createElement("button"); button.type = "button"; button.dataset.editVariation = card.id;
-                button.setAttribute("aria-label", `Edit ${card.name} variant`);
+                const button = document.createElement("button"); button.type = "button"; button.dataset.viewVariation = card.id;
                 const image = document.createElement("img"); image.dataset.variationImage = card.id; image.hidden = true; image.decoding = "async";
                 this.on(image, "error", () => { image.hidden = true; delete image.dataset.sourceURL; }); button.appendChild(image);
                 const remove = document.createElement("button"); remove.type = "button"; remove.className = "bg-variation-delete";
                 remove.dataset.deleteVariation = card.id; remove.textContent = "×";
                 remove.setAttribute("aria-label", `Delete ${card.name} variant`);
-                preview.append(button, remove); item.append(name, preview); cardList.appendChild(item);
+                const settings = document.createElement("div"); settings.className = "bg-variation-settings";
+                const nameField = document.createElement("label"); nameField.className = "bg-variation-name";
+                const nameLabel = document.createElement("span"); nameLabel.className = "vnccs-common-creator-label"; nameLabel.textContent = "Variant name";
+                const nameInput = document.createElement("input"); nameInput.className = "vnccs-common-creator-input";
+                nameInput.dataset.variationName = card.id; nameInput.setAttribute("aria-label", `${card.name} variant name`); nameInput.maxLength = 96; nameInput.value = card.name;
+                nameField.append(nameLabel, nameInput); settings.appendChild(nameField);
+                for (const [key, label] of VARIANT_FIELDS) {
+                    const control = createTraitInput({ prefix: "vnccs-common-creator", label, key, target: card, removable: true,
+                        save: () => {
+                            if (!this.state.editor.variants.includes(card) || this.restoring || this.disposed || this.busy) return;
+                            this.markEdited(); this.render();
+                        },
+                        choose: input => this.openVariantPresets(key, input, card),
+                    });
+                    control.input.dataset.variationField = key; control.input.dataset.variationId = card.id;
+                    control.input.setAttribute("aria-label", `${card.name} ${label.toLowerCase()}`);
+                    control.input.maxLength = key === "time" ? 200 : key === "weather" ? 500 : 8000;
+                    settings.appendChild(control.element);
+                }
+                preview.append(button, remove); item.append(name, preview, settings); cardList.appendChild(item);
             }
         }
-        for (const button of cardList.querySelectorAll("[data-edit-variation]")) {
-            button.setAttribute("aria-expanded", String(button.dataset.editVariation === this.activeVariationId));
-            const card = editor.variants.find(card => card.id === button.dataset.editVariation), image = button.querySelector("[data-variation-image]"), preview = this.variantPreview(card);
-            button.setAttribute("aria-label", preview ? `View ${card.name} variant and edit its settings` : `Edit ${card.name} variant`);
+        const mannequin = editor.attributes.scene_type === "Exterior" ? BACKGROUND_MANNEQUIN_EXTERIOR_URL : BACKGROUND_MANNEQUIN_INTERIOR_URL;
+        for (const button of cardList.querySelectorAll("[data-view-variation]")) {
+            const card = editor.variants.find(card => card.id === button.dataset.viewVariation), item = button.closest(".bg-variation-item");
+            const image = button.querySelector("[data-variation-image]"), preview = this.variantPreview(card), source = preview ? this.api.apiURL(preview.url) : mannequin;
+            const title = item.querySelector("[data-variation-title]"), name = item.querySelector("[data-variation-name]");
+            title.textContent = title.title = card.name;
+            if (document.activeElement !== name) name.value = card.name;
+            name.setAttribute("aria-label", `${card.name} variant name`);
+            item.querySelector("[data-delete-variation]").setAttribute("aria-label", `Delete ${card.name} variant`);
+            button.disabled = !preview;
+            button.setAttribute("aria-label", preview ? `View ${card.name} variant` : `${card.name} preview will appear after generation`);
             if (preview) button.setAttribute("aria-haspopup", "dialog"); else button.removeAttribute("aria-haspopup");
-            image.alt = `${card.name} variant`; image.hidden = !preview;
-            if (preview && image.dataset.sourceURL !== preview.url) { image.src = this.api.apiURL(preview.url); image.dataset.sourceURL = preview.url; }
-            if (!preview) { image.removeAttribute("src"); delete image.dataset.sourceURL; }
+            image.alt = preview ? `${card.name} variant` : ""; image.hidden = false; image.classList.toggle("is-placeholder", !preview);
+            if (image.dataset.sourceURL !== source) { image.src = source; image.dataset.sourceURL = source; }
         }
-        this.renderVariantEditor();
         const moss = editor.generation.model_type === "moss";
         this.container.querySelector("[data-model-types]").style.setProperty("--selected", moss ? 1 : 0);
         for (const button of this.container.querySelectorAll("[data-model-type]")) {
@@ -958,30 +977,20 @@ export class BackgroundCreatorWidget {
         this.renderTurboCard();
     }
 
-    async dialog(title, fields, submitLabel = "Save") {
+    async dialog(title = "New Background") {
         return await new Promise(resolve => {
-            const controls = {};
+            let input;
             const finish = value => { if (!this.dialogs.delete(close)) return; modal.overlay.remove(); resolve(value); };
             const close = () => finish(null);
             this.dialogs.add(close);
             const modal = showModal(this.container, title, () => {
-                const form = document.createElement("div"); form.className = "bg-dialog-fields";
-                for (const field of fields) {
-                    const label = document.createElement("label"), text = document.createElement("span"); text.textContent = field.label; label.className = "bg-field";
-                    const control = document.createElement(field.multiline ? "textarea" : field.options ? "select" : "input");
-                    if (field.options) for (const value of field.options) { const option = document.createElement("option"); option.textContent = value; control.appendChild(option); }
-                    control.value = field.value ?? ""; control.name = field.key;
-                    if (!field.options && !field.multiline) control.type = field.type || "text";
-                    if (field.required) control.required = true; if (field.multiline) control.rows = 5;
-                    if (field.maxLength) control.maxLength = field.maxLength;
-                    if (field.oninput) for (const type of ["input", "change"]) control.addEventListener(type, () => field.oninput(control.value));
-                    label.append(text, control);
-                    form.appendChild(label); controls[field.key] = control;
-                }
-                return form;
-            }, [{ text: "Cancel", action: close }, { text: submitLabel, class: "primary", action: () => {
-                if (!Object.values(controls).every(control => control.reportValidity())) return true;
-                finish(Object.fromEntries(Object.entries(controls).map(([key, control]) => [key, control.value])));
+                input = document.createElement("input"); input.className = "vnccs-common-creator-input";
+                input.placeholder = "Name..."; input.maxLength = 96; input.dataset.backgroundName = "";
+                return input;
+            }, [{ text: "Cancel", action: close }, { text: "Create", class: "primary", action: () => {
+                const name = input.value.trim();
+                if (!name) { input.focus(); return true; }
+                finish({ name });
             } }]);
             const remove = modal.overlay.remove;
             modal.overlay.remove = () => { remove.apply(modal.overlay); if (this.dialogs.delete(close)) resolve(null); };
@@ -989,10 +998,47 @@ export class BackgroundCreatorWidget {
         });
     }
 
+    openDeleteDialog() {
+        const background = this.document;
+        if (!background) return;
+        const epoch = this.epoch, id = background.background_id, name = background.name;
+        const close = () => modal.overlay.remove();
+        const modal = showModal(this.container, "Delete Background", () => {
+            const content = document.createElement("div"); content.style.fontSize = "14px"; content.style.textAlign = "center";
+            const question = document.createElement("span"); question.textContent = "Are you sure you want to ";
+            const permanent = document.createElement("b"); permanent.textContent = "PERMANENTLY DELETE";
+            const selected = document.createElement("span"); selected.style.color = "#fff"; selected.style.fontWeight = "bold"; selected.textContent = `'${name}'`;
+            const suffix = document.createElement("span"); suffix.textContent = "?";
+            const warning = document.createElement("span"); warning.style.fontSize = "12px"; warning.style.color = "#aaa"; warning.textContent = "This action cannot be undone.";
+            content.append(question, permanent, document.createElement("br"), selected, suffix, document.createElement("br"), document.createElement("br"), warning);
+            return content;
+        }, [{ text: "Cancel", action: close }, { text: "CONFIRM DELETE", class: "danger", action: async (_overlay, button) => {
+            const current = () => !this.disposed && epoch === this.epoch && this.document?.background_id === id;
+            if (!current()) return false;
+            button.textContent = "DELETING...";
+            try {
+                await this.json(`/backgrounds/${id}`, {}, "DELETE");
+                if (!current()) return false;
+                this.catalog = this.catalog.filter(item => item.background_id !== id); this.document = null; this.unsaved = false;
+                const next = this.catalog[0];
+                if (next) await this.acceptDocument(next, true, epoch);
+                else {
+                    const editor = { ...clone(DEFAULT_EDITOR), custom_style: "", aspect: this.state.editor.aspect, generation: clone(this.state.editor.generation) };
+                    Object.assign(this.state, { background_id: "", background_name: "", selected_image_id: "", editor }); delete this.state.revision;
+                    this.render(); this.sync(); this.updateControls();
+                }
+                return false;
+            } catch (error) { button.textContent = "CONFIRM DELETE"; throw error; }
+        } }]);
+        this.dialogs.add(close);
+        const remove = modal.overlay.remove;
+        modal.overlay.remove = () => { this.dialogs.delete(close); remove.apply(modal.overlay); };
+    }
+
     async ensureDocument() {
         if (this.document) return true;
         const epoch = this.epoch;
-        const values = await this.dialog("New background", [{ key: "name", label: "Background name", value: "Background", required: true }], "Create");
+        const values = await this.dialog("New Background");
         if (!values || this.disposed || epoch !== this.epoch) return false;
         const document = await this.json("/backgrounds", { name: values.name, editor: this.state.editor });
         if (this.disposed || epoch !== this.epoch) return false;
@@ -1055,7 +1101,6 @@ export class BackgroundCreatorWidget {
                 const behavior = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
                 list.scrollBy({ left: Number(button.dataset.scrollVariation) * list.clientWidth * .8, behavior }); return;
             }
-            if (button.hasAttribute("data-close-variation")) { this.activeVariationId = ""; this.render(); return; }
             if (button.hasAttribute("data-delete-variation")) {
                 const cards = this.state.editor.variants, index = cards.findIndex(card => card.id === button.dataset.deleteVariation);
                 if (index < 0) return;
@@ -1065,29 +1110,24 @@ export class BackgroundCreatorWidget {
                 (remaining[Math.min(index, remaining.length - 1)] || this.container.querySelector("[data-add-variation]")).focus?.();
                 return;
             }
-            if (button.hasAttribute("data-add-variation") || button.hasAttribute("data-edit-variation")) {
+            if (button.hasAttribute("data-add-variation")) {
                 const cards = this.state.editor.variants;
-                let id = button.dataset.editVariation;
-                if (!id) {
-                    if (cards.length >= 64) throw new Error("A background supports up to 64 variants.");
-                    const base = `variant_${generateRandomSeed()}`; id = base;
-                    for (let index = 1; cards.some(card => card.id === id); index++) id = `${base}_${index}`;
-                    cards.push({ id, name: `Variant ${cards.length + 1}`, time: "", weather: "", additional_details: "" });
-                    this.markEdited();
-                }
-                this.activeVariationId = id; this.render();
+                if (cards.length >= 64) throw new Error("A background supports up to 64 variants.");
+                const base = `variant_${generateRandomSeed()}`; let id = base;
+                for (let index = 1; cards.some(card => card.id === id); index++) id = `${base}_${index}`;
+                cards.push({ id, name: `Variant ${cards.length + 1}`, time: "", weather: "", additional_details: "" });
+                this.markEdited(); this.render();
                 // Shared view restoration finishes on the next frame.
                 requestAnimationFrame(() => {
-                    if (this.disposed || epoch !== this.epoch || this.activeVariationId !== id) return;
+                    if (this.disposed || epoch !== this.epoch || !this.state.editor.variants.some(card => card.id === id)) return;
                     const behavior = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-                    const card = [...this.container.querySelectorAll("[data-edit-variation]")].find(card => card.dataset.editVariation === id);
+                    const card = [...this.container.querySelectorAll("[data-variation]")].find(card => card.dataset.variation === id);
                     card?.scrollIntoView?.({ block: "nearest", inline: "nearest", behavior });
-                    this.container.querySelector("[data-variation-editor]").scrollIntoView?.({ block: "nearest", behavior });
+                    card?.querySelector("[data-variation-name]")?.focus?.({ preventScroll: true });
                 });
-                if (button.hasAttribute("data-add-variation")) this.container.querySelector("[data-variation-name]").focus?.({ preventScroll: true });
-                else this.openPreview(cards.find(card => card.id === id));
                 return;
             }
+            if (button.hasAttribute("data-view-variation")) { this.openPreview(this.state.editor.variants.find(card => card.id === button.dataset.viewVariation)); return; }
             if (button.dataset.modelType) {
                 const editor = this.state.editor, type = button.dataset.modelType;
                 if (type === editor.generation.model_type || !["qi2", "moss"].includes(type)) return;
@@ -1114,22 +1154,15 @@ export class BackgroundCreatorWidget {
                 this.markEdited(); this.render(); return;
             }
             if (button.hasAttribute("data-new")) {
-                const values = await this.dialog("New background", [{ key: "name", label: "Background name", value: "Background", required: true }], "Create");
+                const values = await this.dialog("New Background");
                 if (!values || this.disposed || epoch !== this.epoch) return;
                 await this.persist();
                 if (epoch !== this.epoch || this.disposed) return;
-                const editor = { ...this.state.editor, variants: clone(DEFAULT_EDITOR.variants) };
+                const editor = { ...clone(DEFAULT_EDITOR), custom_style: "", aspect: this.state.editor.aspect, generation: clone(this.state.editor.generation) };
                 await this.acceptDocument(await this.json("/backgrounds", { name: values.name, editor }), true, epoch); return;
             }
             if (button.hasAttribute("data-delete")) {
-                if (!this.document) return;
-                const confirmation = await this.dialog("Remove background from selector", [{ key: "name", label: "Saved assets and workflow references will be retained. Background", value: this.document.name }], "Remove");
-                if (!confirmation || epoch !== this.epoch || this.disposed) return;
-                await this.persist(); if (epoch !== this.epoch || this.disposed) return;
-                await this.json(`/backgrounds/${this.document.background_id}`, { revision: this.document.revision }, "DELETE");
-                if (epoch !== this.epoch || this.disposed) return;
-                this.catalog = this.catalog.filter(item => item.background_id !== this.document.background_id); this.document = null;
-                Object.assign(this.state, { background_id: "", selected_image_id: "" }); this.render(); this.sync(); return;
+                this.openDeleteDialog(); return;
             }
             if (button.hasAttribute("data-upload")) { this.container.querySelector("[data-file]").click(); return; }
             if (button.hasAttribute("data-wizard")) { this.openWizard(); return; }
@@ -1227,8 +1260,14 @@ export class BackgroundCreatorWidget {
         if (this.restoring || this.busy || !this.state) return;
         const control = event.target;
         if (control.hasAttribute("data-variation-name")) {
-            const card = this.state.editor.variants.find(card => card.id === this.activeVariationId);
-            if (card) { card.name = control.value; this.markEdited(); this.render(); }
+            const card = this.state.editor.variants.find(card => card.id === control.dataset.variationName);
+            if (card) {
+                card.name = control.value; this.markEdited();
+                const item = control.closest(".bg-variation-item"), title = item.querySelector("[data-variation-title]");
+                title.textContent = title.title = card.name;
+                item.querySelector("[data-delete-variation]").setAttribute("aria-label", `Delete ${card.name} variant`);
+                item.querySelector("[data-view-variation]").setAttribute("aria-label", this.variantPreview(card) ? `View ${card.name} variant` : `${card.name} preview will appear after generation`);
+            }
             return;
         }
         if (["number", "range"].includes(control.type) && !validNumber(control)) return;
@@ -1284,7 +1323,7 @@ export class BackgroundCreatorWidget {
                 catch (error) { selectValue(control, this.state.background_id); this.render(); throw error; }
                 if (epoch !== this.epoch || this.disposed) return; epoch = ++this.epoch;
                 if (!id) {
-                    this.document = null; this.activeVariationId = ""; this.unsaved = false;
+                    this.document = null; this.unsaved = false;
                     this.state.background_id = ""; this.state.background_name = ""; this.state.selected_image_id = "";
                     delete this.state.revision;
                     this.render(); this.sync(); return;

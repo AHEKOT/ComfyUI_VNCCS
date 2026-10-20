@@ -178,9 +178,9 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
             const overlay = new Element(), modal = new Element(); overlay.className = "vnccs-common-modal-overlay"; modal.className = "vnccs-common-modal";
             modal.setAttribute("role", "dialog");
             const heading = new Element(); heading.className = "vnccs-common-modal-title"; heading.textContent = title; modal.appendChild(heading);
-            modal.appendChild(content(modal)); const buttons = actions.map(action => { const button = new Element("button"); button.type = "button"; button.className = "vnccs-common-modal-btn" + (action.class === "primary" ? " vnccs-common-modal-btn-primary" : ""); button.textContent = action.text;
+            const body = content(modal); modal.appendChild(body); const buttons = actions.map(action => { const button = new Element("button"); button.type = "button"; button.className = "vnccs-common-modal-btn" + (action.class === "primary" ? " vnccs-common-modal-btn-primary" : action.class === "danger" ? " vnccs-common-modal-btn-danger" : ""); button.textContent = action.text;
                 button.onclick = async () => { if (button.disabled) return; if (!action.action || !await action.action(overlay, button)) overlay.remove(); }; modal.appendChild(button); return button; });
-            overlay.appendChild(modal); container.appendChild(overlay); return { overlay, modal, buttons };
+            overlay.appendChild(modal); container.appendChild(overlay); return { overlay, modal, content: body, buttons };
         },
         SAKURA_THEME_CSS: "", SAKURA_INTERACTION_CSS: "", SAKURA_CREATOR_CONTROL_CSS: "", COMMON_CSS: "", injectStyles() {}, generateRandomSeed: () => 19,
         setHelpText() {}, registerCleanup() {}, enableMiddleMouseCanvasPan() {}, attachHelpTooltips() {},
@@ -1013,7 +1013,7 @@ test("structured composition prompts restore separate fields without changing le
     }
 });
 
-test("variant cards open inline Creator trait fields and retain edits in the background JSON", async () => {
+test("every variant card keeps its Creator trait fields visible and retains independent edits", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     h.api.handle = (path, options) => {
         if (options.method !== 'PATCH') return;
@@ -1024,23 +1024,28 @@ test("variant cards open inline Creator trait fields and retain edits in the bac
     };
     const cards = h.control('[data-variation-cards]');
     assert.deepEqual(cards.children.map(item => item.children[0].textContent), ["Morning", "Evening", "Night"]);
-    assert.ok(cards.querySelectorAll('[data-edit-variation]').every(button => button.textContent === ""));
-    assert.equal(h.control('[data-variation-editor]').hidden, true);
+    assert.equal(cards.querySelectorAll('.bg-variation-settings').length, 3);
+    assert.equal(cards.querySelectorAll('.vnccs-common-creator-trait-row').length, 9);
+    assert.equal(h.control('[data-variation-editor]'), null);
     assert.equal(h.control('.bg-meta'), null);
     assert.equal(h.control('[data-dimensions]'), null);
-    await h.control('[data-edit-variation="morning"]').click();
-    assert.equal(h.control('.vnccs-common-modal'), null);
-    assert.equal(h.control('[data-variation-editor]').hidden, false);
-    assert.equal(h.control('.bg-source').contains(h.control('[data-variation-editor]')), true);
-    assert.equal(h.control('[data-edit-variation="morning"]').getAttribute('aria-expanded'), 'true');
-    assert.equal(h.control('[data-variation-editor]').querySelectorAll('select').length, 0);
-    assert.equal(h.control('[data-variation-editor]').querySelectorAll('.vnccs-common-creator-trait-row').length, 3);
-    assert.equal(h.control('[data-variation-field="time"]').value, 'Morning');
-    await h.control('[aria-label="Choose weather presets"]').click();
+    for (const card of h.widget.state.editor.variants) {
+        const item = h.control(`[data-variation="${card.id}"]`);
+        assert.equal(item.querySelectorAll('select').length, 0);
+        assert.equal(item.querySelectorAll('.vnccs-common-creator-trait-row').length, 3);
+        assert.equal(item.querySelector(`[data-variation-field="time"]`).value, card.time);
+        const placeholder = item.querySelector('[data-variation-image]');
+        assert.match(placeholder.src, /VNCCS_Background_Mannequin_Interior\.png$/);
+        assert.equal(placeholder.hidden, false); assert.equal(placeholder.classList.contains('is-placeholder'), true);
+    }
+    await h.control('[data-trait="scene_type"]').children[1].click();
+    assert.ok(cards.querySelectorAll('[data-variation-image]').every(image => /VNCCS_Background_Mannequin_Exterior\.png$/.test(image.src)));
+    await h.control('[data-trait="scene_type"]').children[0].click();
+    await h.control('[data-variation="morning"]').querySelector('[aria-label="Choose weather presets"]').click();
     const modal = h.control('.vnccs-common-modal');
     await modal.querySelectorAll('.vnccs-common-creator-tag-chip').find(chip => chip.textContent === 'Light rain').click();
     await modal.querySelectorAll('button').find(button => button.textContent === 'Apply').click();
-    const detail = h.control('[data-variation-field="additional_details"]'); detail.value = 'Keep the blue curtains.'; await detail.fire('input');
+    const detail = h.control('[data-variation="morning"]').querySelector('[data-variation-field="additional_details"]'); detail.value = 'Keep the blue curtains.'; await detail.fire('input');
     const saved = JSON.parse(h.data.value).editor.variants;
     assert.equal(saved[0].weather, 'Light rain'); assert.equal(saved[0].additional_details, 'Keep the blue curtains.');
     assert.ok(saved.slice(1).every(card => card.weather === ''));
@@ -1049,27 +1054,25 @@ test("variant cards open inline Creator trait fields and retain edits in the bac
     assert.deepEqual(JSON.parse(reopened.data.value).editor.variants, saved);
 });
 
-test("adding, renaming and switching inline variants preserves other cards and authored settings", async () => {
+test("adding and editing always-visible variant fields preserves other cards and authored settings", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const before = clone(h.widget.state.editor);
     await h.control('[data-add-variation]').click();
     assert.equal(h.control('.vnccs-common-modal'), null);
-    const name = h.control('[data-variation-name]'); name.value = 'Rainy dawn'; await name.fire('input');
+    const added = h.widget.state.editor.variants.at(-1), item = h.control(`[data-variation="${added.id}"]`);
+    const name = item.querySelector('[data-variation-name]'); name.value = 'Rainy dawn'; await name.fire('input');
     for (const [key,value] of Object.entries({ time:'Dawn',weather:'Drizzle',additional_details:'Mist over the river.' })) {
-        const input = h.control(`[data-variation-field="${key}"]`); input.value=value; await input.fire('input');
+        const input = item.querySelector(`[data-variation-field="${key}"]`); input.value=value; await input.fire('input');
     }
     const editor = JSON.parse(h.data.value).editor;
     assert.equal(editor.variants.length, 4); assert.deepEqual(editor.variants.slice(0, 3), before.variants);
     assert.equal(editor.variants[3].name, 'Rainy dawn'); assert.equal(editor.scene_description, before.scene_description);
-    await h.control('[data-edit-variation="evening"]').click();
-    assert.equal(h.control('[data-variation-field="time"]').value, 'Evening');
-    await h.control('[aria-label="Choose time presets"]').click();
+    const evening = h.control('[data-variation="evening"]');
+    assert.equal(evening.querySelector('[data-variation-field="time"]').value, 'Evening');
+    await evening.querySelector('[aria-label="Choose time presets"]').click();
     const modal = h.control('.vnccs-common-modal');
     await modal.querySelectorAll('.vnccs-common-creator-tag-chip').find(chip => chip.textContent === 'Midnight').click();
     await modal.querySelectorAll('button').find(button => button.textContent === 'Cancel').click();
-    assert.deepEqual(JSON.parse(h.data.value).editor, editor);
-    await h.control('[data-close-variation]').click();
-    assert.equal(h.control('[data-variation-editor]').hidden, true);
     assert.deepEqual(JSON.parse(h.data.value).editor, editor);
     await h.control('[data-add-variation]').click();
     const ids = h.widget.state.editor.variants.map(card=>card.id);
@@ -1092,8 +1095,7 @@ test('variant arrows scroll the single strip and update their edge states', asyn
 
 test('an old preset picker cannot modify another background after restoration', async () => {
     const h=harness(JSON.stringify(state()));await h.ready();
-    await h.control('[data-edit-variation="morning"]').click();
-    await h.control('[aria-label="Choose weather presets"]').click();
+    await h.control('[data-variation="morning"]').querySelector('[aria-label="Choose weather presets"]').click();
     const modal=h.control('.vnccs-common-modal');
     await modal.querySelectorAll('.vnccs-common-creator-tag-chip').find(chip=>chip.textContent==='Snow').click();
     await h.widget.acceptDocument(h.documents.get(B),true);
@@ -1179,6 +1181,7 @@ test('generation uses the existing Creator scan styles instead of footer progres
     h.widget.startPreviewGeneration();
     assert.equal(h.control('[data-generation-layer]').hidden, false);
     assert.equal(h.control('.vnccs-common-creator-generation-base').src, previous);
+    assert.equal(h.control('[data-generation-layer]').classList.contains('uses-mannequin'), false);
     assert.equal(h.control('.bg-preview').getAttribute('aria-busy'), 'true');
     h.widget.stopPreviewGeneration();
     assert.equal(h.control('[data-generation-layer]').hidden, true);
@@ -1225,15 +1228,24 @@ test('normal completion keeps the reveal visible until the new preview is instal
 test('empty and interrupted generations restore the existing preview and keep user settings', async () => {
     const h = harness(); await h.ready(); const raw = h.data.value;
     h.widget.startPreviewGeneration(); assert.equal(h.control('[data-empty]').hidden, true);
+    assert.match(h.control('.vnccs-common-creator-generation-base').src, /VNCCS_Background_Mannequin_Interior\.png$/);
+    assert.equal(h.control('[data-generation-layer]').classList.contains('uses-mannequin'), true);
     h.widget.stopPreviewGeneration(); assert.equal(h.control('[data-empty]').hidden, false);
+    assert.equal(h.control('[data-generation-layer]').classList.contains('uses-mannequin'), false);
     assert.equal(h.data.value, raw);
+    await h.control('[data-trait="scene_type"]').children[1].click();
+    const exteriorRaw = h.data.value;
+    h.widget.startPreviewGeneration();
+    assert.match(h.control('.vnccs-common-creator-generation-base').src, /VNCCS_Background_Mannequin_Exterior\.png$/);
+    h.widget.stopPreviewGeneration();
+    assert.equal(h.data.value, exteriorRaw);
     h.widget.jobId = B; h.widget.busy = true; h.widget.activeAction = 'background'; h.widget.updateControls();
     assert.equal(h.control('[data-action="background"]').textContent, 'Generating...');
     let cancelled = false;
     h.api.handle = (path, options) => { if (path === `${BASE}/jobs/${B}/cancel`) { assert.equal(options.method, 'POST'); cancelled = true; return response({}); } };
     h.emitEvent('execution_interrupted', {}); await settle();
     assert.equal(cancelled, true, 'Standard ComfyUI interruption still cancels the owned preview job');
-    assert.equal(h.data.value, raw);
+    assert.equal(h.data.value, exteriorRaw);
 });
 
 test('Background errors use the Creator modal with a title, body and primary acknowledgement', async () => {
@@ -1305,9 +1317,10 @@ test('saved variant previews match card IDs, parameters and source across reopen
     h.widget.state.editor.variants.reverse(); h.widget.state.editor.variants[0].name = 'After dark'; h.widget.render();
     assert.equal(h.control('[data-variation-image="night"]').src, set.images[3].url);
     h.widget.state.editor.variants[0].weather = 'Rain'; h.widget.render();
-    assert.equal(h.control('[data-variation-image="night"]').hidden, true);
+    assert.match(h.control('[data-variation-image="night"]').src, /VNCCS_Background_Mannequin_Interior\.png$/);
+    assert.equal(h.control('[data-variation-image="night"]').classList.contains('is-placeholder'), true);
     h.widget.state.selected_image_id = '9'.repeat(32); h.widget.render();
-    assert.ok(h.widget.container.querySelectorAll('[data-variation-image]').every(image => image.hidden));
+    assert.ok(h.widget.container.querySelectorAll('[data-variation-image]').every(image => !image.hidden && image.classList.contains('is-placeholder')));
     h.node.onRemoved();
 });
 
@@ -1316,7 +1329,7 @@ test('generated cards open their own preview while keeping inline editing and th
     const set = savedVariantSet(saved.editor); saved.generated_sets = [set]; await h.ready();
     const raw = h.data.value, source = h.control('[data-preview]').src;
     for (const [index, card] of h.widget.state.editor.variants.entries()) {
-        await h.control(`[data-edit-variation="${card.id}"]`).click();
+        await h.control(`[data-view-variation="${card.id}"]`).click();
         const image = h.control('[data-large-preview]');
         assert.ok(image, 'A generated card opens the modal preview');
         assert.equal(image.src, set.images[index + 1].url);
@@ -1327,12 +1340,12 @@ test('generated cards open their own preview while keeping inline editing and th
         assert.equal(h.data.value, raw, 'Viewing a variant does not write user settings');
         await h.control('[data-close-preview]').click();
         assert.equal(h.control('[data-large-preview]'), null);
-        assert.equal(h.control('[data-variation-editor]').hidden, false);
-        assert.equal(h.widget.activeVariationId, card.id);
+        assert.equal(h.control(`[data-variation="${card.id}"]`).querySelector('.bg-variation-settings').hidden, false);
     }
     h.widget.state.editor.variants[0].weather = 'New weather'; h.widget.render();
-    await h.control('[data-edit-variation="morning"]').click();
-    assert.equal(h.control('[data-large-preview]'), null, 'A card without a matching result opens only its inline settings');
+    const stale = h.control('[data-view-variation="morning"]');
+    assert.equal(stale.disabled, true); await stale.click();
+    assert.equal(h.control('[data-large-preview]'), null, 'A card without a matching result keeps its inline settings and placeholder');
     h.node.onRemoved();
     assert.equal(h.widget.dialogs.size, 0);
 });
@@ -1382,7 +1395,7 @@ test('late set updates and concurrent authored changes cannot rebase another bac
     const saved = h.documents.get(A); saved.generated_sets = [savedVariantSet(saved.editor)]; saved.revision++;
     pending.resolve(response(saved)); await refresh;
     assert.equal(h.widget.document.background_id, B);
-    assert.ok(h.widget.container.querySelectorAll('[data-variation-image]').every(image => image.hidden));
+    assert.ok(h.widget.container.querySelectorAll('[data-variation-image]').every(image => !image.hidden && image.classList.contains('is-placeholder')));
     h.api.handle = null; await h.widget.acceptDocument(clone(saved));
     const priorRevision = h.widget.document.revision;
     saved.editor.scene_description = 'Another editor changed this'; saved.revision++;
@@ -1406,11 +1419,15 @@ test('restoration error message remains dismissible while authored controls stay
     assert.equal(h.data.value, raw); h.node.onRemoved();
 });
 
-test('New background starts with fresh variants instead of copying the previous list', async () => {
+test('New background clears the previous scene while retaining generation preferences', async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
+    Object.assign(h.widget.state.editor, { description: 'Legacy scene', scene_description: 'Old scene', front: 'Old front', back: 'Old back', left: 'Old left', right: 'Old right', prompt: 'Old prompt', aesthetics: 'Old aesthetics', negative: 'Old negative' });
+    h.widget.state.editor.attributes = { scene_type: 'Exterior', time: 'Night' };
+    h.widget.state.editor.aspect = '4:3'; h.widget.state.editor.generation.sampler = 'dpmpp_2m';
     h.widget.state.editor.variants.push({ id: 'day', name: 'Day', time: 'Day', weather: '', additional_details: '' });
     h.widget.state.editor.variants[0].weather = 'Rain';
-    h.widget.state.editor.style = 'My preferred style'; h.widget.markEdited();
+    h.widget.state.editor.style_id = 'preferred'; h.widget.state.editor.style = 'My preferred style';
+    h.widget.state.editor.custom_style = 'My custom draft'; h.widget.markEdited();
     let created;
     h.widget.dialog = async () => ({ name: 'Fresh background' });
     h.api.handle = (path, options) => {
@@ -1426,9 +1443,62 @@ test('New background starts with fresh variants instead of copying the previous 
     await h.control('[data-new]').click();
     assert.deepEqual(created.editor.variants.map(card => card.name), ['Morning', 'Evening', 'Night']);
     assert.ok(created.editor.variants.every(card => card.weather === '' && card.additional_details === ''));
-    assert.equal(created.editor.style, 'My preferred style');
+    assert.equal(created.editor.style, '');
+    assert.equal(created.editor.custom_style, '');
+    assert.equal(Object.hasOwn(created.editor, 'style_id'), false);
+    for (const key of ['description', 'scene_description', 'front', 'back', 'left', 'right', 'prompt', 'aesthetics', 'negative']) assert.equal(created.editor[key], '', `${key} must not be copied to a new background`);
+    assert.deepEqual(created.editor.attributes, { scene_type: 'Interior', time: 'Day' });
+    assert.equal(created.editor.aspect, '4:3'); assert.equal(created.editor.generation.sampler, 'dpmpp_2m');
+    assert.equal(h.widget.styleInfo.style, 'none');
+    assert.equal(h.control('.vnccs-style-name').textContent, 'None');
     assert.equal(h.documents.get(A).editor.variants[0].weather, 'Rain');
     assert.equal(h.widget.state.background_id, B); h.node.onRemoved();
+});
+
+test('New and Delete use the Character Creator interaction and deletion selects the next background', async () => {
+    const empty = harness(); await empty.ready();
+    const creating = empty.control('[data-new]').click(); await settle();
+    let modal = empty.control('.vnccs-common-modal');
+    assert.equal(modal.children[0].textContent, 'New Background');
+    assert.equal(modal.querySelectorAll('label').length, 0);
+    const input = modal.querySelector('[data-background-name]');
+    assert.equal(input.value, ''); assert.equal(input.placeholder, 'Name...');
+    const create = modal.querySelectorAll('button').find(button => button.textContent === 'Create');
+    await create.click(); assert.equal(empty.control('.vnccs-common-modal'), modal, 'An empty name keeps the dialog open');
+    empty.api.handle = (path, options) => path === `${BASE}/backgrounds` && options.method === 'POST'
+        ? response(background(A, { name: JSON.parse(options.body).name, images: [], selected_image_id: '' })) : undefined;
+    input.value = '  Fresh background  '; await create.click(); await creating;
+    assert.equal(empty.widget.document.name, 'Fresh background');
+    empty.node.onRemoved();
+
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.api.handle = (path, options) => {
+        if (path === `${BASE}/backgrounds/${A}` && options.method === 'DELETE') {
+            h.documents.delete(A); return response({ ok: true, name: 'Room', background_id: A, deleted: true });
+        }
+    };
+    const before = h.calls.length; await h.control('[data-delete]').click();
+    modal = h.control('.vnccs-common-modal');
+    assert.equal(modal.children[0].textContent, 'Delete Background');
+    assert.equal(modal.querySelectorAll('input').length, 0, 'A deletion confirmation must not contain editable text');
+    assert.match(modal.textContent, /PERMANENTLY DELETE/); assert.match(modal.textContent, /This action cannot be undone/);
+    const confirm = modal.querySelectorAll('button').find(button => button.textContent === 'CONFIRM DELETE');
+    assert.equal(confirm.classList.contains('vnccs-common-modal-btn-danger'), true);
+    await confirm.click();
+    assert.equal(h.calls.slice(before).filter(call => call.options.method === 'PATCH').length, 0, 'Deleting does not save the doomed background first');
+    assert.equal(h.calls.slice(before).filter(call => call.options.method === 'DELETE').length, 1);
+    assert.equal(h.widget.state.background_id, B); assert.equal(h.widget.document.background_id, B);
+    h.node.onRemoved();
+
+    const last = harness(JSON.stringify(state())); last.documents.delete(B); await last.ready();
+    last.widget.state.editor.scene_description = 'Do not leave this visible after deletion'; last.widget.markEdited();
+    last.api.handle = (path, options) => path === `${BASE}/backgrounds/${A}` && options.method === 'DELETE'
+        ? response({ ok: true, name: 'Evening room', background_id: A, deleted: true }) : undefined;
+    await last.control('[data-delete]').click();
+    await last.control('.vnccs-common-modal').querySelectorAll('button').find(button => button.textContent === 'CONFIRM DELETE').click();
+    assert.equal(last.widget.document, null); assert.equal(last.widget.state.background_id, '');
+    assert.equal(last.widget.state.editor.scene_description, ''); assert.equal(last.widget.styleInfo.style, 'none');
+    last.node.onRemoved();
 });
 
 test('reconnection retries a failed restoration without writes and releases the controls', async () => {
@@ -1765,6 +1835,25 @@ test('shared style cards use rendering text, persist selection and preserve old 
     h.node.onRemoved(); reopened.node.onRemoved();
 });
 
+test('new backgrounds select None while legacy authored style text remains custom', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const styles = [{ id: 'watercolor', label: 'Watercolor', prompt: 'Watercolor washes and paper grain' }];
+    h.widget.config.styles = styles; h.widget.render();
+    assert.equal(h.widget.styleInfo.style, 'none');
+    assert.equal(h.control('.vnccs-style-name').textContent, 'None');
+    assert.equal(h.widget.state.editor.style, '');
+    h.widget.stylePicker.setValue('watercolor', true);
+    h.widget.stylePicker.setValue('none', true);
+    assert.equal(h.widget.state.editor.style_id, 'none');
+    assert.equal(h.widget.state.editor.style, '');
+    assert.match(composePrompt(h.widget.state.editor), /^Style: \nTime: Day/);
+    const legacy = harness(JSON.stringify(state({ editor: editorDefaults({ style: 'Saved charcoal rendering' }) }))); await legacy.ready();
+    legacy.widget.config.styles = styles; legacy.widget.render();
+    assert.equal(legacy.widget.styleInfo.style, 'custom');
+    assert.equal(legacy.widget.styleInfo.custom_style, 'Saved charcoal rendering');
+    h.node.onRemoved(); legacy.node.onRemoved();
+});
+
 for (const custom of ['My authored ink style', '']) test(`custom style ${custom ? 'text' : 'emptiness'} survives presets, disk save and reopening`, async () => {
     const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: custom }) }))); await h.ready();
     const styles = [{ id: 'watercolor', label: 'Watercolor', prompt: 'Watercolor washes' }, { id: 'ink', label: 'Ink', prompt: 'Ink lines' }];
@@ -1947,7 +2036,7 @@ test('reduced motion disables arrow-triggered smooth scrolling',async()=>{
 });
 
 
-test('the approved full-width variant editor receives height without changing saved settings or node width', async () => {
+test('always-visible variant cards receive height without changing saved settings or node width', async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const raw = h.data.value;
     assert.deepEqual([...h.node.size], [1280, 840]);

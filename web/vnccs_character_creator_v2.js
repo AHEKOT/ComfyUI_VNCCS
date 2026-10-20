@@ -1,5 +1,5 @@
-import { createStylePicker } from "./character_styles.mjs?v=style-mix-8";
-import { STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-8";
+import { createStylePicker } from "./character_styles.mjs?v=style-mix-9";
+import { STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-9";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";

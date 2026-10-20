@@ -109,6 +109,17 @@ def test_empty_library_and_named_document_backup(library):
         storage.create_background("evening café")
 
 
+def test_delete_background_removes_the_complete_saved_directory(library):
+    document = with_image("Delete me")
+    directory = document_path(document).parent
+    result = storage.delete_background(document["background_id"], document["revision"])
+    assert result == {"ok": True, "name": "Delete me", "background_id": document["background_id"], "deleted": True}
+    assert not directory.exists()
+    assert storage.list_backgrounds() == []
+    with pytest.raises(FileNotFoundError):
+        storage.load_background(document["background_id"])
+
+
 def test_editor_revisions_selection_and_previous_json_backup(library):
     document = with_image()
     path = document_path(document)
@@ -885,7 +896,7 @@ def call(routes, method, suffix, request):
     return asyncio.run(routes[(method, service.API_BASE + suffix)](request))
 
 
-def test_http_create_load_save_and_archive_ignore_stale_workflow_revision(routes, workspace):
+def test_http_create_load_save_and_delete_ignore_stale_workflow_revision(routes, workspace):
     response = call(routes, "POST", "/backgrounds", Request({"name": "HTTP room", "editor": {"description": "Old scene"}}))
     assert response.status == 200
     document = json.loads(response.text)
@@ -903,9 +914,9 @@ def test_http_create_load_save_and_archive_ignore_stale_workflow_revision(routes
     response = call(routes, "GET", "/backgrounds/{background_id}", Request(info=info))
     assert json.loads(response.text)["revision"] == updated["revision"]
     response = call(routes, "DELETE", "/backgrounds/{background_id}", Request({"revision": document["revision"]}, info=info))
-    assert response.status == 200 and json.loads(response.text)["archived"] is True
+    assert response.status == 200 and json.loads(response.text)["deleted"] is True
     response = call(routes, "GET", "/backgrounds/{background_id}", Request(info=info))
-    assert response.status == 200 and json.loads(response.text)["archived"] is True
+    assert response.status == 404
 
 
 @pytest.mark.parametrize("revision", [None, 0, 999])
@@ -927,7 +938,8 @@ def test_background_http_actions_ignore_missing_or_obsolete_workflow_revisions(r
     with Image.open(storage.image_path(document["background_id"], uploaded["selected_image_id"])) as image:
         assert image.size == (12, 6)
     response = call(routes, "DELETE", "/backgrounds/{background_id}", Request(metadata, info=info))
-    assert response.status == 200 and json.loads(response.text)["archived"] is True
+    assert response.status == 200 and json.loads(response.text)["deleted"] is True
+    assert not document_path(document).parent.exists()
 
 
 def test_http_save_preserves_legacy_selected_image_references(routes, workspace):
@@ -2128,8 +2140,8 @@ def test_background_styles_are_the_25_unique_user_dataset_prompts(background_sty
     catalog = generation.style_catalog()
     styles = [style for group in catalog["groups"] for style in group["styles"]]
     assert len(styles) == len({style["id"] for style in styles}) == len({style["label"].casefold() for style in styles}) == 25
-    assert catalog["default_style"] in {style["id"] for style in styles}
-    assert generation.DEFAULT_EDITOR["style"] == next(style["prompt"] for style in styles if style["id"] == catalog["default_style"])
+    assert catalog["default_style"] == "none"
+    assert generation.DEFAULT_EDITOR["style"] == ""
     assert len(catalog["groups"]) == 1
     forbidden = r"\b(?:characters?|people|person|portraits?|body|faces?|girls?|boys?|women|men|skin|hair|eyes|costumes?)\b"
     for style in styles:
