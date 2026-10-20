@@ -700,6 +700,19 @@ try {
         assert.deepEqual(await page.locator('.vnccs-pipe-img-label').allTextContents(),['Original']);
         await page.evaluate(()=>{widget.data.background_variants=['Morning','Evening','Night'];});
         await page.evaluate(source=>{
+            generatorEvent('source_upscaler',{status:'done',current:1,total:1,images:[source],labels:['Original'],preview_aspect:16/9});
+            generatorEvent('background_generation',{status:'running',current:1,images:[source],replace_images:true,processing_index:1,labels:['Original','Morning','Evening','Night'],preview_aspect:16/9});
+        },document.images[0].url);
+        await page.waitForFunction(()=>widget.selectedPreview==='background_generation'&&widget.previewGrid.children.length===4);
+        const pendingCards=await page.locator('.vnccs-pipe-img').evaluateAll(cards=>cards.map(card=>({
+            visible:getComputedStyle(card).visibility!=='hidden',label:card.querySelector('.vnccs-pipe-img-label')?.textContent,
+            processing:card.classList.contains('is-processing'),waiting:card.classList.contains('is-waiting')
+        })));
+        assert.ok(pendingCards.every(card=>card.visible),'Every background card stays visible while its image is pending');
+        assert.deepEqual(pendingCards.map(card=>card.label),['Original','Morning','Evening','Night']);
+        assert.deepEqual(pendingCards.flatMap((card,index)=>card.processing?[index]:[]),[1]);
+        assert.deepEqual(pendingCards.flatMap((card,index)=>card.waiting?[index]:[]),[2,3]);
+        await page.evaluate(source=>{
             const labels=['Original','Morning','Evening','Night'];
             for(const stage of ['source_upscaler','background_generation','upscaler']) {
                 generatorEvent(stage,{status:'running',current:0,total:stage==='source_upscaler'?1:4,labels:stage==='source_upscaler'?['Original']:labels,preview_aspect:16/9});
@@ -957,6 +970,51 @@ try {
     await page.waitForFunction(()=>!document.querySelector('[data-background-error]'));
     report.wizardInteraction={opensBeforeInference:true,emptyStaysOpen:true,separateBrief:true,draftRetainedOnFailure:true};
     report.errorDialogInteraction={focusTrap:true,escape:true,nestedOpenerFocus:true,launcherFocus:true,offlineDismissal:true};
+    await page.evaluate(()=>setup({width:1600,height:1000}));
+    const selectNative=(selector,value)=>page.locator(selector).evaluate((select,value)=>{select.value=value;select.dispatchEvent(new Event('change',{bubbles:true}));},value);
+    if(await page.locator('[data-model-type="qi2"]').getAttribute('aria-pressed')!=='true')await page.locator('[data-model-type="qi2"]').click();
+    await page.locator('[data-model-toggle]').click();
+    await page.locator('[data-model-choice="user/Scenery.safetensors"]').click();
+    await page.locator('[data-setting="generation.prompt_enhance"]').evaluate(input=>{input.checked=false;input.dispatchEvent(new Event('input',{bubbles:true}));});
+    await selectNative('[data-setting="aspect"]','21:9');
+    await page.locator('[data-setting="generation.resolution_mp"]').evaluate(input=>{input.value='3.4';input.dispatchEvent(new Event('input',{bubbles:true}));});
+    await page.locator('[data-setting="generation.steps"]').fill('37');
+    await selectNative('[data-setting="generation.sampler"]','dpmpp_2m');
+    await page.locator('[data-setting="generation.cfg"]').fill('2.3');
+    await selectNative('[data-setting="generation.scheduler"]','normal');
+    await page.locator('[data-setting="generation.seed"]').fill('424242');
+    await selectNative('[data-setting="generation.cache_device"]','cpu');
+    await selectNative('[data-setting="generation.cache_dtype"]','int4');
+    await selectNative('[data-lora="0"]','scenery/Painted_Backgrounds.safetensors');
+    await page.locator('[data-lora-strength="0"]').fill('0.65');
+    await selectNative('[data-lora="1"]','scenery/Warm_Light.safetensors');
+    await page.locator('[data-lora-strength="1"]').fill('0.35');
+    await page.locator('[data-model-type="moss"]').click();
+    await page.locator('[data-setting="generation.resolution_mp"]').evaluate(input=>{input.value='2.7';input.dispatchEvent(new Event('input',{bubbles:true}));});
+    await page.locator('[data-setting="generation.steps"]').fill('19');
+    await selectNative('[data-setting="generation.sampler"]','er_sde');
+    await page.locator('[data-setting="generation.cfg"]').fill('3.1');
+    await selectNative('[data-setting="generation.scheduler"]','normal');
+    await page.locator('[data-setting="generation.seed"]').fill('31337');
+    await page.locator('[data-model-type="qi2"]').click();
+    await page.waitForFunction(()=>!widget.unsaved&&widget.document?.editor?.generation?.diffusion_model_name==='user/Scenery.safetensors');
+    const savedGenerationState=await page.evaluate(()=>structuredClone({aspect:widget.state.editor.aspect,generation:widget.state.editor.generation,generation_profiles:widget.state.editor.generation_profiles}));
+    await page.reload();await page.waitForFunction(()=>window.ready);await page.evaluate(()=>setup({width:1600,height:1000}));
+    const restoredGenerationState=await page.evaluate(()=>structuredClone({aspect:widget.state.editor.aspect,generation:widget.state.editor.generation,generation_profiles:widget.state.editor.generation_profiles}));
+    assert.deepEqual(restoredGenerationState,savedGenerationState,'Every active and inactive generation setting survives a hard page reload');
+    assert.equal(await page.locator('[data-model-type="qi2"]').getAttribute('aria-pressed'),'true');
+    assert.match(await page.locator('[data-model-toggle]').textContent(),/Scenery/);
+    assert.equal(await page.locator('[data-setting="generation.prompt_enhance"]').isChecked(),false);
+    assert.deepEqual(await page.evaluate(()=>Object.fromEntries([...document.querySelectorAll('[data-setting^="generation."]')].filter(control=>control.type!=='checkbox').map(control=>[control.dataset.setting,control.value]))),{
+        'generation.resolution_mp':'3.4','generation.steps':'37','generation.sampler':'dpmpp_2m','generation.cfg':'2.3','generation.scheduler':'normal','generation.seed':'424242','generation.cache_device':'cpu','generation.cache_dtype':'int4'
+    });
+    assert.deepEqual(await page.locator('[data-lora]').evaluateAll(selects=>selects.slice(0,2).map((select,index)=>[select.value,select.parentElement.querySelector(`[data-lora-strength="${index}"]`).value])),[
+        ['scenery/Painted_Backgrounds.safetensors','0.65'],['scenery/Warm_Light.safetensors','0.35']
+    ]);
+    await page.locator('[data-model-type="moss"]').click();
+    assert.deepEqual(await page.evaluate(()=>({resolution:widget.state.editor.generation.resolution_mp,steps:widget.state.editor.generation.steps,sampler:widget.state.editor.generation.sampler,cfg:widget.state.editor.generation.cfg,scheduler:widget.state.editor.generation.scheduler,seed:widget.state.editor.generation.seed})),
+        {resolution:2.7,steps:19,sampler:'er_sde',cfg:3.1,scheduler:'normal',seed:31337},'The inactive MOSS profile also returns after reload');
+    report.generationReload={hardReload:true,activeModel:true,activeSettings:true,inactiveProfile:true,serverAcknowledged:true};
     assert.deepEqual(errors, []); report.errors = errors; report.warnings = warnings; report.fixtureOnlyMutations = mutations.length;
     await writeFile(join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ output, scenarios: report.scenarios.length, retiredModelRequests: retiredRequests.length, errors, warnings }));

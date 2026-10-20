@@ -3772,7 +3772,8 @@ class CharacterGeneratorWidget {
             : originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
                 .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
-        const backgroundCount = this.isBackground && state.status === "waiting" ? (this.selectedPreview === "source_upscaler" ? 1 : (this.data.background_variants?.length ?? 3) + 1) : 0;
+        const backgroundPending = this.isBackground && ["waiting", "running"].includes(state.status);
+        const backgroundCount = backgroundPending ? (this.selectedPreview === "source_upscaler" ? 1 : (this.data.background_variants?.length ?? 3) + 1) : 0;
         const count = Math.min(512, Math.max(images.length, total, backgroundCount, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
@@ -3885,7 +3886,7 @@ class CharacterGeneratorWidget {
                 placeholder.style.visibility = displaysPlaceholder ? "visible" : "hidden";
                 if (displaysPlaceholder) placeholder.style.opacity = "";
             }
-            tile.classList.toggle("is-empty", !tile.dataset.src && !tile._previewSource && !showPlaceholders);
+            tile.classList.toggle("is-empty", !tile.dataset.src && !tile._previewSource && !showPlaceholders && !backgroundPending);
             const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
             let regen = tile.querySelector(".vnccs-pipe-img-regen");
             if (canRegenerate && !regen) {
