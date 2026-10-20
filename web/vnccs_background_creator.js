@@ -161,7 +161,7 @@ export function editorDefaults(value = {}) {
 export function composePrompt(editor) {
     const description = editor.scene_description ?? legacySceneDescription(editor);
     const body = [description, editor.aesthetics && !description.includes(editor.aesthetics) ? editor.aesthetics : ""].filter(Boolean).join("\n");
-    const style = String(editor.style || "").split(/\r?\n/).filter(line => !/^\s*(?:Style )?Reference\s*:/i.test(line)).join("\n");
+    const style = String(editor.style || "").replace(/^\s*Style\s*:\s*/i, "").replace(/\bVisual reference\s*:/gi, "Reference:");
     return [`Style: ${promptLine(style)}\nTime: Day\nInterior/Exterior: ${promptLine(editor.attributes.scene_type)}\nScene description: ${promptLine(body)}`,
         ...COMPOSITION_FIELDS.filter(key => editor[key]).map(key => `${key[0].toUpperCase() + key.slice(1)}: ${promptLine(editor[key])}`)].join("\n");
 }
@@ -225,10 +225,10 @@ export class BackgroundCreatorWidget {
                     <div class="bg-field" data-style-picker></div>
                     <div class="bg-field"><span>Interior/Exterior</span><div class="bg-segments" data-trait="scene_type"><button data-value="Interior">Interior</button><button data-value="Exterior">Exterior</button></div></div>
                     <label class="bg-field bg-description"><span>Scene description</span><textarea data-setting="scene_description" rows="3" maxlength="40000" placeholder="Describe the overall setting, atmosphere and lighting."></textarea></label>
-                    <label class="bg-field bg-description"><span>Front</span><textarea data-setting="front" rows="3" maxlength="40000" placeholder="Foreground: e.g. a rusty toolbox beside cracked floor tiles."></textarea></label>
-                    <label class="bg-field bg-description"><span>Back</span><textarea data-setting="back" rows="3" maxlength="40000" placeholder="Background: e.g. a dented garage door and exposed brick wall."></textarea></label>
-                    <label class="bg-field bg-description"><span>Left</span><textarea data-setting="left" rows="3" maxlength="40000" placeholder="Left side: e.g. metal shelves stacked with tires and paint cans."></textarea></label>
-                    <label class="bg-field bg-description"><span>Right</span><textarea data-setting="right" rows="3" maxlength="40000" placeholder="Right side: e.g. a wooden workbench beneath a dusty window."></textarea></label>
+                    <label class="bg-field bg-description"><span>Front</span><textarea data-setting="front" rows="3" maxlength="40000" placeholder="Describe the nearest surfaces, objects, or framing elements."></textarea></label>
+                    <label class="bg-field bg-description"><span>Back</span><textarea data-setting="back" rows="3" maxlength="40000" placeholder="Describe the distant environment, horizon, architecture, or backdrop."></textarea></label>
+                    <label class="bg-field bg-description"><span>Left</span><textarea data-setting="left" rows="3" maxlength="40000" placeholder="Describe elements and spatial relationships on the left side."></textarea></label>
+                    <label class="bg-field bg-description"><span>Right</span><textarea data-setting="right" rows="3" maxlength="40000" placeholder="Describe elements and spatial relationships on the right side."></textarea></label>
                     <label class="bg-field bg-negative"><span>Negative Prompt</span><textarea data-setting="negative" rows="2" maxlength="8000" aria-label="Negative prompt" placeholder="Optional: unwanted details or artifacts."></textarea></label>
                 </section>
                 <section class="bg-panel bg-generation"><div class="vnccs-common-creator-section-title">Generation</div>
@@ -1009,7 +1009,7 @@ export class BackgroundCreatorWidget {
             const text = document.createElement("div"); text.className = "bg-wizard-text";
             text.textContent = "Describe the background in a broad way. The model will expand it into the scene fields while preserving the selected style and scene type.";
             input = document.createElement("textarea"); input.className = "vnccs-common-creator-textarea bg-wizard-input";
-            input.maxLength = 40000; input.placeholder = "e.g. abandoned garage filled with old machinery, lit by one dusty window";
+            input.maxLength = 40000; input.placeholder = "e.g. a quiet interior, open landscape, city street, or fantasy environment";
             wrap.append(text, input); return wrap;
         }, [
             { text: "Cancel" },

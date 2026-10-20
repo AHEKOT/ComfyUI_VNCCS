@@ -19,10 +19,10 @@ const entrySource = source.slice(source.indexOf("function hideState"));
 const BASE = "/vnccs/background-creator";
 const A = "a".repeat(32), B = "b".repeat(32), IMAGE = "d".repeat(32);
 const SCENE_COMPOSITION = {
-    front: "A rusty toolbox beside cracked concrete floor tiles.",
-    back: "A dented garage door and exposed brick wall.",
-    left: "Steel shelves stacked with tires and paint cans.",
-    right: "A wooden workbench beneath a dusty window.",
+    front: "A broad path crosses the foreground between low planting beds.",
+    back: "Distant architecture frames the horizon beneath an open sky.",
+    left: "A shaded colonnade runs along the left edge of the scene.",
+    right: "A reflective pool borders the right side of the composition.",
 };
 const state = (overrides = {}) => ({ schema_version: 2, background_id: A, selected_image_id: IMAGE, revision: 3, editor: editorDefaults(), ...overrides });
 const background = (id = A, overrides = {}) => ({ schema_version: 2, background_id: id, name: "Evening room", revision: 3,
@@ -1002,7 +1002,7 @@ test("five equal scene fields save edits, reopen and retain deliberately empty c
 });
 
 test("structured composition prompts restore separate fields without changing legacy descriptions", () => {
-    const editor = editorDefaults({ scene_description: 'An old garage.', ...SCENE_COMPOSITION });
+    const editor = editorDefaults({ scene_description: 'An open courtyard.', ...SCENE_COMPOSITION });
     const prompt = composePrompt(editor);
     assert.equal(parsePrompt(prompt).scene_description, editor.scene_description);
     assert.equal(composePrompt(editorDefaults({ prompt })), prompt);
@@ -1516,9 +1516,9 @@ test('the wizard collects a separate brief before starting and saves returned fi
     assert.equal(h.control('[data-background-wizard]'), overlay);
     assert.equal(input.focused, true);
     assert.equal(h.calls.filter(call => call.path.endsWith('/jobs')).length, 0);
-    input.value = 'An abandoned garage with old machinery';
+    input.value = 'A quiet coastal town beneath overcast skies';
     await fill.click();
-    assert.equal(payload.description, 'An abandoned garage with old machinery');
+    assert.equal(payload.description, 'A quiet coastal town beneath overcast skies');
     assert.equal(payload.editor.scene_description, '');
     assert.equal(h.control('[data-background-wizard]'), null);
     assert.equal(h.widget.state.editor.scene_description, 'Detailed wizard scene');
@@ -1760,7 +1760,8 @@ test('shared style cards use rendering text, persist selection and preserve old 
     reopened.widget.stylePicker.setValue('custom', true);
     assert.equal(reopened.widget.styleInfo.style, 'custom');
     assert.equal(reopened.widget.state.editor.style, 'My old brushwork');
-    assert.doesNotMatch(composePrompt(editorDefaults({style: 'Ink wash\nReference: Alice Example'})), /Alice Example/);
+    assert.match(composePrompt(editorDefaults({style: 'Ink wash\nReference: Alice Example'})), /^Style: Ink wash Reference: Alice Example/m);
+    assert.match(composePrompt(editorDefaults({style: 'Ink wash. Visual reference: Alice Example'})), /^Style: Ink wash\. Reference: Alice Example/m);
     h.node.onRemoved(); reopened.node.onRemoved();
 });
 
@@ -1981,7 +1982,7 @@ test('height follows missing form space once at non-unit scale while an overlaid
 test('Background style gallery sends the current editor to its own cover endpoint and cleans its progress listener', async () => {
     const catalog = JSON.parse(fs.readFileSync(new URL('../background_template/background_styles.json', import.meta.url), 'utf8'));
     const styles = catalog.groups.flatMap(group => group.styles);
-    const editor = editorDefaults({ style_id: styles[0].id, style: styles[0].prompt, custom_style: '', scene_description: 'My garage',
+    const editor = editorDefaults({ style_id: styles[0].id, style: styles[0].prompt, custom_style: '', scene_description: 'My environment',
         generation: { model_type: 'moss', steps: 21, resolution_mp: 2.5, lora_stack: [{ name: 'Scenery.safetensors', strength: .7 }] } });
     const h = harness(JSON.stringify(state({ editor }))); await h.ready();
     h.widget.config.styles = styles; h.widget.render();
@@ -1999,7 +2000,7 @@ test('Background style gallery sends the current editor to its own cover endpoin
     const pending = h.widget.stylePicker.generatePreviews();
     assert.equal(sent.length, 1);
     assert.equal(sent[0].node_id, '7'); assert.equal(sent[0].character_info, undefined);
-    assert.equal(sent[0].editor.scene_description, 'My garage'); assert.equal(sent[0].editor.generation.model_type, 'moss');
+    assert.equal(sent[0].editor.scene_description, 'My environment'); assert.equal(sent[0].editor.generation.model_type, 'moss');
     assert.equal(sent[0].editor.generation.resolution_mp, 2.5); assert.equal(sent[0].editor.generation.lora_stack[0].strength, .7);
     h.emitEvent('vnccs.style_preview.stage', { node_id: 'other', request_id: sent[0].request_id, status: 'queued' });
     assert.doesNotMatch(h.control('.vnccs-style-status').textContent, /^Queued/);
@@ -2022,7 +2023,7 @@ test('a failed wizard opens the Creator-style error modal and keeps authored fie
     };
     await h.control('[data-wizard]').click();
     const wizard = h.control('[data-background-wizard]'), input = wizard.querySelector('.bg-wizard-input');
-    input.value = 'A dark garage';
+    input.value = 'A moonlit garden';
     await wizard.querySelectorAll('button').at(-1).click();
     const error = h.control('[data-background-error]');
     assert.equal(error.querySelector('.vnccs-common-modal-title').textContent, 'Background Wizard Error');
@@ -2030,7 +2031,7 @@ test('a failed wizard opens the Creator-style error modal and keeps authored fie
     assert.equal(h.control('.vnccs-common-message-box'), null);
     assert.equal(h.widget.busy, false);
     assert.equal(h.widget.state.editor.scene_description, '');
-    assert.equal(input.value, 'A dark garage');
+    assert.equal(input.value, 'A moonlit garden');
     const authored = JSON.parse(before).editor;
     assert.deepEqual(JSON.parse(h.data.value).editor, authored);
     h.widget.restoring = true; h.widget.updateControls();

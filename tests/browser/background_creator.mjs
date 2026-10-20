@@ -748,7 +748,16 @@ try {
     await page.waitForFunction(()=>widget.document.name==='New defaults');
     assert.deepEqual(await page.locator('.bg-variation-item>span').allTextContents(),['Morning','Evening','Night']);
     assert.equal(await page.evaluate(()=>widget.state.editor.variants.every(card=>card.weather==='')),true,'New does not copy the previous variant parameters');
+    const neutralPlaceholders=await page.locator('[data-setting="front"],[data-setting="back"],[data-setting="left"],[data-setting="right"]').evaluateAll(fields=>Object.fromEntries(fields.map(field=>[field.dataset.setting,field.placeholder])));
+    assert.deepEqual(neutralPlaceholders,{
+        front:'Describe the nearest surfaces, objects, or framing elements.',
+        back:'Describe the distant environment, horizon, architecture, or backdrop.',
+        left:'Describe elements and spatial relationships on the left side.',
+        right:'Describe elements and spatial relationships on the right side.',
+    });
+    assert.doesNotMatch(Object.values(neutralPlaceholders).join(' '),/garage|toolbox|tires|paint cans|workbench/i);
     await capture('new-background-defaults');
+    await page.locator('.bg-attributes').screenshot({path:join(output,'neutral-background-field-placeholders.png'),animations:'disabled'});
     report.newBackground={legacyDayCopied:false,freshVariants:true};
     assert.ok(mutations.length > 0, 'Edits still save into the selected background JSON');
     assert.deepEqual(retiredRequests, []); report.retiredModelRequests=retiredRequests;
@@ -829,7 +838,7 @@ try {
     await wizard.waitFor();await settle();
     assert.equal(wizardRequests.length,0,'Opening the wizard must not start inference');
     assert.equal(await wizard.locator('.bg-wizard-text').textContent(),'Describe the background in a broad way. The model will expand it into the scene fields while preserving the selected style and scene type.');
-    assert.equal(await wizard.locator('textarea').getAttribute('placeholder'),'e.g. abandoned garage filled with old machinery, lit by one dusty window');
+    assert.equal(await wizard.locator('textarea').getAttribute('placeholder'),'e.g. a quiet interior, open landscape, city street, or fantasy environment');
     await wizard.getByRole('button',{name:'FILL FIELDS',exact:true}).click();
     assert.equal(wizardRequests.length,0,'An empty wizard brief must not start inference');
     assert.equal(await wizard.locator('textarea').evaluate(input=>input===document.activeElement),true,'Empty submission keeps focus in the wizard input');
@@ -861,16 +870,16 @@ try {
         else assert.deepEqual(comparison.actual,comparison.expected,part+' must match the actual Character Creator wizard styles');
     }
     await capture('background-wizard-input');
-    await wizard.locator('textarea').fill('A dark abandoned garage with rusted machinery');
+    await wizard.locator('textarea').fill('A quiet coastal town beneath overcast skies');
     await wizard.getByRole('button',{name:'FILL FIELDS',exact:true}).click();
     assert.equal(wizardRequests.length,1);
-    assert.equal(wizardRequests[0].description,'A dark abandoned garage with rusted machinery');
+    assert.equal(wizardRequests[0].description,'A quiet coastal town beneath overcast skies');
     assert.equal(wizardRequests[0].editor.scene_description,'','The wizard brief must not overwrite authored fields before success');
     const wizardError=page.getByRole('dialog',{name:'Background Wizard Error',exact:true});
     await wizardError.waitFor();await settle();
     assert.equal(await page.locator('.vnccs-common-message-box').count(),0);
     assert.equal(await wizardError.locator('.bg-error-text').textContent(),'Describe the background for the wizard');
-    assert.equal(await wizard.locator('textarea').inputValue(),'A dark abandoned garage with rusted machinery','A failed request keeps the wizard draft');
+    assert.equal(await wizard.locator('textarea').inputValue(),'A quiet coastal town beneath overcast skies','A failed request keeps the wizard draft');
     report.errorDialogComparison=await page.evaluate(async()=>{
         const {showModal}=await import('/web/vnccs_common.js');
         const current=widget.errorDialog;

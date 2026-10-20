@@ -23,10 +23,10 @@ from conftest import _preload_node
 
 storage = generation = service = routes_module = sampling = progress = _preload_node("background_creator")
 SCENE_COMPOSITION = {
-    "front": "A rusty toolbox rests beside cracked concrete floor tiles.",
-    "back": "A dented metal garage door stands against an exposed brick wall.",
-    "left": "Steel shelves hold stacked tires and old paint cans.",
-    "right": "A wooden workbench sits below a dusty window.",
+    "front": "A broad path crosses the foreground between low planting beds.",
+    "back": "Distant architecture frames the horizon beneath an open sky.",
+    "left": "A shaded colonnade runs along the left edge of the scene.",
+    "right": "A reflective pool borders the right side of the composition.",
 }
 
 
@@ -337,11 +337,11 @@ def test_composition_fields_reject_malformed_text(key, value):
 
 
 def test_composition_fields_round_trip_disk_and_structured_prompts(library):
-    editor = generation.normalize_editor({"scene_description": "A dark garage with old junk.", **SCENE_COMPOSITION})
+    editor = generation.normalize_editor({"scene_description": "A quiet courtyard with layered architecture.", **SCENE_COMPOSITION})
     prompt = generation.compose_prompt(editor)
     assert prompt.splitlines()[4:] == [f"{key.title()}: {value}" for key, value in SCENE_COMPOSITION.items()]
     assert generation.compose_prompt({"prompt": prompt}) == prompt
-    document = storage.create_background("Garage", editor)
+    document = storage.create_background("Courtyard", editor)
     restored = generation.normalize_editor(storage.load_background(document["background_id"])["editor"])
     assert restored == editor
     restored["front"] = ""
@@ -446,6 +446,7 @@ def test_text_to_image_pipeline_uses_creator_assets_cache_and_true_empty_latent(
     assert calls["QwenImage21Cache"]["device"] == "gpu"
     assert calls["QwenImage21Cache"]["dtype"] == "int8"
     assert calls["TextGenerate"]["sampling_mode"] == generation.TEXT_GENERATION["sampling_mode"]
+    assert calls["TextGenerate"]["sampling_mode"]["temperature"] == 0.7
     assert calls["TextEncodeQwenImage21"]["images"] == {}
     assert calls["TextEncodeQwenImage21"]["prompt"] == generation.compose_prompt({"scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}) + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
     assert calls["KSampler"]["latent_image"] == {"samples": "empty"}
@@ -772,13 +773,13 @@ def test_one_background_cannot_start_conflicting_jobs(workspace):
 
 def test_wizard_returns_draft_without_overwriting_authored_document(workspace):
     document = workspace.document
-    service.start_job(document["background_id"], job_payload(document, "wizard", description="Abandoned garage"))
+    service.start_job(document["background_id"], job_payload(document, "wizard", description="Misty mountain village"))
     job = workspace.run_pending()
     assert job["status"] == "completed"
     assert job["result"]["editor"]["attributes"]["location"] == "Tokyo"
     assert storage.load_background(document["background_id"]) == document
     workspace.generated.assert_not_called()
-    assert workspace.wizard.call_args.args[0] == "Abandoned garage"
+    assert workspace.wizard.call_args.args[0] == "Misty mountain village"
 
 
 @pytest.mark.parametrize("description", [None, "", "   ", [], "x" * 40001])
@@ -1299,7 +1300,7 @@ def test_prompt_enhancement_expands_all_scene_fields_and_keeps_scene_settings(ru
               "generation": {"model_type": model_type}, **(SCENE_COMPOSITION if prefilled else {})}
     original = copy.deepcopy(editor)
     runtime.decoded_size[0] = generation.dimensions(editor)
-    expanded = {key: value + " Soft daylight reveals the worn surfaces." for key, value in SCENE_COMPOSITION.items()}
+    expanded = {key: value + " A secondary structure continues behind it." for key, value in SCENE_COMPOSITION.items()}
     def call(name, **kwargs):
         if name == "TextGenerate":
             runtime.calls.append((name, kwargs))
@@ -1315,8 +1316,11 @@ def test_prompt_enhancement_expands_all_scene_fields_and_keeps_scene_settings(ru
     request = dict(runtime.calls)["TextGenerate"]
     assert request["prompt"] == generation.compose_prompt(editor)
     assert "Return exactly eight lines" in request["system_prompt"]
-    assert "Fill every field, including fields left empty by the user" in request["system_prompt"]
+    assert "Fill every scene field without inventing unrelated focal objects or decorative motifs" in request["system_prompt"]
     assert "preserving its objects, positions and constraints" in request["system_prompt"]
+    assert "Describe only physical scene content, objects and spatial relationships" in request["system_prompt"]
+    assert "Never repeat, paraphrase or apply Style inside" in request["system_prompt"]
+    assert "light sources and shadows, colors and atmosphere" not in request["system_prompt"]
     assert editor == original and metadata["editor"] == generation.normalize_editor(original)
 
 
@@ -1337,8 +1341,40 @@ def test_wizard_returns_all_scene_fields_and_accepts_composition_only_briefs(run
     assert editor["attributes"] == {"time": "Day", "scene_type": "Interior"}
     assert {key: editor[key] for key in SCENE_COMPOSITION} == SCENE_COMPOSITION
     schema = json.loads(dict(runtime.calls)["TextGenerate"]["system_prompt"].split("not a finished answer: ")[1])
-    assert schema["front"] == supplied["front"] and all(schema[key] == "" for key in ("back", "left", "right"))
+    if description:
+        assert schema["scene_type"] == "" and schema["scene_description"] == description
+        assert all(schema[key] == "" for key in SCENE_COMPOSITION)
+    else:
+        assert schema["scene_type"] == "Interior" and schema["scene_description"] == ""
+        assert schema["front"] == supplied["front"] and all(schema[key] == "" for key in ("back", "left", "right"))
     assert generation.compose_prompt(editor).splitlines()[1] == "Time: Day"
+
+
+def test_new_wizard_brief_does_not_reuse_a_saved_interior_scene(runtime, monkeypatch):
+    brief = "street with sakura trees"
+    previous = {"scene_description": "A furnished bedroom.", "attributes": {"scene_type": "Interior"},
+                **{key: f"Old bedroom {key}." for key in SCENE_COMPOSITION}}
+    result = {"style": "Painted animation", "time": "Day", "scene_type": "Exterior",
+              "scene_description": "An outdoor street lined with flowering trees.",
+              "front": "The street enters the foreground.", "back": "The road continues into the distance.",
+              "left": "Trees border the left side.", "right": "Building fronts line the right side."}
+
+    def call(name, **kwargs):
+        if name == "TextGenerate":
+            runtime.calls.append((name, kwargs))
+            return (json.dumps(result),)
+        return runtime.call(name, **kwargs)
+
+    monkeypatch.setattr(generation, "_call_comfy_node", call)
+    editor = generation.wizard(brief, previous, "fresh-scene-wizard", threading.Event())
+    request = dict(runtime.calls)["TextGenerate"]
+    schema = json.loads(request["system_prompt"].split("not a finished answer: ")[1])
+    assert request["prompt"] == brief
+    assert schema["scene_description"] == brief and schema["scene_type"] == ""
+    assert all(schema[key] == "" for key in SCENE_COMPOSITION)
+    assert "furnished bedroom" not in request["system_prompt"].lower()
+    assert editor["attributes"]["scene_type"] == "Exterior"
+    assert editor["scene_description"] == result["scene_description"]
 
 
 @pytest.mark.parametrize("use_wizard", [False, True])
@@ -1347,13 +1383,12 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
               "attributes": {"time": "Night", "scene_type": "Interior"}}
     original = copy.deepcopy(editor)
     description = (
-        "A quiet bedroom opens around a low wooden bed with rumpled linen and layered pillows. "
-        "A woven rug crosses the foreground, leading toward a small bedside table and a warm reading lamp. "
-        "Tall shelves hold books, ceramic bowls and folded blankets along the left wall. "
-        "In the background, blue moonlight enters through a broad window framed by loose curtains. "
-        "The cool light catches the grain of the floorboards and softens against textured plaster walls, "
-        "while the lamp casts gentle amber shadows across the bedding. A narrow writing desk, a potted plant "
-        "and neatly stacked notebooks complete the calm, lived-in room."
+        "A bedroom is organized around a low bed placed against the back wall, with a bedside table on each side. "
+        "A woven rug crosses the foreground and leaves a clear walking route from the doorway to the bed. "
+        "Tall shelves containing books, ceramic bowls and folded blankets occupy the left wall. "
+        "A broad window is centered behind the bed, with curtains hanging on both sides. "
+        "The right side contains a narrow writing desk, a chair and stacked notebooks. "
+        "A wardrobe stands near the entrance without blocking the central path."
     )
     expected = generation.compose_prompt({**editor, "scene_description": description, **SCENE_COMPOSITION})
     fields = {"style": editor["style"], "time": "Night", "scene_type": "Interior", "scene_description": description, **SCENE_COMPOSITION}
@@ -1372,13 +1407,20 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
         assert metadata["editor"]["scene_description"] == "badroom"
     request = dict(runtime.calls)["TextGenerate"]
     assert "badroom" in request["prompt"]
-    assert "interpret 'badroom' as 'bedroom'" in request["system_prompt"]
-    assert "100-180 words" in request["system_prompt"]
+    static_prompt = request["system_prompt"].split("The following object supplies")[0]
+    assert "obvious typos from context" in static_prompt and "bedroom" not in static_prompt
+    assert "80-140 words" in request["system_prompt"]
     assert "foreground/midground/background" in request["system_prompt"]
     assert "Style" in request["system_prompt"] and "Interior/Exterior" in request["system_prompt"]
+    assert "Do not invent or elaborate visual style, rendering technique, lighting" in request["system_prompt"]
+    assert "Style is the only field that controls aesthetics and rendering" in request["system_prompt"]
+    assert "light sources and shadows, colors and atmosphere" not in request["system_prompt"]
+    assert "surfaces, depth and lighting" not in request["system_prompt"]
     if use_wizard:
         assert "exactly eight string keys in this order: style, time, scene_type, scene_description, front, back, left, right" in request["system_prompt"]
-        assert json.loads(request["system_prompt"].split("not a finished answer: ")[1]) == {**fields, "time": "Day", "scene_description": "badroom", **{key: "" for key in SCENE_COMPOSITION}}
+        assert json.loads(request["system_prompt"].split("not a finished answer: ")[1]) == {
+            **fields, "time": "Day", "scene_type": "", "scene_description": "badroom",
+            **{key: "" for key in SCENE_COMPOSITION}}
     else:
         assert "Keep Style, Time and Interior/Exterior exactly as supplied" in request["system_prompt"]
         assert request["prompt"] == generation.compose_prompt(editor)
@@ -2097,6 +2139,7 @@ def test_background_styles_are_100_unique_traceable_environment_renderings(backg
         assert not re.search(r"\b(?:at night|at dawn|at sunset|light rain|stormy|full.body|close.up)\b", style["prompt"], re.I)
         assert style["prompt"].startswith(f"Style: {style['label']}.\nReference: {style['reference']}")
         assert "\nVisual description: " in style["prompt"]
+        assert f"Reference: {style['reference']}" in generation.compose_prompt({"style": style["prompt"]}).splitlines()[0]
         assert style["image"] == ""
     assert not generation.USER_BACKGROUND_STYLES_PATH.exists()
 
@@ -2104,7 +2147,7 @@ def test_background_styles_are_100_unique_traceable_environment_renderings(backg
 @pytest.mark.parametrize("model_type", ["qi2", "moss"])
 def test_background_cover_uses_current_inference_settings_without_writing_backgrounds(workspace, background_style_storage, model_type):
     before = files(storage.root())
-    editor = generation.normalize_editor({"scene_description": "An empty garage with old tools", "style": "Old custom text", "aspect": "16:9",
+    editor = generation.normalize_editor({"scene_description": "An open riverside plaza", "style": "Old custom text", "aspect": "16:9",
         "generation": {"model_type": model_type, "seed": 777, "seed_mode": "randomize", "resolution_mp": 3.5,
                        "steps": 19, "cfg": 2, "prompt_enhance": True, "lora_stack": [{"name": "room.safetensors", "strength": .7}]}})
     original = copy.deepcopy(editor)
@@ -2137,7 +2180,8 @@ def test_background_custom_cover_and_empty_scene_use_environment_fallback(worksp
     workspace.generated.return_value = (Image.new("RGB", (32, 32)), {})
     generation.generate_style_preview({"style_id": "custom", "editor": {"custom_style": "Blue ink washes"}})
     editor = workspace.generated.call_args.args[0]
-    assert editor["style"] == "Blue ink washes" and "wooden table" in editor["scene_description"]
+    assert editor["style"] == "Blue ink washes"
+    assert editor["scene_description"] == "A spacious environment with clear foreground, middle distance and background, varied surfaces and coherent lighting."
     with pytest.raises(ValueError, match="Enter a custom style"):
         generation.generate_style_preview({"style_id": "custom", "editor": {"custom_style": ""}})
 
