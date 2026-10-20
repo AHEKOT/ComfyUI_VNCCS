@@ -18,6 +18,12 @@ const widgetSource = source.slice(0, source.indexOf("function hideState")).repla
 const entrySource = source.slice(source.indexOf("function hideState"));
 const BASE = "/vnccs/background-creator";
 const A = "a".repeat(32), B = "b".repeat(32), IMAGE = "d".repeat(32);
+const SCENE_COMPOSITION = {
+    front: "A rusty toolbox beside cracked concrete floor tiles.",
+    back: "A dented garage door and exposed brick wall.",
+    left: "Steel shelves stacked with tires and paint cans.",
+    right: "A wooden workbench beneath a dusty window.",
+};
 const state = (overrides = {}) => ({ schema_version: 2, background_id: A, selected_image_id: IMAGE, revision: 3, editor: editorDefaults(), ...overrides });
 const background = (id = A, overrides = {}) => ({ schema_version: 2, background_id: id, name: "Evening room", revision: 3,
     editor: editorDefaults(), selected_image_id: IMAGE, images: [{ image_id: IMAGE, width: 1600, height: 900, url: `${BASE}/backgrounds/${id}/images/${IMAGE}` }], ...overrides });
@@ -169,8 +175,11 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
             overlay.textContent = text; overlay.isError = error; container.appendChild(overlay); return overlay;
         },
         showModal(container, title, content, actions) {
-            const overlay = new Element(), modal = new Element(); modal.className = "vnccs-common-modal";
-            modal.appendChild(content(modal)); const buttons = actions.map(action => { const button = new Element("button"); button.type = "button"; button.className = "vnccs-common-modal-btn"; button.textContent = action.text; button.onclick = () => action.action?.(); modal.appendChild(button); return button; });
+            const overlay = new Element(), modal = new Element(); overlay.className = "vnccs-common-modal-overlay"; modal.className = "vnccs-common-modal";
+            modal.setAttribute("role", "dialog");
+            const heading = new Element(); heading.className = "vnccs-common-modal-title"; heading.textContent = title; modal.appendChild(heading);
+            modal.appendChild(content(modal)); const buttons = actions.map(action => { const button = new Element("button"); button.type = "button"; button.className = "vnccs-common-modal-btn" + (action.class === "primary" ? " vnccs-common-modal-btn-primary" : ""); button.textContent = action.text;
+                button.onclick = async () => { if (button.disabled) return; if (!action.action || !await action.action(overlay, button)) overlay.remove(); }; modal.appendChild(button); return button; });
             overlay.appendChild(modal); container.appendChild(overlay); return { overlay, modal, buttons };
         },
         SAKURA_THEME_CSS: "", SAKURA_INTERACTION_CSS: "", SAKURA_CREATOR_CONTROL_CSS: "", COMMON_CSS: "", injectStyles() {}, generateRandomSeed: () => 19,
@@ -185,6 +194,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         clearTimeout: id => timers.delete(id),
     });
     vm.runInContext(fs.readFileSync(new URL("../web/sakura_interactions.mjs", import.meta.url), "utf8").replaceAll("export ", ""), context);
+    vm.runInContext(fs.readFileSync(new URL("../web/character_styles.mjs", import.meta.url), "utf8").replace(/^import .*\n/gm, "").replaceAll("export ", ""), context);
     vm.runInContext(traitSource, context);
     vm.runInContext(resolutionSource, context);
     vm.runInContext(common.slice(common.indexOf('export function setHelpText'), common.indexOf('export function attachHelpTooltips')).replace('export ', ''), context);
@@ -287,11 +297,14 @@ test("Moss inventory and missing-asset messages use its own model family", async
 test("serialization and queue preserve the latest scene fields", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     h.widget.state.editor.scene_description = "My current environment";
+    Object.assign(h.widget.state.editor, SCENE_COMPOSITION);
     const info = { widgets_values: [0, "stale"] }; h.node.onSerialize(info);
     assert.equal(JSON.parse(info.widgets_values[1]).editor.scene_description, "My current environment");
+    for (const [key, value] of Object.entries(SCENE_COMPOSITION)) assert.equal(JSON.parse(info.widgets_values[1]).editor[key], value);
     h.widget.state.editor.style = "Ink painting"; h.data.beforeQueued();
     assert.equal(JSON.parse(h.data.value).editor.style, "Ink painting");
     assert.equal(JSON.parse(h.data.serializeValue()).editor.style, "Ink painting");
+    for (const [key, value] of Object.entries(SCENE_COMPOSITION)) assert.equal(JSON.parse(h.data.serializeValue()).editor[key], value);
     assert.equal(h.control("header,nav,[data-panel=\"model\"]"), null);
     assert.equal(h.calls.some(call => call.path.includes("/models/")), false);
     h.widget.busy = true;
@@ -541,7 +554,7 @@ test("Background uses the exact Creator declarations for every shared control", 
     assert.doesNotMatch(source, /\.bg-(?:mode|toggle|lora|seed)(?:[ >.{]|$)/);
     assert.doesNotMatch(source, /\.bg-generation (?:input|select)|input\[type=number\] \{ font-family/);
     assert.ok(source.includes("createSakuraInteractions(this.container, node)"));
-    assert.ok(source.includes('<select data-style aria-label="Style">'));
+    assert.ok(source.includes("createStylePicker({"));
     assert.ok(source.includes('class="bg-field bg-description"'));
     assert.ok(source.includes("showModal(this.container"));
     assert.ok(source.includes("animateWizardRows("));
@@ -882,6 +895,9 @@ test("model cards select installed catalog and local models and retain a missing
     await h.control('[data-model-choice="qwen_image_2.1_turbo_int8_convrot.safetensors"]').click();
     assert.equal(h.widget.state.editor.generation.steps, 8); assert.equal(h.widget.state.editor.generation.turbo, false);
     assert.equal(h.control('[data-setting="generation.turbo"]').disabled, true);
+    assert.equal(h.control('[data-turbo-lora]').hidden, true);
+    await h.control('[data-model-choice="custom/room.safetensors"]').click();
+    assert.equal(h.control('[data-turbo-lora]').hidden, false);
     h.widget.busy = true; h.widget.updateControls();
     assert.equal(h.control("[data-model-toggle]").getAttribute("aria-disabled"), "true");
     h.widget.busy = false; h.widget.state.editor.generation.diffusion_model_name = "retained/absent.safetensors"; h.widget.render();
@@ -933,10 +949,10 @@ test("the middle scene fields retain their order and compose the structured prom
     const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: "Anime, digital art, cel shaded", scene_description: description, attributes: { time: "Night", scene_type: "Interior" } }) })));
     await h.ready();
     assert.equal(composePrompt(h.widget.state.editor), `Style: Anime, digital art, cel shaded\nTime: Day\nInterior/Exterior: Interior\nScene description: ${description}`);
-    assert.deepEqual(h.control('.bg-attributes').querySelectorAll('.bg-field').map(field => field.children[0].textContent), ["Style", "Interior/Exterior", "Scene description", "Negative Prompt"]);
+    assert.deepEqual(h.control('.bg-attributes').querySelectorAll('.bg-field').map(field => field.querySelector('.vnccs-creator-label')?.textContent || field.children[0].textContent), ["Style", "Interior/Exterior", "Scene description", "Front", "Back", "Left", "Right", "Negative Prompt"]);
     assert.equal(h.control('.bg-attributes').querySelector('[data-setting="aspect"]'), null);
     assert.equal(h.control('.bg-generation').contains(h.control('[data-setting="aspect"]')), true);
-    const style = h.control('[data-setting="style"]'); style.value = 'Watercolor, paper texture'; await style.fire('input');
+    h.widget.styleInfo.custom_style = 'Watercolor, paper texture'; h.widget.stylePicker.setValue('custom', true);
     const field = h.control('[data-setting="scene_description"]'); field.value = 'A new scene\nwith its exact details.'; await field.fire('input');
     const expected = 'Style: Watercolor, paper texture\nTime: Day\nInterior/Exterior: Interior\nScene description: A new scene with its exact details.';
     assert.equal(composePrompt(h.widget.state.editor), expected);
@@ -954,6 +970,47 @@ test("scene description migration retains legacy data and never resurrects clear
     editor.scene_description = "";
     assert.equal(composePrompt(editor).split('\n').at(-1), 'Scene description: ');
     assert.equal(editorDefaults(editor).scene_description, '');
+});
+
+test("five equal scene fields save edits, reopen and retain deliberately empty composition", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const fields = h.control('.bg-attributes').querySelectorAll('.bg-description');
+    assert.deepEqual(fields.map(field => field.querySelector('textarea').dataset.setting), ['scene_description', 'front', 'back', 'left', 'right']);
+    for (const field of fields) {
+        const control = field.querySelector('textarea');
+        assert.equal(control.getAttribute('rows'), '3'); assert.equal(control.getAttribute('maxlength'), '40000');
+        assert.equal(control.parentElement.tagName, 'LABEL');
+    }
+    assert.match(source, /\.bg-attributes>\.bg-description \{ flex:1 1 0; min-height:100px;/);
+    for (const [key, value] of Object.entries(SCENE_COMPOSITION)) {
+        const control = h.control(`[data-setting="${key}"]`); control.value = value; await control.fire('input');
+        assert.equal(JSON.parse(h.data.value).editor[key], value);
+    }
+    assert.deepEqual(composePrompt(h.widget.state.editor).split('\n').slice(4),
+        Object.entries(SCENE_COMPOSITION).map(([key, value]) => `${key[0].toUpperCase() + key.slice(1)}: ${value}`));
+    const reopened = harness(h.data.value); await reopened.ready();
+    for (const [key, value] of Object.entries(SCENE_COMPOSITION)) assert.equal(reopened.control(`[data-setting="${key}"]`).value, value);
+    reopened.control('[data-setting="front"]').value = ''; await reopened.control('[data-setting="front"]').fire('input');
+    reopened.api.handle = (path, options) => options.method === 'PATCH'
+        ? response(background(A, { revision: 4, editor: JSON.parse(options.body).editor })) : undefined;
+    await reopened.widget.persist();
+    const saved = reopened.widget.document.editor;
+    assert.equal(saved.front, ''); assert.equal(saved.back, SCENE_COMPOSITION.back);
+    assert.doesNotMatch(composePrompt(saved), /\nFront:/);
+    assert.equal(readState(JSON.stringify(state({ editor: saved }))).editor.front, '');
+    h.node.onRemoved(); reopened.node.onRemoved();
+});
+
+test("structured composition prompts restore separate fields without changing legacy descriptions", () => {
+    const editor = editorDefaults({ scene_description: 'An old garage.', ...SCENE_COMPOSITION });
+    const prompt = composePrompt(editor);
+    assert.equal(parsePrompt(prompt).scene_description, editor.scene_description);
+    assert.equal(composePrompt(editorDefaults({ prompt })), prompt);
+    for (const key of Object.keys(SCENE_COMPOSITION)) {
+        assert.equal(editorDefaults({ prompt })[key], SCENE_COMPOSITION[key]);
+        assert.equal(editorDefaults({ prompt, [key]: '' })[key], '');
+        assert.equal(editorDefaults({ scene_description: 'Keep my old room.' })[key], '');
+    }
 });
 
 test("variant cards open inline Creator trait fields and retain edits in the background JSON", async () => {
@@ -1179,15 +1236,19 @@ test('empty and interrupted generations restore the existing preview and keep us
     assert.equal(h.data.value, raw);
 });
 
-test('preview errors use the common Creator message instead of an invisible footer', async () => {
+test('Background errors use the Creator modal with a title, body and primary acknowledgement', async () => {
     const h = harness(); await h.ready();
     h.widget.message('Decoder unavailable', true);
-    const notification = h.control('.vnccs-common-message-overlay');
-    assert.match(notification.textContent, /Decoder unavailable/); assert.equal(notification.querySelector('.vnccs-common-message-box').classList.contains('error'), true);
+    const notification = h.control('[data-background-error]');
+    assert.equal(notification.querySelector('.vnccs-common-modal-title').textContent, 'Background Creator Error');
+    assert.equal(notification.querySelector('.bg-error-text').textContent, 'Decoder unavailable');
+    assert.ok(notification.querySelector('.bg-error-dialog'));
+    assert.ok(notification.querySelector('.vnccs-common-modal-btn-primary'));
+    assert.equal(h.control('.vnccs-common-message-box'), null);
     assert.equal(h.widget.status.textContent, 'Decoder unavailable');
     assert.equal(h.control('footer'), null);
     h.widget.message('Decoder unavailable', true);
-    assert.equal(h.widget.container.querySelectorAll('.vnccs-common-message-overlay').length, 1);
+    assert.equal(h.widget.container.querySelectorAll('[data-background-error]').length, 1);
 });
 
 for (const status of ['failed', 'cancelled']) test(`${status} preview jobs restore the original image and Generate button`, async () => {
@@ -1225,7 +1286,7 @@ test('workflow pass-through of an uploaded background does not animate a false g
 });
 
 function savedVariantSet(editor, { source = IMAGE, id = '1'.repeat(32) } = {}) {
-    return { set_id: id, source_image_id: source, variants: clone(editor.variants),
+    return { set_id: id, version: "", source_image_id: source, variants: clone(editor.variants),
         images: [{ name: 'Original', url: '/original.png' }, ...editor.variants.map(card => ({ name: card.name, url: `/sets/${id}/${card.id}.png` }))] };
 }
 
@@ -1336,12 +1397,12 @@ test('restoration error message remains dismissible while authored controls stay
     const raw = JSON.stringify(state()), h = harness(raw);
     h.api.handle = path => { if (path === `${BASE}/config`) throw new TypeError('Failed to fetch'); };
     await h.ready();
-    const overlay = h.control('.vnccs-common-message-overlay'), ok = overlay.querySelector('button');
+    const overlay = h.control('[data-background-error]'), ok = overlay.querySelector('button');
     assert.equal(h.widget.restoring, true);
     assert.equal(h.control('[data-action="background"]').disabled, true);
     assert.equal(h.data.value, raw);
     assert.equal(ok.disabled, false, 'Dismissing an error must not depend on backend readiness');
-    await ok.click(); assert.equal(h.control('.vnccs-common-message-overlay'), null);
+    await ok.click(); assert.equal(h.control('[data-background-error]'), null);
     assert.equal(h.data.value, raw); h.node.onRemoved();
 });
 
@@ -1375,7 +1436,7 @@ test('reconnection retries a failed restoration without writes and releases the 
     const raw = JSON.stringify(saved), h = harness(raw);
     h.api.handle = path => { if (path === `${BASE}/config`) throw new TypeError('Failed to fetch'); };
     await h.ready(); assert.equal(h.widget.restoreFailed, true);
-    const ok = h.control('.vnccs-common-message-overlay').querySelector('button'); await ok.click();
+    const ok = h.control('[data-background-error]').querySelector('button'); await ok.click();
     assert.equal(h.data.value, raw); h.api.handle = null;
     h.emitEvent('reconnecting'); h.emitEvent('status', {}); await h.widget.operations;
     assert.equal(h.widget.restoring, false); assert.equal(h.widget.restoreFailed, false);
@@ -1434,22 +1495,41 @@ test('saved display names are bounded without accepting invalid cached metadata'
     assert.equal(readState(JSON.stringify(state({background_name:'🌄'.repeat(96)}))).background_name,'🌄'.repeat(96));
 });
 
-test('the wizard button starts a job and saves its returned scene through the normal editor path', async () => {
+test('the wizard collects a separate brief before starting and saves returned fields through the normal editor path', async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
-    const editor = editorDefaults({scene_description: 'Detailed wizard scene'}), jobId = '1'.repeat(32);
+    const editor = editorDefaults({scene_description: 'Detailed wizard scene', ...SCENE_COMPOSITION}), jobId = '1'.repeat(32);
+    let payload;
     h.api.handle = (path, options) => {
         if (path.endsWith('/jobs') && options.method === 'POST') {
-            assert.equal(JSON.parse(options.body).action, 'wizard');
+            payload = JSON.parse(options.body); assert.equal(payload.action, 'wizard');
             return response({job_id: jobId});
         }
         if (path === `${BASE}/jobs/${jobId}`) return response({status: 'completed', result: {editor}});
         if (options.method === 'PATCH') return response(background(A, {revision: 4, editor}));
     };
     await h.control('[data-wizard]').click();
+    const overlay = h.control('[data-background-wizard]'), input = overlay.querySelector('.bg-wizard-input');
+    const fill = overlay.querySelectorAll('button').at(-1);
+    assert.equal(overlay.querySelector('.vnccs-common-modal-title').textContent, 'Background Wizard');
+    assert.equal(h.calls.filter(call => call.path.endsWith('/jobs')).length, 0);
+    await fill.click();
+    assert.equal(h.control('[data-background-wizard]'), overlay);
+    assert.equal(input.focused, true);
+    assert.equal(h.calls.filter(call => call.path.endsWith('/jobs')).length, 0);
+    input.value = 'An abandoned garage with old machinery';
+    await fill.click();
+    assert.equal(payload.description, 'An abandoned garage with old machinery');
+    assert.equal(payload.editor.scene_description, '');
+    assert.equal(h.control('[data-background-wizard]'), null);
     assert.equal(h.widget.state.editor.scene_description, 'Detailed wizard scene');
+    for (const [key, value] of Object.entries(SCENE_COMPOSITION)) {
+        assert.equal(h.control(`[data-setting="${key}"]`).value, value);
+        assert.equal(JSON.parse(h.data.value).editor[key], value);
+    }
     assert.equal(h.widget.unsaved, true);
     await h.widget.persist();
     assert.equal(h.widget.document.editor.scene_description, 'Detailed wizard scene');
+    for (const [key, value] of Object.entries(SCENE_COMPOSITION)) assert.equal(h.widget.document.editor[key], value);
     assert.equal(JSON.parse(h.data.value).revision, 4);
     h.node.onRemoved();
 });
@@ -1492,38 +1572,71 @@ test('a stale status response cannot update another workflow or install a poll t
     h.node.onRemoved();
 });
 
-test('restoring a stale revision keeps its draft and sends that revision when saving or starting a job', async () => {
-    const h = harness(JSON.stringify(state({revision: 2}))); await h.ready();
-    assert.equal(h.widget.state.revision, 2); assert.equal(h.widget.document.revision, 3);
+test('restoring a stale revision keeps workflow settings and allows saving and generation', async () => {
+    const h = harness(JSON.stringify(state({revision: 2, editor: editorDefaults({scene_description: 'Workflow draft'})}))); await h.ready();
+    assert.equal(h.widget.state.revision, 3); assert.equal(h.widget.document.revision, 3);
+    assert.equal(h.widget.state.editor.scene_description, 'Workflow draft');
     h.api.handle = (path, options) => {
-        if (options.method === 'PATCH' || path.endsWith('/jobs') && options.method === 'POST') {
-            assert.equal(JSON.parse(options.body).revision, 2);
-            return response({error: 'Background changed in another editor'}, 409);
+        if (options.method === 'PATCH') {
+            const payload = JSON.parse(options.body);
+            const saved = background(A, {revision: 4, editor: payload.editor});
+            h.documents.set(A, saved); return response(saved);
         }
+        if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: B});
+        if (path === `${BASE}/jobs/${B}`) return response({status: 'completed', result: {document: h.documents.get(A)}});
     };
-    await assert.rejects(h.widget.runJob('background'), /changed/);
     h.widget.state.editor.scene_description = 'Keep this draft'; h.widget.markEdited();
-    await assert.rejects(h.widget.persist(), /changed/);
+    await h.widget.runJob('background');
     assert.equal(JSON.parse(h.data.value).editor.scene_description, 'Keep this draft');
-    assert.equal(h.widget.state.revision, 2); assert.equal(h.widget.document.revision, 3);
+    assert.equal(h.widget.state.revision, 4); assert.equal(h.widget.document.revision, 4);
+    assert.equal(h.widget.unsaved, false);
     h.node.onRemoved();
 });
 
-test('legacy state gains a revision only when it matches the saved scene', async () => {
-    for (const changed of [false, true]) {
-        const saved = state(); delete saved.revision;
-        if (changed) saved.editor.scene_description = 'Unversioned workflow draft';
-        const h = harness(JSON.stringify(saved)); await h.ready();
-        assert.equal(h.widget.state.revision, changed ? undefined : 3);
-        if (changed) {
+test('matching workflow settings adopt the current disk revision before the first edit', async () => {
+    const saved = state({revision: 2});
+    saved.editor.selected_image_id = IMAGE;
+    const h = harness(JSON.stringify(saved)); await h.ready();
+    assert.equal(h.widget.state.revision, 3);
+    assert.equal(JSON.parse(h.data.value).revision, 3);
+    assert.equal(h.calls.some(call => call.options.method), false);
+    h.api.handle = (path, options) => {
+        if (options.method !== 'PATCH') return;
+        const payload = JSON.parse(options.body);
+        assert.equal(payload.revision, 3);
+        return response(background(A, {revision: 4, editor: payload.editor}));
+    };
+    const description = h.control('[data-setting="scene_description"]');
+    description.value = 'First edit after reopening'; await description.fire('input');
+    await h.widget.persist();
+    assert.equal(h.widget.state.revision, 4);
+    assert.equal(h.widget.document.editor.scene_description, description.value);
+    h.node.onRemoved();
+});
+
+test('the same legacy workflow can be reopened and edited after every disk save', async () => {
+    for (const revision of [undefined, null, true, 0, -1, 1.5, '2']) {
+        const saved = state({revision, editor: editorDefaults({scene_description: 'Unversioned workflow draft'})});
+        const raw = JSON.stringify(saved), h = harness(raw);
+        h.api.handle = (path, options) => {
+            if (options.method !== 'PATCH') return;
+            const payload = JSON.parse(options.body), current = h.documents.get(A);
+            const document = background(A, {revision: current.revision + 1, editor: payload.editor});
+            h.documents.set(A, document); return response(document);
+        };
+        await h.ready();
+        for (let session = 0; session < 2; session++) {
+            assert.equal(h.widget.state.editor.scene_description, 'Unversioned workflow draft');
+            assert.equal(h.widget.restoring, false);
+            assert.equal(h.control('[data-action="background"]').disabled, false);
+            h.widget.state.editor.scene_description = `Session ${session}`;
             h.widget.markEdited();
-            await assert.rejects(h.widget.persist(), /version is unknown/);
-            assert.equal(h.calls.some(call => call.options.method === 'PATCH'), false);
-            assert.equal(JSON.parse(h.data.value).editor.scene_description, 'Unversioned workflow draft');
+            await h.widget.persist();
+            assert.equal(h.documents.get(A).editor.scene_description, `Session ${session}`);
+            h.data.value = raw; h.node.onConfigure(); await h.widget.operations;
         }
         h.node.onRemoved();
     }
-    for (const revision of [null, true, 0, -1, 1.5, '2']) assert.throws(() => readState(JSON.stringify(state({revision}))), /revision/);
 });
 
 test('RUN acknowledges only its committed revision even if another editor saves before the refresh', async () => {
@@ -1583,6 +1696,7 @@ test('selecting the current built-in Turbo preserves explicit sampling parameter
     const name = 'qwen_image_2.1_turbo_int8_convrot.safetensors';
     const h = harness(JSON.stringify(state({ editor: editorDefaults({ generation: { diffusion_model_name: name, steps: 10, cfg: 1.5 } }) })));
     await h.ready(); h.widget.config.diffusion_models = [name]; h.widget.render();
+    assert.equal(h.control('[data-turbo-lora]').hidden, true);
     await h.control(`[data-model-choice="${name}"]`).click();
     assert.equal(h.widget.state.editor.generation.steps, 10); assert.equal(h.widget.state.editor.generation.cfg, 1.5);
     assert.equal(editorDefaults({ generation: { diffusion_model_name: name } }).generation.steps, 8);
@@ -1629,22 +1743,22 @@ test('missing Turbo uses Control Center Download and only installed adapters can
     h.node.onRemoved();
 });
 
-test('simple style dropdown uses rendering text, persists selection and preserves old custom text', async () => {
+test('shared style cards use rendering text, persist selection and preserve old custom text', async () => {
     const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: 'My old brushwork' }) }))); await h.ready();
     const styles = [{ id: 'watercolor', label: 'Watercolor', prompt: 'Watercolor washes and paper grain' }];
     h.widget.config.styles = styles; h.widget.render();
-    assert.equal(h.control('[data-style]').value, ''); assert.equal(h.control('[data-setting="style"]').value, 'My old brushwork');
-    assert.equal(h.control('.vnccs-style-summary'), null);
-    h.control('[data-style]').value = 'watercolor'; await h.control('[data-style]').fire('change');
+    assert.equal(h.widget.styleInfo.style, 'custom'); assert.equal(h.widget.styleInfo.custom_style, 'My old brushwork');
+    assert.ok(h.control('.vnccs-style-summary'));
+    h.widget.stylePicker.setValue('watercolor', true);
     const saved = JSON.parse(h.data.value);
     assert.equal(saved.editor.style_id, 'watercolor'); assert.equal(saved.editor.style, styles[0].prompt);
-    assert.equal(h.control('[data-setting="style"]').hidden, true);
+    assert.equal(h.widget.styleInfo.style, 'watercolor');
     assert.match(composePrompt(saved.editor), /Style: Watercolor washes and paper grain/);
     const reopened = harness(h.data.value); await reopened.ready();
     assert.equal(reopened.widget.state.editor.style_id, 'watercolor');
     assert.equal(reopened.widget.state.editor.style, styles[0].prompt);
-    reopened.control('[data-style]').value = ''; await reopened.control('[data-style]').fire('change');
-    assert.equal(reopened.control('[data-setting="style"]').hidden, false);
+    reopened.widget.stylePicker.setValue('custom', true);
+    assert.equal(reopened.widget.styleInfo.style, 'custom');
     assert.equal(reopened.widget.state.editor.style, 'My old brushwork');
     assert.doesNotMatch(composePrompt(editorDefaults({style: 'Ink wash\nReference: Alice Example'})), /Alice Example/);
     h.node.onRemoved(); reopened.node.onRemoved();
@@ -1655,7 +1769,7 @@ for (const custom of ['My authored ink style', '']) test(`custom style ${custom 
     const styles = [{ id: 'watercolor', label: 'Watercolor', prompt: 'Watercolor washes' }, { id: 'ink', label: 'Ink', prompt: 'Ink lines' }];
     h.widget.config.styles = styles; h.widget.render();
     for (const style of styles) {
-        h.control('[data-style]').value = style.id; await h.control('[data-style]').fire('change');
+        h.widget.stylePicker.setValue(style.id, true);
         assert.equal(h.widget.state.editor.custom_style, custom);
     }
     h.api.handle = (path, options) => {
@@ -1667,10 +1781,10 @@ for (const custom of ['My authored ink style', '']) test(`custom style ${custom 
     await h.widget.persist();
     const reopened = harness(JSON.stringify(state({ editor: h.documents.get(A).editor, revision: 4 })));
     await reopened.ready();
-    reopened.control('[data-style]').value = ''; await reopened.control('[data-style]').fire('change');
+    reopened.widget.stylePicker.setValue('custom', true);
     assert.equal(reopened.widget.state.editor.style, custom);
-    assert.equal(reopened.control('[data-setting="style"]').value, custom);
-    const input = reopened.control('[data-setting="style"]'); input.value = 'Edited custom'; await input.fire('input');
+    assert.equal(reopened.widget.styleInfo.custom_style, custom);
+    reopened.widget.styleInfo.custom_style = 'Edited custom'; reopened.widget.stylePicker.setValue('custom', true);
     assert.equal(JSON.parse(reopened.data.value).editor.custom_style, 'Edited custom');
     h.node.onRemoved(); reopened.node.onRemoved();
 });
@@ -1748,4 +1862,199 @@ test('negative prompt is a compact field below the description and persists inde
     reopened.control('[data-setting="negative"]').value = ''; await reopened.control('[data-setting="negative"]').fire('input');
     assert.equal(JSON.parse(reopened.data.value).editor.negative, '');
     h.node.onRemoved(); reopened.node.onRemoved();
+});
+
+test('choosing the empty selection must clear the selected background', async () => {
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  const select=h.control('[data-library]');select.value='';await select.fire('change');
+  console.log('AUDIT empty selector',JSON.stringify({shown:select.value,actual:h.widget.state.background_id,serialized:JSON.parse(h.data.value).background_id}));
+  assert.equal(h.widget.state.background_id,'','The placeholder must not leave the old background active for RUN');
+ } finally { h.node.onRemoved(); }
+});
+
+test('failed switching must keep displayed selection consistent with actual owner', async () => {
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  const edit=h.control('[data-setting="scene_description"]');edit.value='Authored draft';await edit.fire('input');
+  h.api.handle=(path,options)=>options.method==='PATCH'?response({error:'Disk save unavailable'},500):undefined;
+  await assert.rejects(h.widget.persist(),/Disk save unavailable/);
+  const select=h.control('[data-library]');select.value=B;await select.fire('change');
+  console.log('Rejected save owner',JSON.stringify({shown:select.value,actual:h.widget.state.background_id,unsaved:h.widget.unsaved,revision:h.widget.state.revision}));
+  assert.equal(select.value,h.widget.state.background_id,'A rejected save must not display another background as selected');
+ } finally { h.node.onRemoved(); }
+});
+
+test('state accepted by the form must remain reloadable', async () => {
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  const variants=Array.from({length:40},(_,i)=>({id:'v'+i,name:'Variant '+i,time:'Morning',weather:'',additional_details:'x'.repeat(8000)}));
+  h.widget.state.editor=editorDefaults({variants});h.widget.sync();
+  console.log('AUDIT state size',JSON.stringify({characters:h.data.value.length,cards:variants.length,perCardDetails:8000}));
+  assert.doesNotThrow(()=>readState(h.data.value),'Allowed controls must not create a workflow that the same widget refuses to restore');
+ } finally { h.node.onRemoved(); }
+});
+
+test('middle button must remain graph PAN in the image dialog', async () => {
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  const viewport=new Element('div'),image=new Element('img');
+  Object.assign(viewport,{clientWidth:400,clientHeight:200,getBoundingClientRect:()=>({left:0,top:0,width:400,height:200}),setPointerCapture:id=>{viewport.captured=id;},hasPointerCapture:()=>false});
+  Object.assign(image,{complete:true,naturalWidth:800,naturalHeight:400});
+  const dispose=h.widget.attachPreviewNavigation(viewport,image);
+  try {
+   let stopped=false;viewport.onpointerdown({button:1,isPrimary:true,pointerId:1,clientX:100,clientY:50,preventDefault(){},stopPropagation(){stopped=true;}});
+   console.log('AUDIT middle button',JSON.stringify({imageDrag:viewport.classList.contains('is-dragging'),stopped,captured:viewport.captured}));
+   assert.equal(viewport.classList.contains('is-dragging'),false,'MMB must not start image drag');
+  } finally {dispose();}
+ } finally {h.node.onRemoved();}
+});
+
+test('a known Klein model remains offered as a Qwen text-to-image model',async()=>{
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  const foreign='flux2-klein-9b.safetensors';
+  h.widget.config.diffusion_models=[DEFAULT_EDITOR.generation.diffusion_model_name,foreign];
+  h.widget.ccState.config={models:[{kind:'Klein9b',type:'unet',name:'Flux Klein9b',local_path:'models/diffusion_models/'+foreign,status:'installed'}]};
+  h.widget.renderModelPicker();
+  const entry=h.widget.modelEntries.find(e=>modelPath(e)===foreign);
+  console.log('AUDIT foreign model',JSON.stringify(entry));
+  assert.ok(entry, 'The owner permits a broad installed-model picker');
+ } finally {h.node.onRemoved();}
+});
+
+test('LoRA numeric drafts survive rerender while focused',async()=>{
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  const weight=h.control('[data-lora-strength="0"]');h.context.document.activeElement=weight;weight.value='';
+  h.widget.render();
+  console.log('AUDIT LoRA draft',JSON.stringify({focused:h.context.document.activeElement===weight,value:weight.value}));
+  assert.equal(weight.value,'','A repaint must not replace the active unfinished numeric draft');
+ } finally{h.node.onRemoved();}
+});
+
+test('reduced motion disables arrow-triggered smooth scrolling',async()=>{
+ const h=harness(JSON.stringify(state()));await h.ready();
+ try {
+  h.window.matchMedia=()=>({matches:true});
+  const list=h.control('[data-variation-cards]'),button=h.control('[data-scroll-variation="1"]');let options;
+  list.clientWidth=400;list.scrollBy=value=>{options=value;};button.disabled=false;
+  await h.widget.click({target:button});
+  console.log('AUDIT reduced scroll',JSON.stringify(options));
+  assert.equal(options.behavior,'auto','Reduced motion must apply to imperative scroll animation too');
+ } finally{h.node.onRemoved();}
+});
+
+
+test('the approved full-width variant editor receives height without changing saved settings or node width', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const raw = h.data.value;
+    assert.deepEqual([...h.node.size], [1280, 840]);
+    for (const width of [1280, 1600]) {
+        h.node.size = [width, 800]; h.node.onResize();
+        assert.deepEqual([...h.node.size], [width, 840]);
+        assert.equal(h.data.value, raw);
+    }
+    h.node.size = [1600, 1000]; h.node.onResize();
+    assert.deepEqual([...h.node.size], [1600, 1000]);
+});
+
+
+test('height follows missing form space once at non-unit scale while an overlaid model list stays local', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.context.getComputedStyle = () => ({ paddingBottom: '16px', borderBottomWidth: '1px' });
+    const panel = h.widget.container.querySelector('.bg-source');
+    panel.offsetHeight = 1000;
+    panel.getBoundingClientRect = () => ({ height: 500 + (h.node.size[1] - 840) / .67 * .5, bottom: 500 + (h.node.size[1] - 840) / .67 * .5 });
+    for (const child of panel.children) child.getBoundingClientRect = () => ({ bottom: 495 });
+    const width = h.node.size[0];
+    h.widget.resize();
+    assert.deepEqual([...h.node.size], [width, 845]);
+    h.widget.resize();
+    assert.deepEqual([...h.node.size], [width, 845]);
+    const menu = h.widget.container.querySelector('.vnccs-common-creator-model-picker-menu');
+    menu.getBoundingClientRect = () => ({ bottom: 100000 });
+    h.widget.resize();
+    assert.deepEqual([...h.node.size], [width, 845]);
+});
+
+test('Background style gallery sends the current editor to its own cover endpoint and cleans its progress listener', async () => {
+    const catalog = JSON.parse(fs.readFileSync(new URL('../background_template/background_styles.json', import.meta.url), 'utf8'));
+    const styles = catalog.groups.flatMap(group => group.styles);
+    const editor = editorDefaults({ style_id: styles[0].id, style: styles[0].prompt, custom_style: '', scene_description: 'My garage',
+        generation: { model_type: 'moss', steps: 21, resolution_mp: 2.5, lora_stack: [{ name: 'Scenery.safetensors', strength: .7 }] } });
+    const h = harness(JSON.stringify(state({ editor }))); await h.ready();
+    h.widget.config.styles = styles; h.widget.render();
+    let release; const sent = [];
+    h.api.handle = (path, options) => {
+        if (path === `${BASE}/styles`) return response(structuredClone(catalog));
+        if (path === `${BASE}/styles/preview`) {
+            const payload = JSON.parse(options.body); sent.push(payload);
+            return new Promise(resolve => { release = () => resolve(response({ saved: true, style_id: payload.style_id,
+                image: `${BASE}/styles/preview?style=${payload.style_id}&v=1`, width: 1024, height: 1024 })); });
+        }
+    };
+    await h.control('.vnccs-style-summary').onclick();
+    const before = h.data.value;
+    const pending = h.widget.stylePicker.generatePreviews();
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].node_id, '7'); assert.equal(sent[0].character_info, undefined);
+    assert.equal(sent[0].editor.scene_description, 'My garage'); assert.equal(sent[0].editor.generation.model_type, 'moss');
+    assert.equal(sent[0].editor.generation.resolution_mp, 2.5); assert.equal(sent[0].editor.generation.lora_stack[0].strength, .7);
+    h.emitEvent('vnccs.style_preview.stage', { node_id: 'other', request_id: sent[0].request_id, status: 'queued' });
+    assert.doesNotMatch(h.control('.vnccs-style-status').textContent, /^Queued/);
+    h.emitEvent('vnccs.style_preview.stage', { node_id: '7', request_id: sent[0].request_id, status: 'queued' });
+    assert.match(h.control('.vnccs-style-status').textContent, /^Queued/);
+    await h.widget.stylePicker.generatePreviews(); release(); await pending;
+    assert.equal(sent.length, 1); assert.equal(h.data.value, before);
+    assert.equal(h.events.get('vnccs.style_preview.stage').length, 1);
+    h.node.onRemoved(); assert.equal(h.events.has('vnccs.style_preview.stage'), false);
+});
+
+test('a failed wizard opens the Creator-style error modal and keeps authored fields', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.widget.state.editor.scene_description = ''; h.widget.markEdited();
+    const before = h.data.value;
+    h.api.handle = (path, options) => {
+        if (options.method === 'PATCH') return response(background(A, {editor: JSON.parse(options.body).editor}));
+        if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: B});
+        if (path === `${BASE}/jobs/${B}`) return response({status: 'failed', error: 'Describe the background for the wizard'});
+    };
+    await h.control('[data-wizard]').click();
+    const wizard = h.control('[data-background-wizard]'), input = wizard.querySelector('.bg-wizard-input');
+    input.value = 'A dark garage';
+    await wizard.querySelectorAll('button').at(-1).click();
+    const error = h.control('[data-background-error]');
+    assert.equal(error.querySelector('.vnccs-common-modal-title').textContent, 'Background Wizard Error');
+    assert.equal(error.querySelector('.bg-error-text').textContent, 'Describe the background for the wizard');
+    assert.equal(h.control('.vnccs-common-message-box'), null);
+    assert.equal(h.widget.busy, false);
+    assert.equal(h.widget.state.editor.scene_description, '');
+    assert.equal(input.value, 'A dark garage');
+    const authored = JSON.parse(before).editor;
+    assert.deepEqual(JSON.parse(h.data.value).editor, authored);
+    h.widget.restoring = true; h.widget.updateControls();
+    assert.equal(error.querySelector('button').disabled, false);
+    assert.equal(wizard.querySelector('button').disabled, false);
+    await error.querySelector('button').click();
+    assert.equal(h.control('[data-background-error]'), null);
+    assert.equal(h.control('[data-background-wizard]'), wizard);
+    assert.equal(input.focused, true);
+    await wizard.querySelector('button').click();
+    assert.equal(h.control('[data-background-wizard]'), null);
+    h.node.onRemoved();
+});
+
+test('Background error dialogs use safe text, replace obsolete errors and are disposed with the node', async () => {
+    const h = harness(); await h.ready();
+    h.widget.message('<img src=x onerror=alert(1)>', true);
+    assert.equal(h.control('.bg-error-text').textContent, '<img src=x onerror=alert(1)>');
+    assert.equal(h.control('.bg-error-text').children.length, 0);
+    const previous = h.widget.errorDialog.overlay;
+    h.widget.message('Another failure', true);
+    assert.equal(h.widget.container.contains(previous), false);
+    assert.equal(h.widget.container.querySelectorAll('[data-background-error]').length, 1);
+    const current = h.widget.errorDialog.overlay;
+    h.node.onRemoved();
+    assert.equal(h.widget.container.contains(current), false);
 });

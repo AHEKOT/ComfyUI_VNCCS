@@ -237,3 +237,21 @@ def test_wizard_worker_keeps_event_loop_responsive_and_scopes_events(monkeypatch
     asyncio.run(run())
     assert [data["status"] for _, data in events] == ["queued", "running", "done"]
     assert all(name == "vnccs.wizard.stage" and data["node_id"] == "17" and data["request_id"] == "request" for name, data in events)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_metadata_commit_failure_restores_the_image_directory(tmp_path, existing):
+    target = tmp_path / "Images"
+    if existing:
+        (target / "V1").mkdir(parents=True)
+        (target / "V1" / "older.png").write_bytes(b"older")
+        (target / "current.png").write_bytes(b"current")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    def fail():
+        assert (target / "new.png").read_bytes() == b"new"
+        raise OSError("JSON commit failed")
+    with pytest.raises(OSError, match="JSON commit failed"):
+        with utils.staged_image_batch(str(target), commit=fail) as stage:
+            Path(stage, "new.png").write_bytes(b"new")
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == (["Images"] if existing else [])

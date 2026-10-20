@@ -152,10 +152,12 @@ function positionWizardReveal(entry) {
     const fieldRect = field.getBoundingClientRect?.();
     const targetRect = target.getBoundingClientRect?.();
     if (!fieldRect || !targetRect) return;
-    const width = Math.max(1, targetRect.width || target.offsetWidth || 1);
-    const height = Math.max(1, targetRect.height || target.offsetHeight || 1);
-    layer.style.left = `${targetRect.left - fieldRect.left - (field.clientLeft || 0)}px`;
-    layer.style.top = `${targetRect.top - fieldRect.top - (field.clientTop || 0)}px`;
+    const scaleX = field.offsetWidth && fieldRect.width ? fieldRect.width / field.offsetWidth : 1;
+    const scaleY = field.offsetHeight && fieldRect.height ? fieldRect.height / field.offsetHeight : 1;
+    const width = Math.max(1, targetRect.width / scaleX || target.offsetWidth || 1);
+    const height = Math.max(1, targetRect.height / scaleY || target.offsetHeight || 1);
+    layer.style.left = `${(targetRect.left - fieldRect.left) / scaleX - (field.clientLeft || 0) + (field.scrollLeft || 0)}px`;
+    layer.style.top = `${(targetRect.top - fieldRect.top) / scaleY - (field.clientTop || 0) + (field.scrollTop || 0)}px`;
     layer.style.width = `${width}px`;
     layer.style.height = `${height}px`;
     layer.style.borderRadius = globalThis.getComputedStyle?.(target)?.borderRadius || "8px";

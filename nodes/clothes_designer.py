@@ -840,11 +840,8 @@ async def vnccs_save_costume(request):
                     if costume.casefold() in {"naked", "original"} or any(name.casefold() == costume.casefold() for name in existing):
                         return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
                 else:
-                    revision = data.get("revision")
-                    if not isinstance(revision, str) or not revision:
-                        return web.json_response({"error": "Reload the costume before saving. Your local draft has been preserved."}, status=428)
-                    if costume not in existing or revision != load_costume_snapshot(character, costume)[1]:
-                        return web.json_response({"error": "This costume changed or was deleted in another editor. Your local draft has been preserved; reload the costume before saving."}, status=409)
+                    if costume not in existing:
+                        return web.json_response({"error": "This costume no longer exists. Select or create a costume before saving; your local draft is retained."}, status=404)
                 ensure_costume_structure(character, costume)
                 if not save_costume_info(character, costume, info):
                     return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)

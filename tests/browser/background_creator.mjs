@@ -19,8 +19,8 @@ let document = { schema_version: 2, background_id: backgroundId, name: "Evening 
     images: [{ image_id: imageId, width: 1600, height: 896 }] };
 if (process.argv[4]) {
     const folder = resolve(process.argv[4]);
-    document = JSON.parse(await readFile(join(folder, folder.split(sep).at(-1) + ".json"), "utf8"));
-    for (const image of document.images) assets.set(`${base}/backgrounds/${document.background_id}/images/${image.image_id}`, { bytes: await readFile(join(folder, "background", image.image_id + ".png")), type: "image/png" });
+    document = JSON.parse(await readFile(join(folder, folder.split(sep).at(-1) + "_config.json"), "utf8"));
+    for (const image of document.images) assets.set(`${base}/backgrounds/${document.background_id}/images/${image.image_id}`, { bytes: await readFile(join(folder, image.file)), type: "image/png" });
 
 } else {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="896"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#506488"/><stop offset="1" stop-color="#d79b85"/></linearGradient></defs><rect width="1600" height="896" fill="#9e7a65"/><path d="M0 0h1600L1280 150H320Z" fill="#c3a58b"/><path d="m0 896 320-230h960l320 230" fill="#624e4b"/><rect x="530" y="140" width="540" height="400" fill="url(#sky)" stroke="#483d43" stroke-width="30"/><path d="M800 150v380M540 360h520" stroke="#483d43" stroke-width="18"/><rect x="150" y="560" width="650" height="170" rx="30" fill="#b77a80"/><rect x="1050" y="560" width="390" height="50" fill="#5f4340"/><path d="M1080 610v180m330-180v180" stroke="#5f4340" stroke-width="30"/></svg>';
@@ -35,9 +35,17 @@ const config = { installed: true, assets: [], diffusion_models: ["qwen_image_2.1
     model_types: { moss: { installed: true, assets: [{ category: "diffusion_models", installed: true }, { category: "text_encoders", installed: true }, { category: "vae", installed: true }] } },
     loras: ["scenery/Painted_Backgrounds.safetensors", "scenery/Warm_Light.safetensors"], samplers: ["euler", "er_sde", "dpmpp_2m"], schedulers: ["simple", "normal"] };
 const creatorSource = await readFile(join(project, "web/vnccs_character_creator_v2.js"), "utf8");
-const referenceCreatorCSS = creatorSource.slice(creatorSource.indexOf(".vnccs-creator-generation-layer {"), creatorSource.indexOf(".vnccs-creator-preview-loading {"))
+const { STYLE_PICKER_CSS } = await import("../../web/character_styles.mjs?v=style-mix-8");
+const styleCatalog = JSON.parse(await readFile(join(project,"background_template/background_styles.json"),"utf8"));
+config.styles = styleCatalog.groups.flatMap(group => group.styles);
+const coverAssets = new Map(), coverRequests = [];
+const commonSource = await readFile(join(project, "web/vnccs_common.js"), "utf8");
+const creatorTheme = commonSource.match(/export const SAKURA_THEME_CSS = `([\s\S]*?)`;/)[1];
+const referenceCreatorCSS = `.vnccs-creator-container { ${creatorTheme} }` + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-generation-layer {"), creatorSource.indexOf(".vnccs-creator-preview-loading {"))
     + creatorSource.split("\n").filter(line => line.startsWith("@keyframes vnccs-creator-generation-")).join("\n")
-    + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-container .vnccs-style-edit,"), creatorSource.indexOf(".vnccs-creator-container .vnccs-style-editor {"))
+    + STYLE_PICKER_CSS
+    + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-input, .vnccs-creator-textarea {"), creatorSource.indexOf("/* Slider */"))
+    + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-container .vnccs-common-modal {"), creatorSource.indexOf(".vnccs-creator-qwenvl-download-status {"))
     + creatorSource.slice(creatorSource.indexOf("/* Main Host */"), creatorSource.indexOf("/* Columns */"))
     + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-resolution-field {"), creatorSource.indexOf(".vnccs-creator-overhaul-control {"))
     + creatorSource.slice(creatorSource.indexOf(".vnccs-creator-trait-row {"), creatorSource.indexOf(".vnccs-creator-tag-grid {"));
@@ -54,7 +62,7 @@ window.composedPrompt=()=>composePrompt(widget.state.editor);
 window.setup=async({width=1600,height=1000,empty=false}={})=>{
  window.widget?.node.onRemoved?.();const host=document.querySelector('#host');host.replaceChildren();host.style.height='';
  const saved=await (await fetch('/fixture')).json();
- const state={schema_version:2,background_id:empty?'':saved.background_id,background_name:empty?'':saved.name,selected_image_id:empty?'':saved.selected_image_id,editor:editorDefaults(empty?{}:saved.editor)};
+ const state={schema_version:2,background_id:empty?'':saved.background_id,background_name:empty?'':saved.name,selected_image_id:empty?'':saved.selected_image_id,...(empty?{}:{revision:saved.revision}),editor:editorDefaults(empty?{}:saved.editor)};
  class Node{
   constructor(){this.id=7;this.type='VNCCS_BackgroundCreator';this.size=[width,height];this.graph=app.graph;this.properties={};this.widgets=[{name:'seed',value:0},{name:'background_data',value:'unconfigured'}];}
   setSize(size){this.size=[...size];host.style.width=size[0]+'px';this.widgets.find(widget=>widget.element)?.triggerDraw();}
@@ -110,10 +118,27 @@ const server = createServer(async (request, response) => {
                 const svg=`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900"><rect width="1600" height="900" fill="${color}"/><path d="M0 0h1600l-240 160H240Z" fill="#6e7688"/><path d="M0 900 240 650h1120l240 250" fill="#393746"/><rect x="640" y="180" width="330" height="380" fill="${color}" stroke="#323343" stroke-width="24"/><path d="M805 180v380M640 370h330" stroke="#323343" stroke-width="16"/><rect x="120" y="580" width="650" height="160" rx="20" fill="#806775"/><text x="800" y="820" text-anchor="middle" font-family="sans-serif" font-size="64" fill="white">Fixture ${index+1}</text></svg>`;
                 assets.set(path,{bytes:svg,type:'image/svg+xml'});images.push({name:card.name,url:path});
             }
-            document.generated_sets??=[];document.generated_sets.push({set_id,source_image_id,variants:cards,images});document.revision++;
+            document.generated_sets??=[];document.generated_sets.push({set_id,version:"",source_image_id,variants:cards,images});document.revision++;
             content=JSON.stringify({background_id:document.background_id,source_image_id,set_id,revision:document.revision});
         }
         else if (assets.has(url.pathname)) { ({ bytes: content, type } = assets.get(url.pathname)); }
+        else if (url.pathname === base + "/styles") content=JSON.stringify(styleCatalog);
+        else if (url.pathname === base + "/styles/preview") {
+            if (request.method === 'POST') {
+                let raw='';for await(const chunk of request)raw+=chunk;
+                const payload=JSON.parse(raw);coverRequests.push(payload);
+                assert.equal(payload.character_info,undefined);
+                const style=styleCatalog.groups.flatMap(group=>group.styles).find(style=>style.id===payload.style_id);
+                assert.ok(style);
+                style.image=`${base}/styles/preview?style=${style.id}&v=fixture`;
+                const hue=(coverRequests.length*37)%360;
+                coverAssets.set(style.id,`<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"><rect width="1024" height="1024" fill="hsl(${hue} 25% 35%)"/><path d="M0 0h1024L790 180H230Z" fill="hsl(${hue} 20% 65%)"/><path d="M0 1024 230 720h560l234 304" fill="hsl(${hue} 20% 20%)"/><rect x="390" y="230" width="310" height="350" fill="hsl(${(hue+60)%360} 35% 70%)"/><path d="M540 230v350M390 405h310" stroke="#34303b" stroke-width="18"/><rect x="70" y="640" width="400" height="180" rx="30" fill="hsl(${hue} 30% 50%)"/></svg>`);
+                content=JSON.stringify({saved:true,style_id:style.id,image:style.image,width:1024,height:1024});
+            } else {
+                content=coverAssets.get(url.searchParams.get('style'));type='image/svg+xml';
+                if(!content){response.writeHead(404);response.end();return;}
+            }
+        }
         else if (url.pathname === base + "/config") content = JSON.stringify(config);
         else if (url.pathname === base + "/backgrounds") {
             if(request.method==='POST'){
@@ -149,6 +174,7 @@ const server = createServer(async (request, response) => {
             }
             content = JSON.stringify(document);
         }
+        else if (url.pathname === "/queue") content = JSON.stringify({queue_running:[],queue_pending:[]});
         else if (url.pathname === "/vnccs/control_center/check") content = JSON.stringify(catalog);
         else if (url.pathname === "/vnccs/manager/status") content = "{}";
         else if (url.pathname === "/vnccs/character_generator/progress") content = JSON.stringify({snapshot:null});
@@ -183,7 +209,7 @@ const variantEditorClearance=async()=>page.evaluate(()=>{
     const clipped=[];
     for(let parent=editor.parentElement;parent;parent=parent.parentElement){
         const style=getComputedStyle(parent);
-        if(!/(auto|scroll|hidden|clip)/.test(style.overflowY))continue;
+        if(!parent.classList.contains('bg-panel') && !/(auto|scroll|hidden|clip)/.test(style.overflowY))continue;
         const bounds=parent.getBoundingClientRect(), scale=bounds.height/parent.offsetHeight;
         const bottom=bounds.bottom-(parseFloat(style.borderBottomWidth)+parseFloat(style.paddingBottom))*scale;
         if(rect.bottom>bottom+1 || controls.some(control=>control.bottom+4*scale>bottom+1))clipped.push({parent:parent.className,bottom,editorBottom:rect.bottom,controlBottom:controls.at(-1).bottom});
@@ -208,13 +234,17 @@ const previewNavigation=async name=>{
     assert.ok(enlarged.width>before.width,'Mouse wheel zooms the image');
     assert.ok(Math.abs((anchor.x-before.x)/before.width-(anchor.x-enlarged.x)/enlarged.width)<.002,'Zoom retains the image point under the horizontal cursor position');
     assert.ok(Math.abs((anchor.y-before.y)/before.height-(anchor.y-enlarged.y)/enlarged.height)<.002,'Zoom retains the image point under the vertical cursor position');
-    for(const button of ['left','middle']){
+    for(const button of ['left']){
         const start=await read();await page.mouse.move(anchor.x,anchor.y);await page.mouse.down({button});
         await page.mouse.move(anchor.x+60,anchor.y+35,{steps:5});await page.mouse.up({button});
         const end=await read();
         assert.ok(Math.abs(end.x-start.x-60)<1 && Math.abs(end.y-start.y-35)<1,`${button} drag pans in rendered pixels despite node zoom`);
         assert.equal(await viewport.evaluate(element=>element.classList.contains('is-dragging')),false);
     }
+    const beforeMiddle=await read();
+    await page.mouse.move(anchor.x,anchor.y);await page.mouse.down({button:'middle'});
+    await page.mouse.move(anchor.x+35,anchor.y+20);await page.mouse.up({button:'middle'});
+    assert.deepEqual(await read(),beforeMiddle,'MMB is reserved for graph PAN and must not drag the image');
     await capture(name);
     await page.mouse.move(anchor.x,anchor.y);await page.mouse.down();
     await viewport.dispatchEvent('pointercancel',{pointerId:1});const cancelled=await read();
@@ -228,7 +258,7 @@ const previewNavigation=async name=>{
         const zoom=await read();assert.ok(Math.abs(zoom.scale/zoom.fit-ratio)<.0001,'Zoom stays between the fit scale and eight times the fit scale');
     }
     assert.deepEqual(await page.evaluate(()=>({raw:widget.node.widgets[1].value,size:[...widget.node.size],source:widget.state.selected_image_id})),state,'Zoom and pan do not change saved settings, the source or node dimensions');
-    return {wheel:true,leftPan:true,middlePan:true,cursorAnchor:true,cancel:true,limits:[1,8]};
+    return {wheel:true,leftPan:true,middleGraphPan:true,cursorAnchor:true,cancel:true,limits:[1,8]};
 };
 const geometry = async () => page.evaluate(() => {
     const rect = element => { const r = element.getBoundingClientRect(); return { x: r.x, y: r.y, width: r.width, height: r.height }; };
@@ -237,8 +267,11 @@ const geometry = async () => page.evaluate(() => {
         rows: [...root.querySelectorAll('.vnccs-common-creator-gen-param-grid,.vnccs-common-creator-lora-row,.bg-actions')].map(row => [...row.children].filter(element => !element.hidden).map(rect)),
         overflow: [...root.querySelectorAll('.bg-panel,.bg-bottom')].filter(element => element.getClientRects().length && element.scrollWidth > element.clientWidth + 1).map(element => element.className),
         labels: [...root.querySelectorAll('.bg-attributes .bg-field')].map(field => {
-            const label = field.children[0].getBoundingClientRect(), control = field.children[1].getBoundingClientRect();
-            return { text: field.children[0].textContent, gap: control.top - label.bottom };
+            const label = (field.querySelector('.vnccs-creator-label') || field.children[0]).getBoundingClientRect();
+            const visible = field.querySelector('.vnccs-style-summary') || [...field.children].slice(1).find(element => !element.hidden && element.getBoundingClientRect().height > 0);
+            if (!visible) throw new Error('Scene field has no visible control');
+            const control = visible.getBoundingClientRect();
+            return { text: field.querySelector('.vnccs-creator-label')?.textContent || field.children[0].textContent, gap: control.top - label.bottom };
         }), fonts: [...document.fonts].filter(font => font.status === 'loaded').map(font => font.family) };
 });
 try {
@@ -274,7 +307,7 @@ try {
     const recoveryOK=page.getByRole('button',{name:'OK',exact:true});
     assert.equal(await recoveryOK.isEnabled(),true,'The network error can be dismissed while restoration is blocked');
     await capture('connection-error');await recoveryOK.click();
-    await page.waitForFunction(()=>!document.querySelector('.vnccs-common-message-overlay:not([inert])'));
+    await page.waitForFunction(()=>!document.querySelector('[data-background-error]:not([inert])'));
     assert.equal(await page.evaluate(()=>widget.node.widgets[1].value),interrupted.raw,'Acknowledging an error preserves the original workflow bytes');
     assert.equal(await page.locator('[data-action="background"]').isDisabled(),true);
     await page.unroute('**/vnccs/background-creator/config');
@@ -289,7 +322,15 @@ try {
     for (const [width, height, name] of [[1600, 1000, "background"], [1280, 800, "background-default"], [900, 1000, "background-narrow"], [680, 1000, "background-compact"]]) {
         await page.evaluate(options => setup(options), { width, height });
         await page.waitForFunction(() => [...document.querySelectorAll('[data-preview]')].every(image => image.complete && image.naturalWidth));
-        await capture(name); const measured = await geometry(); report.scenarios.push({ name, width, height, ...measured });
+        await capture(name); const measured = await geometry(); report.scenarios.push({ name, width, requestedHeight:height, height:await page.evaluate(()=>widget.node.size[1]), ...measured });
+        if(width>=1280){
+            const fit=await page.evaluate(()=>[...widget.container.querySelectorAll('.bg-panel')].map(panel=>{
+                const p=panel.getBoundingClientRect();return {name:panel.className,client:panel.clientHeight,scroll:panel.scrollHeight,top:panel.scrollTop,
+                    outside:[...panel.children].filter(e=>!e.hidden&&e.getClientRects().length).filter(e=>{const r=e.getBoundingClientRect();return r.top<p.top-1||r.bottom>p.bottom+1||r.left<p.left-1||r.right>p.right+1;}).map(e=>e.className)};
+            }));
+            assert.ok(fit.every(p=>p.scroll<=p.client+1&&p.top===0&&!p.outside.length),JSON.stringify(fit));
+            report.scenarios.at(-1).fit=fit;
+        }
         if(width===1600){
             const range=page.locator('[data-setting="generation.resolution_mp"]'), original=await page.evaluate(()=>widget.state.editor.generation.resolution_mp);
             assert.deepEqual(await range.evaluate(element=>({min:element.min,max:element.max,step:element.step})),{min:'1',max:'4',step:'0.1'});
@@ -336,7 +377,8 @@ try {
         assert.equal(await page.locator('header,nav,[data-step],[data-viewer],[data-panel="model"]').count(),0,'The header and model stage are removed');
         assert.equal(measured.panels.length,3);
         assert.ok(measured.panels[0].y-measured.root.y<12,'No space is reserved for the removed header');
-        for(const key of ['prompt','aesthetics','negative'])assert.equal(await page.locator('[data-setting="'+key+'"]').count(),0);
+        for(const key of ['prompt','aesthetics'])assert.equal(await page.locator('[data-setting="'+key+'"]').count(),0);
+        assert.equal(await page.locator('.bg-attributes [data-setting="negative"]').count(),1,'The current Negative Prompt stays in the scene column');
         assert.equal(await page.locator('.bg-bottom').count(),0);
         assert.equal(await page.locator('.bg-meta,[data-dimensions]').count(),0,'The background preview has no image dimensions label');
         const stripRows=await page.locator('.bg-variation-item').evaluateAll(cards=>cards.map(card=>card.getBoundingClientRect().top));
@@ -381,6 +423,7 @@ try {
         assert.deepEqual(measured.overflow, [], "No panel may overflow horizontally");
         assert.ok(Math.abs(measured.root.width - width) < 1, "The real rendered widget follows node width");
         assert.ok(Math.abs(measured.preview.width / measured.preview.height - 16 / 9) < .005,'The preview frame has the standard 16:9 ratio');
+        const fixedFrameNodeSize=await page.evaluate(()=>[...widget.node.size]);
         const fixedFrame=await page.evaluate(async()=>{
             const frame=widget.container.querySelector('.bg-preview'), image=frame.querySelector('[data-preview]'), original=image.src;
             const dimensions=[];
@@ -393,7 +436,7 @@ try {
         });
         for(const frame of fixedFrame){
             assert.ok(Math.abs(frame.width-measured.preview.width)<1 && Math.abs(frame.height-measured.preview.height)<1,'Loaded image dimensions must not resize the frame');
-            assert.deepEqual(frame.nodeSize,[width,height],'Image format must not resize the node');
+            assert.deepEqual(frame.nodeSize,fixedFrameNodeSize,'Image format must not resize the node');
         }
         report.scenarios.at(-1).fixedFrame=fixedFrame;
         for (const row of measured.rows) for (let index = 0; index + 1 < row.length; index += 2) {
@@ -419,15 +462,19 @@ try {
                 panels:[...document.querySelectorAll('.bg-background>.bg-panel')].map(panel=>({width:panel.getBoundingClientRect().width,height:panel.getBoundingClientRect().height}))};
         });
         assert.ok(editorPlacement.insideSource && editorPlacement.afterStrip && editorPlacement.insideColumn,'The editor stays directly below the cards inside the left column');
-        assert.ok(editorPlacement.fields.every((field,index,fields)=>!index || field.top>=fields[index-1].bottom-1),'Variant fields form a vertical stack');
+        assert.equal(editorPlacement.fields.length,3);
+        assert.ok(editorPlacement.fields.every((field,index,fields)=>!index || field.top>=fields[index-1].bottom-1),'Time, Weather and Additional Details retain three separate full-width rows');
         if(width>=1280)for(let index=1;index<3;index++){
             assert.ok(Math.abs(editorPlacement.panels[index].width-measured.panels[index].width)<1,'Opening a variant does not resize adjacent columns');
-            assert.ok(Math.abs(editorPlacement.panels[index].height-measured.panels[index].height)<1,'Opening a variant does not shorten adjacent columns');
+            assert.ok(editorPlacement.panels[index].height>=measured.panels[index].height-1,'The node may grow to fit the editor while adjacent columns keep their full height');
         }
         const inlineOverflow=await page.locator('[data-variation-editor]').evaluate(panel=>[panel,...panel.querySelectorAll('.vnccs-common-creator-trait-row')].some(element=>element.scrollWidth>element.clientWidth+1));
         assert.equal(inlineOverflow,false,'Inline variant fields fit every widget width');
         await capture('variant-inline-'+width);
+        if(width===1280)await page.locator('[data-variation-editor]').screenshot({path:join(output,'variant-editor.png')});
         assert.deepEqual(await variantEditorClearance(),[],'The complete variant editor and button focus rings stay inside the panel padding');
+        report.scenarios.at(-1).editor={nodeSize:await page.evaluate(()=>[...widget.node.size]),placement:editorPlacement};
+        if(width>=1280)assert.equal(await page.locator('.bg-panel').evaluateAll(panels=>panels.some(p=>p.scrollHeight>p.clientHeight+1||p.scrollTop!==0)),false,'Opening the inline editor does not create panel scrolling');
         await page.locator('[data-close-variation]').click();
     }
     await page.evaluate(() => setup({ width: 1600, height: 1000 }));
@@ -459,7 +506,13 @@ try {
     await page.locator('[data-model-choice="user/Scenery.safetensors"]').click();
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[1].value).editor.generation.diffusion_model_name), "user/Scenery.safetensors");
     await page.locator('[data-model-toggle]').click();
+    await page.locator('[data-model-choice="qwen_image_2.1_turbo_int8_convrot.safetensors"]').click();
+    assert.equal(await page.locator('[data-turbo-lora]').isVisible(), false, 'Built-in Turbo must not show the separate Turbo LoRA');
+    assert.equal(await page.locator('[data-turbo-lora]').locator('..').isVisible(), true, 'The ordinary LoRA Stack remains available');
+    await capture('turbo-model-without-turbo-lora');
+    await page.locator('[data-model-toggle]').click();
     await page.locator('[data-model-choice="qwen_image_2.1_int8_convrot.safetensors"]').click();
+    await page.evaluate(()=>widget.persist());
     await page.locator('[data-enlarge]').click(); await capture('background-enlarged');
     report.previewNavigation=await previewNavigation('background-preview-zoomed');
     await page.locator('#host').evaluate(host=>host.style.zoom='.75');
@@ -467,8 +520,7 @@ try {
     await page.locator('#host').evaluate(host=>host.style.zoom='');
     assert.equal(await page.getByRole('dialog').locator('[data-variants],[data-variant-count],[data-variant]').count(),0);
     await page.locator('[data-close-preview]').click();
-    await page.locator('[data-setting="style"]').fill('Anime, digital art, cel shaded');
-    await page.locator('[data-setting="style"]').dispatchEvent('input');
+    await page.evaluate(()=>{widget.styleInfo.custom_style='Anime, digital art, cel shaded';widget.stylePicker.setValue('custom',true);});
     await page.locator('[data-setting="scene_description"]').fill('A large, circular stone table sits in the center of a spacious, futuristic room with a high, arched ceiling featuring blue sky panels. The floor is made of water or a reflective surface, creating a mirror-like effect. On either side of the table are rectangular planters filled with vibrant purple flowers. In the background, there are several statues of figures in various poses, standing on pedestals. The room is illuminated by soft, ambient lighting from the ceiling and recessed lights, giving it a serene and mysterious atmosphere.');
     await page.locator('[data-setting="scene_description"]').dispatchEvent('input');
     assert.equal(await page.locator('[data-trait="time"]').count(), 0);
@@ -558,15 +610,9 @@ try {
     const prompt = page.locator('[data-setting="scene_description"]'); await prompt.fill('A quiet bedroom. Keep my exact composition.'); await prompt.dispatchEvent('input');
     assert.equal(await page.locator('[data-trait="time"]').count(), 0);
     assert.match(await prompt.inputValue(), /Keep my exact composition/);
-    const positions = await page.evaluate(() => {
-        const size=[...widget.node.size];widget.node.setSize([size[0],650]);widget.node.onResize();
-        const panels = [...widget.container.querySelectorAll('.bg-panel')].filter(panel => panel.getClientRects().length && panel.scrollHeight > panel.clientHeight + 10);
-        panels.forEach(panel => panel.scrollTop = Math.min(120,panel.scrollHeight-panel.clientHeight));
-        const before=panels.map(panel=>panel.scrollTop);widget.render();
-        const positions=panels.map((panel,index)=>({before:before[index],after:panel.scrollTop}));
-        widget.node.setSize(size);widget.node.onResize();return positions;
-    });
-    assert.ok(positions.length>0 && positions.every(position=>position.before>0 && Math.abs(position.after-position.before)<=1), "Every overflowing panel retains its actual scroll on refresh");
+    const fits = await page.evaluate(() => [...widget.container.querySelectorAll('.bg-panel')].map(panel=>({name:panel.className,height:panel.clientHeight,content:panel.scrollHeight,top:panel.scrollTop})));
+    assert.ok(fits.every(panel=>panel.content<=panel.height+1 && panel.top===0), 'Standard panels fit without content scrolling');
+
 
     await page.evaluate(() => {
         window.jobDone=false;window.jobError=null;
@@ -706,6 +752,171 @@ try {
     report.newBackground={legacyDayCopied:false,freshVariants:true};
     assert.ok(mutations.length > 0, 'Edits still save into the selected background JSON');
     assert.deepEqual(retiredRequests, []); report.retiredModelRequests=retiredRequests;
+    await page.evaluate(()=>setup({width:1280,height:800}));
+    report.wizardFit=await page.evaluate(async()=>{
+        const {animateWizardRows}=await import('/web/vnccs_common.js');
+        const field=widget.container.querySelector('.bg-description'),target=field.querySelector('textarea');
+        window.wizardFitRun=animateWizardRows([field],()=>{target.value='A detailed room';});
+        const layer=field.querySelector('.vnccs-common-wizard-reveal'),a=target.getBoundingClientRect(),b=layer.getBoundingClientRect();
+        return {dx:Math.abs(a.x-b.x),dy:Math.abs(a.y-b.y),dw:Math.abs(a.width-b.width),dh:Math.abs(a.height-b.height)};
+    });
+    assert.ok(Object.values(report.wizardFit).every(delta=>delta<=1),JSON.stringify(report.wizardFit));
+    await capture('wizard-fit');await page.evaluate(()=>wizardFitRun);
+    await page.locator('.vnccs-style-summary').click();
+    await page.waitForFunction(()=>document.querySelector('.vnccs-style-status')?.textContent.includes('styles'));
+    await settle();await capture('style-library');
+    const libraryFit=await page.locator('.vnccs-style-content').evaluate(content=>({height:content.clientHeight,scroll:content.scrollHeight,width:content.clientWidth,scrollWidth:content.scrollWidth,overflow:getComputedStyle(content).overflowY}));
+    assert.ok(libraryFit.scroll>libraryFit.height+1&&libraryFit.scrollWidth<=libraryFit.width+1&&libraryFit.overflow==='auto',JSON.stringify(libraryFit));
+    assert.equal(await page.locator('.vnccs-style-gallery').getByRole('button',{name:/^(Previous|Next)$/}).count(),0,'The existing style gallery scrolls without invented page navigation');
+    await page.locator('.vnccs-style-content').hover();await page.mouse.wheel(0,450);
+    await page.waitForFunction(()=>document.querySelector('.vnccs-style-content').scrollTop>0);
+    await page.waitForTimeout(250);
+    const libraryScroll=await page.locator('.vnccs-style-content').evaluate(content=>content.scrollTop);
+    await page.evaluate(()=>widget.render());await settle();
+    assert.ok(Math.abs(await page.locator('.vnccs-style-content').evaluate(content=>content.scrollTop)-libraryScroll)<=1,'Refreshing background controls retains the gallery scroll position');
+    await capture('style-library-scrolled');
+    report.styleLibraryFit={...libraryFit,scrollAfterWheel:libraryScroll};
+    const libraryControls=await page.locator('.vnccs-style-gallery .vnccs-creator-btn').evaluateAll(buttons=>buttons.filter(button=>!button.disabled&&!button.hidden).map(button=>({font:getComputedStyle(button).fontFamily,color:getComputedStyle(button).color})));
+    assert.ok(libraryControls.length && libraryControls.every(control=>control.font.includes('Sora')&&control.color==='rgb(255, 255, 255)'),JSON.stringify(libraryControls));
+    assert.ok(await page.locator('.vnccs-style-size-slider').evaluate(input=>input.offsetWidth<=180),'Library card-size slider retains its shared 180px width');
+    const categoryStyle=await page.locator('.vnccs-style-gallery .vnccs-common-ui-select-trigger').evaluate(button=>({background:getComputedStyle(button).backgroundColor,color:getComputedStyle(button).color,font:getComputedStyle(button).fontFamily}));
+    assert.ok(categoryStyle.background!=='rgb(239, 239, 239)'&&categoryStyle.background!=='rgb(255, 255, 255)'&&categoryStyle.color!=='rgb(0, 0, 0)'&&categoryStyle.font.includes('Sora'),JSON.stringify(categoryStyle));
+    report.styleLibraryCategory=categoryStyle;
+    const beforeCovers=await page.evaluate(()=>widget.node.widgets.find(item=>item.name==='background_data').value);
+    await page.evaluate(()=>{widget.styleInfo.custom_style='';});
+    await page.getByRole('button',{name:'Generate all previews',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.vnccs-style-status')?.textContent==='Saved all 100 style previews.');
+    assert.equal(coverRequests.length,100);
+    assert.equal(new Set(coverRequests.map(payload=>payload.style_id)).size,100);
+    assert.ok(coverRequests.every(payload=>payload.node_id==='7'&&payload.editor.generation&&payload.editor.scene_description!==undefined));
+    assert.equal(await page.evaluate(()=>widget.node.widgets.find(item=>item.name==='background_data').value),beforeCovers,'Generating covers leaves the authored background unchanged');
+    assert.equal(await page.locator('.vnccs-style-preview-image').count(),100);
+    await page.locator('.vnccs-style-content').evaluate(content=>{content.scrollTop=0;});
+    await settle();await capture('background-style-covers-generated');
+    report.backgroundStyleCovers={styles:100,requests:coverRequests.length,source:'mock inference; real gallery and HTTP requests'};
+    await page.getByRole('button',{name:'Close',exact:true}).click();
+    const beforeModelCatalog=await page.evaluate(()=>[...widget.config.diffusion_models]);
+    await page.evaluate(()=>{widget.config.diffusion_models.push(...Array.from({length:30},(_,i)=>`scenery/Model_${i}.safetensors`));widget.modelPickerOpen=true;widget.renderModelPicker();});
+    const modelLibrary=await page.locator('.vnccs-common-creator-model-picker-menu').evaluate(menu=>({height:menu.clientHeight,scroll:menu.scrollHeight,choices:menu.querySelectorAll('[data-model-choice]').length,pages:menu.querySelectorAll('[data-model-page]').length}));
+    assert.ok(modelLibrary.scroll>modelLibrary.height&&modelLibrary.choices>=30&&modelLibrary.pages===0,JSON.stringify(modelLibrary));
+    report.modelLibrary=modelLibrary;await capture('model-library');
+    await page.evaluate(models=>{widget.config.diffusion_models=models;widget.modelPickerOpen=false;widget.renderModelPicker();},beforeModelCatalog);
+    report.standardStates=[];
+    for(const state of ['empty','populated','missing-model','busy']){
+        await page.evaluate(empty=>setup({width:1280,height:800,empty}),state==='empty');
+        if(state==='missing-model')await page.evaluate(()=>{
+            widget.config.installed=false;widget.config.diffusion_models=[];
+            widget.config.assets=[{category:'diffusion_models',name:'qwen_image_2.1_int8_convrot.safetensors',installed:false},{category:'text_encoders',name:'qwen_encoder_missing.safetensors',installed:false},{category:'vae',name:'qwen_vae_missing.safetensors',installed:false}];
+            widget.ccState.config={models:[],clip:[],vae:[]};widget.render();
+        });
+        if(state==='busy')await page.evaluate(()=>{widget.busy=true;widget.startPreviewGeneration();widget.updateControls();});
+        const fit=await page.locator('.bg-panel').evaluateAll(panels=>panels.map(panel=>({name:panel.className,client:panel.clientHeight,scroll:panel.scrollHeight,top:panel.scrollTop})));
+        assert.ok(fit.every(panel=>panel.scroll<=panel.client+1&&panel.top===0),state+': '+JSON.stringify(fit));
+        report.standardStates.push({state,fit});await capture('standard-'+state);
+    }
+    await page.evaluate(()=>setup({width:1280,height:840}));
+    const wizardJob='9'.repeat(32);
+    const wizardRequests=[];
+    await page.route('**/backgrounds/*/jobs',async route=>{
+        const payload=route.request().postDataJSON();wizardRequests.push(payload);
+        assert.equal(payload.action,'wizard');
+        await route.fulfill({json:{job_id:wizardJob}});
+    });
+    await page.route(`**/jobs/${wizardJob}`,route=>route.fulfill({json:{status:'failed',error:'Describe the background for the wizard'}}));
+    await page.evaluate(()=>{for(const key of ['scene_description','front','back','left','right'])widget.state.editor[key]='';widget.markEdited();widget.render();});
+    await page.locator('[data-wizard]').click();
+    const wizard=page.getByRole('dialog',{name:'Background Wizard',exact:true});
+    await wizard.waitFor();await settle();
+    assert.equal(wizardRequests.length,0,'Opening the wizard must not start inference');
+    assert.equal(await wizard.locator('.bg-wizard-text').textContent(),'Describe the background in a broad way. The model will expand it into the scene fields while preserving the selected style and scene type.');
+    assert.equal(await wizard.locator('textarea').getAttribute('placeholder'),'e.g. abandoned garage filled with old machinery, lit by one dusty window');
+    await wizard.getByRole('button',{name:'FILL FIELDS',exact:true}).click();
+    assert.equal(wizardRequests.length,0,'An empty wizard brief must not start inference');
+    assert.equal(await wizard.locator('textarea').evaluate(input=>input===document.activeElement),true,'Empty submission keeps focus in the wizard input');
+    report.wizardDialogComparison=await page.evaluate(async()=>{
+        const {showModal}=await import('/web/vnccs_common.js');
+        const current=widget.wizardDialog;
+        const owner=document.createElement('div');owner.className='vnccs-creator-container';
+        Object.assign(owner.style,{position:'fixed',left:'-100000px',top:'0',width:widget.container.clientWidth+'px',height:widget.container.clientHeight+'px'});
+        document.body.append(owner);
+        const reference=showModal(owner,'Character Wizzard',()=>{
+            const wrap=document.createElement('div');wrap.className='vnccs-creator-character-wizard-modal';
+            const text=document.createElement('div');text.className='vnccs-creator-character-wizard-modal-text';text.textContent='Reference';
+            const input=document.createElement('textarea');input.className='vnccs-creator-textarea';wrap.append(text,input);return wrap;
+        },[{text:'Cancel'},{text:'FILL FIELDS',class:'vnccs-creator-btn-primary'}]);
+        const props=['fontFamily','fontSize','fontWeight','lineHeight','color','backgroundColor','backgroundImage','borderTopWidth','borderTopStyle','borderTopColor','borderRadius','padding','gap','overflow','width','minHeight','resize'];
+        const read=(element,keys=props)=>Object.fromEntries(keys.map(key=>[key,getComputedStyle(element)[key]]));
+        const currentTextarea=current.content.querySelector('textarea'),referenceTextarea=reference.content.querySelector('textarea');
+        const textareaProps=props.filter(key=>!['backgroundColor','borderTopColor'].includes(key));
+        currentTextarea.focus();const actualTextarea=read(currentTextarea,textareaProps);referenceTextarea.focus();const expectedTextarea=read(referenceTextarea,textareaProps);
+        const pairs={modal:[current.modal,reference.modal],body:[current.content,reference.content],text:[current.content.querySelector('.bg-wizard-text'),reference.content.querySelector('.vnccs-creator-character-wizard-modal-text')],cancel:[current.buttons[0],reference.buttons[0]],confirm:[current.buttons[1],reference.buttons[1]],actions:[current.actions,reference.actions]};
+        const result=Object.fromEntries(Object.entries(pairs).map(([key,[actual,expected]])=>[key,{actual:read(actual),expected:read(expected)}]));
+        result.textarea={actual:actualTextarea,expected:expectedTextarea};
+        const modal=current.modal.getBoundingClientRect(),host=widget.container.getBoundingClientRect();
+        result.fit={left:modal.left>=host.left,right:modal.right<=host.right,top:modal.top>=host.top,bottom:modal.bottom<=host.bottom};
+        reference.overlay.remove();owner.remove();return result;
+    });
+    for(const [part,comparison] of Object.entries(report.wizardDialogComparison)){
+        if(part==='fit')assert.ok(Object.values(comparison).every(Boolean),JSON.stringify(comparison));
+        else assert.deepEqual(comparison.actual,comparison.expected,part+' must match the actual Character Creator wizard styles');
+    }
+    await capture('background-wizard-input');
+    await wizard.locator('textarea').fill('A dark abandoned garage with rusted machinery');
+    await wizard.getByRole('button',{name:'FILL FIELDS',exact:true}).click();
+    assert.equal(wizardRequests.length,1);
+    assert.equal(wizardRequests[0].description,'A dark abandoned garage with rusted machinery');
+    assert.equal(wizardRequests[0].editor.scene_description,'','The wizard brief must not overwrite authored fields before success');
+    const wizardError=page.getByRole('dialog',{name:'Background Wizard Error',exact:true});
+    await wizardError.waitFor();await settle();
+    assert.equal(await page.locator('.vnccs-common-message-box').count(),0);
+    assert.equal(await wizardError.locator('.bg-error-text').textContent(),'Describe the background for the wizard');
+    assert.equal(await wizard.locator('textarea').inputValue(),'A dark abandoned garage with rusted machinery','A failed request keeps the wizard draft');
+    report.errorDialogComparison=await page.evaluate(async()=>{
+        const {showModal}=await import('/web/vnccs_common.js');
+        const current=widget.errorDialog;
+        const owner=document.createElement('div');owner.className='vnccs-creator-container';
+        Object.assign(owner.style,{position:'fixed',left:'-100000px',top:'0',width:widget.container.clientWidth+'px',height:widget.container.clientHeight+'px'});
+        document.body.append(owner);
+        const reference=showModal(owner,'Character Wizzard Error',()=>{
+            const wrap=document.createElement('div');wrap.className='vnccs-creator-character-wizard-modal';
+            const text=document.createElement('div');text.className='vnccs-creator-character-wizard-modal-text';
+            text.textContent='Describe the background for the wizard';wrap.append(text);return wrap;
+        },[{text:'OK',class:'primary'}]);
+        const props=['fontFamily','fontSize','fontWeight','lineHeight','color','backgroundColor','backgroundImage','borderTopWidth','borderTopStyle','borderTopColor','borderRadius','padding','gap','overflow','width'];
+        const read=(element,keys=props)=>Object.fromEntries(keys.map(key=>[key,getComputedStyle(element)[key]]));
+        const pairs={
+            modal:[current.modal,reference.modal],
+            title:[current.title,reference.title],
+            body:[current.content,reference.content.firstElementChild],
+            button:[current.buttons[0],reference.buttons[0]],
+            actions:[current.actions,reference.actions],
+        };
+        const result=Object.fromEntries(Object.entries(pairs).map(([key,[actual,expected]])=>[key,{actual:read(actual),expected:read(expected)}]));
+        const modal=current.modal.getBoundingClientRect(), host=widget.container.getBoundingClientRect();
+        result.fit={left:modal.left>=host.left,right:modal.right<=host.right,top:modal.top>=host.top,bottom:modal.bottom<=host.bottom};
+        reference.overlay.remove();owner.remove();return result;
+    });
+    for(const [part,comparison] of Object.entries(report.errorDialogComparison)){
+        if(part==='fit')assert.ok(Object.values(comparison).every(Boolean),JSON.stringify(comparison));
+        else assert.deepEqual(comparison.actual,comparison.expected,part+' must match the actual Character Creator error dialog styles');
+    }
+    await capture('background-wizard-error');
+    await wizardError.getByRole('button',{name:'OK',exact:true}).focus();
+    await page.keyboard.press('Tab');
+    assert.equal(await wizardError.getByRole('button',{name:'OK',exact:true}).evaluate(button=>button===document.activeElement),true,'Keyboard focus stays in the error dialog');
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(()=>!document.querySelector('[data-background-error]'));
+    assert.equal(await wizard.locator('textarea').evaluate(input=>input===document.activeElement),true,'Dismissing the error restores focus to the retained wizard draft');
+    await wizard.getByRole('button',{name:'Cancel',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('[data-background-wizard]'));
+    assert.equal(await page.locator('[data-wizard]').evaluate(button=>button===document.activeElement),true,'Closing the wizard restores focus to its launcher');
+    await page.unroute('**/backgrounds/*/jobs');await page.unroute(`**/jobs/${wizardJob}`);
+    await page.evaluate(()=>{widget.message('Retrying...');widget.message('Describe the background for the wizard',true,'Background Wizard Error');widget.restoring=true;widget.updateControls();});
+    assert.equal(await page.getByRole('dialog',{name:'Background Wizard Error'}).getByRole('button',{name:'OK',exact:true}).isEnabled(),true);
+    await page.getByRole('dialog',{name:'Background Wizard Error'}).getByRole('button',{name:'OK',exact:true}).click();
+    await page.waitForFunction(()=>!document.querySelector('[data-background-error]'));
+    report.wizardInteraction={opensBeforeInference:true,emptyStaysOpen:true,separateBrief:true,draftRetainedOnFailure:true};
+    report.errorDialogInteraction={focusTrap:true,escape:true,nestedOpenerFocus:true,launcherFocus:true,offlineDismissal:true};
     assert.deepEqual(errors, []); report.errors = errors; report.warnings = warnings; report.fixtureOnlyMutations = mutations.length;
     await writeFile(join(output, 'report.json'), JSON.stringify(report, null, 2));
     console.log(JSON.stringify({ output, scenarios: report.scenarios.length, retiredModelRequests: retiredRequests.length, errors, warnings }));

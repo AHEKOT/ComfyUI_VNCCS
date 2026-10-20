@@ -1,24 +1,31 @@
+import { createStylePicker, STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-8";
 import { app } from "../../scripts/app.js";
 import { vnccsApi, watchConnection } from "./vnccs_transport.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { presetSelection } from "./character_presets.mjs?v=legacy-tags-1";
-import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, createTraitInput, injectStyles, showModal, showMessage, registerCleanup, createRequestGuard, generateRandomSeed, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, animateWizardRows, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
+import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, createTraitInput, injectStyles, showModal, registerCleanup, createRequestGuard, generateRandomSeed, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, animateWizardRows, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
 
 const CREATOR_ZOOM = 0.67;
+const CREATOR_MIN_HEIGHT = 840;
 const GENERATION_PANEL_WIDTH = (1280 / CREATOR_ZOOM - 24) * .35;
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 .vnccs-background-creator { ${SAKURA_THEME_CSS} --warning:#ffaa00; --shadow-subtle:0 2px 8px rgba(0,0,0,0.3); --shadow-elevated:0 8px 32px rgba(0,0,0,0.5); }
 ${SAKURA_INTERACTION_CSS}
 ${SAKURA_CREATOR_CONTROL_CSS}
+${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-background-creator")}
 
 .vnccs-background-creator { display:flex; flex-direction:column; min-height:0; padding:12px; gap:12px; background:var(--bg-primary); }
 .vnccs-background-creator button:disabled { cursor:not-allowed; }
 
 .vnccs-background-creator .bg-step { flex:1 1 0; min-width:0; min-height:0; display:grid; gap:12px; }
 .vnccs-background-creator .bg-background { grid-template-columns:minmax(360px,1fr) minmax(${240 + GENERATION_PANEL_WIDTH * .2}px,calc((100% - 24px)*.21875 + ${GENERATION_PANEL_WIDTH * .2}px)) ${GENERATION_PANEL_WIDTH * .8}px; grid-template-rows:minmax(0,1fr); }
-.vnccs-background-creator .bg-panel { min-width:0; min-height:0; overscroll-behavior:contain; overflow-x:hidden; }
-.vnccs-background-creator .bg-source { scroll-padding-block:16px; }
+.vnccs-background-creator .bg-panel { min-width:0; min-height:0; overflow:visible; }
+.vnccs-background-creator .bg-generation { gap:4px; }
+.vnccs-background-creator .bg-generation .vnccs-common-creator-subsection { gap:4px; }
+.vnccs-background-creator .bg-generation .vnccs-common-creator-gen-param-grid { row-gap:8px; }
+.vnccs-background-creator .bg-generation .vnccs-common-creator-qi2-cache { row-gap:8px; padding:8px; }
+.vnccs-background-creator .bg-generation .vnccs-common-creator-lora-stack { gap:4px; margin-top:4px; padding-top:8px; }
 .vnccs-background-creator .bg-panel>* { flex:0 0 auto; min-width:0; }
 .vnccs-background-creator .bg-panel>button { min-height:40px; }
 .vnccs-background-creator textarea { user-select:text; }
@@ -41,7 +48,7 @@ ${SAKURA_CREATOR_CONTROL_CSS}
 .vnccs-background-creator .bg-variation-cards { display:flex; gap:10px; min-width:0; overflow-x:auto; overscroll-behavior-x:contain; scrollbar-width:thin; scrollbar-color:var(--accent-border) transparent; scroll-snap-type:x proximity; padding:2px; }
 .vnccs-background-creator .bg-variation-item { display:flex; flex-direction:column; gap:7px; flex:0 0 calc((100% - 20px)/3); min-width:160px; scroll-snap-align:start; }
 .vnccs-background-creator .bg-variation-scroll { width:32px; height:32px; }
-.vnccs-background-creator .bg-variation-item>span { color:var(--text-primary); font-size:13px; font-weight:600; overflow-wrap:anywhere; }
+.vnccs-background-creator .bg-variation-item>span { color:var(--text-primary); font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .vnccs-background-creator .bg-variation-preview { position:relative; }
 .vnccs-background-creator [data-edit-variation] { position:relative; display:block; width:100%; aspect-ratio:16/9; min-height:52px; padding:0; background:var(--bg-surface); border:2px solid color-mix(in srgb,var(--accent-lavender) 60%,var(--bg-surface)); border-radius:var(--radius-md); }
 .vnccs-background-creator [data-edit-variation]:hover { border-color:var(--accent); background:var(--bg-hover); }
@@ -56,9 +63,9 @@ ${SAKURA_CREATOR_CONTROL_CSS}
 .vnccs-background-creator .bg-variation-editor-head label { display:flex; align-items:center; gap:12px; flex:1; color:var(--text-secondary); }
 .vnccs-background-creator .bg-variation-editor-head input { flex:1; }
 .vnccs-background-creator .bg-variation-editor-head>[data-close-variation] { flex:0 0 auto; width:auto; }
-.vnccs-background-creator .bg-variation-fields { display:flex; flex-direction:column; }
-.vnccs-background-creator .bg-attributes>.bg-description { flex:1 1 180px; min-height:180px; }
-.vnccs-background-creator .bg-description textarea { flex:1; min-height:140px; resize:none; }
+.vnccs-background-creator .bg-variation-fields { display:flex; flex-direction:column; gap:0; }
+.vnccs-background-creator .bg-attributes>.bg-description { flex:1 1 0; min-height:100px; }
+.vnccs-background-creator .bg-description textarea { flex:1; min-height:64px; resize:none; }
 .vnccs-background-creator .bg-description textarea:focus { background:rgba(255,255,255,0.04); box-shadow:none; }
 .vnccs-background-creator .bg-negative textarea { flex:none; height:64px; min-height:64px; max-height:64px; resize:none; }
 .vnccs-background-creator .bg-image-dialog { width:min(1400px,calc(100% - 32px)); max-width:min(1400px,calc(100% - 32px)); height:min(900px,calc(100% - 32px)); }
@@ -74,15 +81,29 @@ ${SAKURA_CREATOR_CONTROL_CSS}
 .vnccs-background-creator [hidden] { display:none !important; }
 
 .vnccs-background-creator .bg-dialog-fields { display:flex; flex-direction:column; gap:12px; }
-.vnccs-background-creator .vnccs-common-modal { max-height:calc(100% - 32px); overflow:auto; }
-.vnccs-background-creator.bg-compact .bg-step { grid-template-columns:minmax(0,1fr); grid-template-rows:none; grid-auto-rows:max-content; overflow:auto; overscroll-behavior:contain; scroll-padding-block:16px; }
-.vnccs-background-creator.bg-compact .bg-panel { height:auto; overflow:visible; }
+.vnccs-background-creator .vnccs-common-modal { max-height:calc(100% - 32px); overflow:visible; }
+.vnccs-background-creator .bg-wizard-modal { display:flex; flex-direction:column; gap:10px; width:100%; min-width:0; box-sizing:border-box; }
+.vnccs-background-creator .bg-wizard-text { color:var(--text-secondary); font-size:12px; line-height:1.45; white-space:normal; overflow-wrap:anywhere; }
+.vnccs-background-creator .bg-wizard-modal textarea { width:100%; min-height:110px; box-sizing:border-box; resize:vertical; }
+.vnccs-background-creator .vnccs-common-modal.bg-wizard-dialog { overflow:hidden; }
+.vnccs-background-creator .vnccs-common-modal.bg-error-dialog { overflow:hidden; }
+.vnccs-background-creator .bg-error-text { color:var(--text-secondary); font-size:12px; line-height:1.45; white-space:normal; overflow-wrap:anywhere; }
+.vnccs-background-creator .vnccs-common-creator-model-picker { position:relative; }
+.vnccs-background-creator .vnccs-common-creator-model-picker-menu { position:absolute; top:calc(100% + 6px); left:0; right:0; z-index:30; max-height:320px; overflow-y:auto; background:var(--bg-primary); }
+.vnccs-background-creator.bg-compact .bg-step { grid-template-columns:minmax(0,1.15fr) repeat(2,minmax(0,1fr)); }
+.vnccs-background-creator.bg-compact .bg-panel { padding:10px; gap:6px; }
+.vnccs-background-creator.bg-compact .bg-actions { grid-template-columns:minmax(0,2fr) repeat(2,minmax(0,1fr)); }
+.vnccs-background-creator .vnccs-style-toolbar > button { padding:10px; border-radius:var(--radius-md); cursor:pointer; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; font-size:11px; font-family:var(--font); color:white; text-align:center; transition:all var(--transition); position:relative; overflow:hidden; }
+.vnccs-background-creator .vnccs-style-gallery :is(input,select,textarea,.vnccs-common-ui-select-trigger) { box-sizing:border-box; min-width:0; color:var(--text-primary); background:var(--bg-surface); border:1px solid var(--accent-border); border-radius:8px; padding:8px 12px; font:12px var(--font); }
+.vnccs-background-creator .vnccs-style-gallery :is(input,select,.vnccs-common-ui-select-trigger) { height:34px; }
+.vnccs-background-creator .vnccs-style-gallery .vnccs-style-size-slider { width:180px; max-width:50%; height:auto; padding:0; border:0; background:transparent; }
+.vnccs-background-creator .vnccs-style-summary>.vnccs-style-placeholder { width:88px; }
 @media (prefers-reduced-motion:reduce) { .vnccs-background-creator *, .vnccs-background-creator *::before, .vnccs-background-creator *::after { transition:none !important; animation:none !important; } }
 
 `;
 
 export const DEFAULT_EDITOR = Object.freeze({
-    description: "", scene_description: "", prompt: "", attributes: { scene_type: "Interior", time: "Day" },
+    description: "", scene_description: "", front: "", back: "", left: "", right: "", prompt: "", attributes: { scene_type: "Interior", time: "Day" },
     variants: ["Morning", "Evening", "Night"].map(name => ({ id: name.toLowerCase(), name, time: name, weather: "", additional_details: "" })),
     aspect: "16:9", style: "Hand-painted anime", aesthetics: "", negative: "",
     generation: { model_type: "qi2", steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, resolution_mp: 2, seed_mode: "fixed", turbo: false, turbo_previous_settings: null, prompt_enhance: true, cache_device: "gpu", cache_dtype: "int8", lora_stack: [], diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors" },
@@ -92,11 +113,16 @@ export const MOSS_GENERATION = Object.freeze({ model_type: "moss", steps: 25, cf
 export const clone = value => JSON.parse(JSON.stringify(value));
 
 const LEGACY_SCENE_LABELS = { composition: "Composition", location: "Location", era: "Era", architecture: "Architecture", lighting: "Lighting", weather: "Weather", mood: "Atmosphere", objects: "Objects and furnishings", details: "Additional details" };
+const COMPOSITION_FIELDS = ["front", "back", "left", "right"];
 const promptLine = value => String(value || "").replace(/\s+/g, " ").trim();
 
 export function parsePrompt(text) {
     const match = /^Style:[ \t]*(.*?)\r?\nTime:[ \t]*(.*?)\r?\nInterior\/Exterior:[ \t]*(.*?)\r?\nScene description:[ \t]*([\s\S]*)$/.exec(text.trim());
-    return match ? { style: match[1], time: match[2], scene_type: match[3], scene_description: match[4] } : null;
+    if (!match) return null;
+    const parts = match[4].split(/\r?\n(Front|Back|Left|Right):[ \t]*/);
+    const parsed = { style: match[1], time: match[2], scene_type: match[3], scene_description: parts[0] };
+    for (let i = 1; i < parts.length; i += 2) parsed[parts[i].toLowerCase()] = parts[i + 1].trim();
+    return parsed;
 }
 
 export function legacySceneDescription(editor) {
@@ -117,7 +143,10 @@ export function editorDefaults(value = {}) {
     if (!["qi2", "moss"].includes(editor.generation.model_type)) throw new Error("Unsupported background model type.");
     if (!Object.hasOwn(value, "scene_description")) {
         const parsed = value.prompt && parsePrompt(value.prompt);
-        if (parsed) { editor.style = parsed.style; editor.attributes.time = parsed.time; editor.attributes.scene_type = parsed.scene_type; }
+        if (parsed) {
+            editor.style = parsed.style; editor.attributes.time = parsed.time; editor.attributes.scene_type = parsed.scene_type;
+            for (const key of COMPOSITION_FIELDS) if (!Object.hasOwn(value, key) && Object.hasOwn(parsed, key)) editor[key] = parsed[key];
+        }
         editor.scene_description = legacySceneDescription(editor);
     }
     if (!Array.isArray(editor.variants) || editor.variants.length > 64
@@ -133,17 +162,17 @@ export function composePrompt(editor) {
     const description = editor.scene_description ?? legacySceneDescription(editor);
     const body = [description, editor.aesthetics && !description.includes(editor.aesthetics) ? editor.aesthetics : ""].filter(Boolean).join("\n");
     const style = String(editor.style || "").split(/\r?\n/).filter(line => !/^\s*(?:Style )?Reference\s*:/i.test(line)).join("\n");
-    return `Style: ${promptLine(style)}\nTime: Day\nInterior/Exterior: ${promptLine(editor.attributes.scene_type)}\nScene description: ${promptLine(body)}`;
+    return [`Style: ${promptLine(style)}\nTime: Day\nInterior/Exterior: ${promptLine(editor.attributes.scene_type)}\nScene description: ${promptLine(body)}`,
+        ...COMPOSITION_FIELDS.filter(key => editor[key]).map(key => `${key[0].toUpperCase() + key.slice(1)}: ${promptLine(editor[key])}`)].join("\n");
 }
 
 const isTurboModel = name => String(name || "").replace(/\\/g, "/").split("/").at(-1) === "qwen_image_2.1_turbo_int8_convrot.safetensors";
 const modelPath = entry => String(entry.local_path || "").replace(/\\/g, "/").replace(/^models\/[^/]+\//, "");
 
 export function readState(raw) {
-    if (typeof raw !== "string" || raw.length > 256 * 1024) throw new Error("Background Creator state is too large.");
+    if (typeof raw !== "string" || new Blob([raw]).size > 4 * 1024 * 1024) throw new Error("Background Creator state is too large.");
     const value = JSON.parse(raw);
     if (!value || Array.isArray(value) || value.schema_version !== 2) throw new Error("Unsupported Background Creator workflow state.");
-    if (Object.hasOwn(value, "revision") && (!Number.isSafeInteger(value.revision) || value.revision < 1)) throw new Error("Invalid saved background revision.");
     if (value.background_name != null && (typeof value.background_name !== "string" || [...value.background_name].length > 96)) throw new Error("Invalid saved background name.");
     for (const key of ["background_id", "selected_image_id"]) {
         if (value[key] != null && (typeof value[key] !== "string" || (value[key] && !/^[a-f0-9]{32}$/.test(value[key])))) throw new Error("Invalid background asset reference.");
@@ -193,9 +222,13 @@ export class BackgroundCreatorWidget {
                 <div class="bg-variation-editor" data-variation-editor hidden><div class="bg-variation-editor-head"><label><span class="vnccs-common-creator-label">Variant name</span><input class="vnccs-common-creator-input" data-variation-name aria-label="Variant name" maxlength="96"></label><button type="button" class="vnccs-common-creator-model-card-download" data-close-variation>Close</button></div><div class="bg-variation-fields" data-variation-fields></div></div>
                 </section>
                 <section class="bg-panel bg-attributes"><div class="vnccs-common-creator-section-title">Scene attributes</div><button class="primary bg-wide" data-wizard>Background wizard</button>
-                    <label class="bg-field"><span>Style</span><select data-style aria-label="Style"><option value="">Custom</option></select><input type="text" data-setting="style" aria-label="Custom style description" maxlength="16000" placeholder="Describe the visual rendering"></label>
+                    <div class="bg-field" data-style-picker></div>
                     <div class="bg-field"><span>Interior/Exterior</span><div class="bg-segments" data-trait="scene_type"><button data-value="Interior">Interior</button><button data-value="Exterior">Exterior</button></div></div>
-                    <label class="bg-field bg-description"><span>Scene description</span><textarea data-setting="scene_description" rows="12" placeholder="Describe the room or landscape, composition, objects and lighting."></textarea></label>
+                    <label class="bg-field bg-description"><span>Scene description</span><textarea data-setting="scene_description" rows="3" maxlength="40000" placeholder="Describe the overall setting, atmosphere and lighting."></textarea></label>
+                    <label class="bg-field bg-description"><span>Front</span><textarea data-setting="front" rows="3" maxlength="40000" placeholder="Foreground: e.g. a rusty toolbox beside cracked floor tiles."></textarea></label>
+                    <label class="bg-field bg-description"><span>Back</span><textarea data-setting="back" rows="3" maxlength="40000" placeholder="Background: e.g. a dented garage door and exposed brick wall."></textarea></label>
+                    <label class="bg-field bg-description"><span>Left</span><textarea data-setting="left" rows="3" maxlength="40000" placeholder="Left side: e.g. metal shelves stacked with tires and paint cans."></textarea></label>
+                    <label class="bg-field bg-description"><span>Right</span><textarea data-setting="right" rows="3" maxlength="40000" placeholder="Right side: e.g. a wooden workbench beneath a dusty window."></textarea></label>
                     <label class="bg-field bg-negative"><span>Negative Prompt</span><textarea data-setting="negative" rows="2" maxlength="8000" aria-label="Negative prompt" placeholder="Optional: unwanted details or artifacts."></textarea></label>
                 </section>
                 <section class="bg-panel bg-generation"><div class="vnccs-common-creator-section-title">Generation</div>
@@ -216,7 +249,7 @@ export class BackgroundCreatorWidget {
                         ${compactField("Device", `<select class="vnccs-common-creator-gen-param-select" data-setting="generation.cache_device">${options(["gpu", "auto", "cpu", "off"])}</select>`)}
                         ${compactField("Dtype", `<select class="vnccs-common-creator-gen-param-select" data-setting="generation.cache_dtype">${options(["int8", "default", "int4"])}</select>`)}
                     </div>
-                    <div class="vnccs-common-creator-subsection"><div class="vnccs-common-creator-section-title">LoRA Stack</div><div class="vnccs-common-creator-subsection" data-qwen-only><span class="vnccs-common-creator-label">Turbo LoRA</span>${toggleCard("Viggle Turbo · 6 steps", "generation.turbo")}</div>
+                    <div class="vnccs-common-creator-subsection"><div class="vnccs-common-creator-section-title">LoRA Stack</div><div class="vnccs-common-creator-subsection" data-turbo-lora><span class="vnccs-common-creator-label">Turbo LoRA</span>${toggleCard("Viggle Turbo · 6 steps", "generation.turbo")}</div>
                         <div class="vnccs-common-creator-lora-stack">${[0, 1, 2, 3, 4].map(index => `<div class="vnccs-common-creator-lora-item is-empty"><div class="vnccs-common-creator-lora-row"><select class="vnccs-common-creator-select" style="flex:2" data-lora="${index}" aria-label="LoRA ${index + 1}"><option value="">None</option></select><input class="vnccs-common-creator-input" style="flex:1" type="number" min="-10" max="10" step="0.05" value="1" data-lora-strength="${index}" aria-label="LoRA ${index + 1} strength"></div></div>`).join("")}</div>
                     </div>
                 </section>
@@ -231,7 +264,7 @@ export class BackgroundCreatorWidget {
             () => { if (!this.disposed && this.state) { this.renderModelPicker(); this.syncGenerationCards(); this.updateControls(); } }, node);
         this.decorateControls();
         this.container._node = node;
-        for (const region of this.container.querySelectorAll(".bg-background")) enableMiddleMouseCanvasPan(region, node);
+        enableMiddleMouseCanvasPan(this.container, node);
         this.tooltipCleanup = attachHelpTooltips(this.container);
         for (const region of this.container.querySelectorAll(".bg-step,.bg-panel")) region.dataset.sakuraScroll = region.className;
         this.on(this.container, "click", event => this.click(event));
@@ -296,10 +329,17 @@ export class BackgroundCreatorWidget {
     }
 
     on(target, type, callback, options = {}) { target.addEventListener(type, callback, { ...options, signal: this.events.signal }); }
-    message(text, error = false) {
+    message(text, error = false, title = "Background Creator Error") {
         if (this.disposed) return;
         this.status.textContent = text; this.status.classList.toggle("error", error);
-        if (error && this.lastError !== text) showMessage(this.container, text, true);
+        if (error && this.lastError !== text) {
+            this.errorDialog?.overlay.remove();
+            const content = document.createElement("div");
+            content.className = "bg-error-text"; content.textContent = text;
+            this.errorDialog = showModal(this.container, title, () => content, [{ text: "OK", class: "primary" }]);
+            this.errorDialog.modal.classList.add("bg-error-dialog");
+            this.errorDialog.overlay.setAttribute("data-background-error", "");
+        }
         this.lastError = error ? text : "";
     }
     startPreviewGeneration() {
@@ -373,7 +413,9 @@ export class BackgroundCreatorWidget {
         const locked = this.busy || this.restoring || Boolean(this.document?._recovery || this.document?.archived);
         const hasSource = Boolean(this.document?.images.some(image => image.image_id === this.state?.selected_image_id));
         this.container.setAttribute("aria-busy", String(this.busy || this.restoring));
-        for (const control of this.container.querySelectorAll("button,input,select,textarea")) control.disabled = !control.closest(".vnccs-common-message-overlay") && locked;
+        for (const control of this.container.querySelectorAll("button,input,select,textarea")) {
+            if (!control.closest("[data-background-error],[data-background-wizard]")) control.disabled = locked;
+        }
         for (const card of this.container.querySelectorAll("[data-model-toggle],[data-model-choice]")) {
             card.disabled = locked || (card.hasAttribute("data-model-choice") && !card.classList.contains("is-installed"));
             if (card.getAttribute("role") === "button") { card.setAttribute("aria-disabled", String(card.disabled)); card.tabIndex = card.disabled ? -1 : 0; }
@@ -399,7 +441,7 @@ export class BackgroundCreatorWidget {
         this.updateVariantScroll();
     }
 
-    invalidateRestore() { ++this.epoch; this.stopPreviewGeneration(); this.restoring = true; this.busy = false; this.activeAction = ""; this.workflowRun = null; this.unsaved = false; this.jobId = ""; clearTimeout(this.saveTimer); this.updateControls(); }
+    invalidateRestore() { ++this.epoch; this.wizardDialog?.overlay.remove(); this.stopPreviewGeneration(); this.restoring = true; this.busy = false; this.activeAction = ""; this.workflowRun = null; this.unsaved = false; this.jobId = ""; clearTimeout(this.saveTimer); this.updateControls(); }
     restore() {
         const epoch = ++this.epoch; this.restoring = true; this.restoreFailed = false;
         this.operations = this.operations.catch(() => {}).then(async () => {
@@ -420,10 +462,7 @@ export class BackgroundCreatorWidget {
                     const document = await this.request(`/backgrounds/${state.background_id}`);
                     if (epoch !== this.epoch || this.disposed) return;
                     if (!stored.editor) state.editor = editorDefaults(document.editor);
-                    const savedEditor = editorDefaults(document.editor), restoredEditor = clone(state.editor);
-                    delete savedEditor.selected_image_id; delete restoredEditor.selected_image_id;
-                    if (!stored.editor || !Object.hasOwn(stored, "revision") && JSON.stringify(restoredEditor) === JSON.stringify(savedEditor)
-                        && (!state.selected_image_id || state.selected_image_id === document.selected_image_id)) state.revision = document.revision;
+                    state.revision = document.revision;
                     await this.acceptDocument(document, false, epoch);
                 }
                 if (epoch !== this.epoch || this.disposed) return;
@@ -543,21 +582,50 @@ export class BackgroundCreatorWidget {
         if (download) { download.hidden = installed || !entry; download.disabled = ["queued", "downloading"].includes(status); }
     }
     renderStyles() {
-        const select = this.container.querySelector("[data-style]"), styles = this.config?.styles || [];
-        const key = JSON.stringify([styles.map(style => [style.id, style.label]), this.state.editor.style_id]);
-        if (select.dataset.choices !== key) {
-            const custom = document.createElement("option"); custom.value = ""; custom.textContent = "Custom";
-            select.replaceChildren(custom);
-            for (const style of styles) {
-                const option = document.createElement("option"); option.value = style.id; option.textContent = style.label; select.appendChild(option);
-            }
-            if (this.state.editor.style_id && !styles.some(style => style.id === this.state.editor.style_id)) {
-                const saved = document.createElement("option"); saved.value = this.state.editor.style_id; saved.textContent = "Saved style (unavailable)"; select.appendChild(saved);
-            }
-            select.dataset.choices = key;
+        const editor = this.state.editor, choices = this.config?.styles || [];
+        const key = JSON.stringify(choices);
+        if (!this.stylePicker) {
+            this.styleInfo = {};
+            this.stylePicker = createStylePicker({ host: this.container, catalog: { groups: [] },
+                getInfo: () => this.styleInfo,
+                save: () => {
+                    if (this.restoring || this.busy || this.disposed) return;
+                    const info = this.styleInfo, current = this.state.editor;
+                    if (!current.style_id) current.custom_style = current.style;
+                    if (info.style === "custom") {
+                        delete current.style_id;
+                        current.custom_style = info.custom_style ?? current.custom_style ?? ""; current.style = current.custom_style;
+                    }
+                    else {
+                        current.style_id = info.style;
+                        const choice = this.config?.styles?.find(style => style.id === info.style);
+                        current.style = info.style_prompt || choice?.prompt || "";
+                    }
+                    this.markEdited(); this.render();
+                },
+                catalogURL: () => BASE + "/styles", showGenerateAll: true,
+                getPreviewPayload: () => {
+                    if (this.restoring || this.busy || this.disposed) throw new Error("Background Creator is busy");
+                    return { node_id: String(this.node.id), editor: clone(this.state.editor) };
+                },
+                listenPreview: callback => this.on(this.api, "vnccs.style_preview.stage", callback),
+                fetchApi: (...args) => this.api.fetchApi(...args), imageURL: value => this.api.apiURL(value),
+                cleanup: callback => { this.stylePickerCleanup = callback; }, showModal,
+            });
+            this.stylePicker.root.classList.add("vnccs-common-creator-field");
+            this.stylePicker.customInput.classList.add("vnccs-common-creator-input");
+            this.stylePicker.root.children[0].classList.add("vnccs-common-creator-label");
+            const field = this.container.querySelector("[data-style-picker]");
+            field.appendChild(this.stylePicker.root);
+            field._vnccsWizardRevealTarget = this.stylePicker.root.querySelector(".vnccs-style-summary");
         }
-        select.value = this.state.editor.style_id || "";
-        this.container.querySelector('[data-setting="style"]').hidden = Boolean(this.state.editor.style_id);
+        if (key !== this.styleCatalogKey) {
+            this.styleCatalogKey = key;
+            this.stylePicker.setCatalog({ groups: [{ label: "Background styles", styles: choices.map(style => ({ ...style, description: style.description || style.prompt, user: style.id.startsWith("user_") })) }] });
+        }
+        Object.assign(this.styleInfo, { style: editor.style_id || "custom", custom_style: editor.custom_style ?? (editor.style_id ? "" : editor.style),
+            style_label: editor.style_id || "Custom style", style_description: editor.style, style_prompt: editor.style });
+        if (!this.stylePicker.customInput.contains?.(document.activeElement)) this.stylePicker.setValue(this.styleInfo.style);
     }
     randomizeSeedIfNeeded() {
         if (this.state?.editor.generation.seed_mode !== "randomize") return;
@@ -630,7 +698,7 @@ export class BackgroundCreatorWidget {
 
     variantPreview(card) {
         for (const group of [...(this.document?.generated_sets || [])].reverse()) {
-            if (group.source_image_id !== this.state.selected_image_id) continue;
+            if (group.version !== "" || group.source_image_id !== this.state.selected_image_id) continue;
             const index = group.variants.findIndex(saved => ["id", "time", "weather", "additional_details"].every(key => saved[key] === card[key]));
             if (index >= 0 && group.images[index + 1]?.url) return group.images[index + 1];
         }
@@ -691,7 +759,7 @@ export class BackgroundCreatorWidget {
             cardList.replaceChildren(); cardList.dataset.cards = cardKey;
             for (const card of editor.variants) {
                 const item = document.createElement("div"); item.className = "bg-variation-item";
-                const name = document.createElement("span"); name.textContent = card.name;
+                const name = document.createElement("span"); name.textContent = card.name; name.title = card.name;
                 const preview = document.createElement("div"); preview.className = "bg-variation-preview";
                 const button = document.createElement("button"); button.type = "button"; button.dataset.editVariation = card.id;
                 button.setAttribute("aria-label", `Edit ${card.name} variant`);
@@ -720,6 +788,7 @@ export class BackgroundCreatorWidget {
             button.classList.toggle("is-active", selected); button.setAttribute("aria-pressed", String(selected));
         }
         for (const section of this.container.querySelectorAll("[data-qwen-only]")) section.hidden = moss;
+        this.container.querySelector("[data-turbo-lora]").hidden = moss || isTurboModel(editor.generation.diffusion_model_name);
         for (const control of this.container.querySelectorAll("[data-setting]")) {
             const value = control.dataset.setting.split(".").reduce((current, key) => current?.[key], editor);
             if (control.type === "checkbox") control.checked = Boolean(value);
@@ -752,7 +821,9 @@ export class BackgroundCreatorWidget {
             this.container.querySelector(".vnccs-common-creator-placeholder-hint").textContent = "Generate a preview or upload your image.";
         }
         for (const select of this.container.querySelectorAll("[data-lora]")) selectValue(select, editor.generation.lora_stack[Number(select.dataset.lora)]?.name || "");
-        for (const number of this.container.querySelectorAll("[data-lora-strength]")) number.value = editor.generation.lora_stack[Number(number.dataset.loraStrength)]?.strength ?? 1;
+        for (const number of this.container.querySelectorAll("[data-lora-strength]")) {
+            if (document.activeElement !== number) number.value = editor.generation.lora_stack[Number(number.dataset.loraStrength)]?.strength ?? 1;
+        }
         this.renderStyles();
         const random = editor.generation.seed_mode === "randomize", dice = this.container.querySelector("[data-random]");
         dice.classList.toggle("is-active", random); dice.setAttribute("aria-pressed", String(random));
@@ -788,7 +859,7 @@ export class BackgroundCreatorWidget {
 
     syncPrompt() {
         const editor = this.state.editor;
-        for (const control of this.container.querySelectorAll('[data-setting="style"],[data-setting="scene_description"]')) {
+        for (const control of this.container.querySelectorAll('[data-setting="style"],[data-setting="scene_description"],[data-setting="front"],[data-setting="back"],[data-setting="left"],[data-setting="right"]')) {
             if (document.activeElement !== control) control.value = editor[control.dataset.setting];
         }
         for (const group of this.container.querySelectorAll("[data-trait]")) {
@@ -801,7 +872,6 @@ export class BackgroundCreatorWidget {
         const operation = this.saveSerial.catch(() => {}).then(async () => {
             if (!this.unsaved || !this.document || this.disposed || this.restoring) return;
             const id = this.document.background_id, epoch = this.epoch, editor = clone(this.state.editor), selectedImage = this.state.selected_image_id;
-            if (!Number.isSafeInteger(this.state.revision)) throw new Error("The saved background version is unknown. Reload the background before saving; the workflow draft is retained.");
             const saved = await this.json(`/backgrounds/${id}`, { editor, selected_image_id: selectedImage, revision: this.state.revision }, "PATCH");
             if (this.disposed || epoch !== this.epoch || this.document?.background_id !== id) return;
             this.document = saved;
@@ -845,6 +915,7 @@ export class BackgroundCreatorWidget {
     decorateControls() {
         const add = (selector, name) => { for (const element of this.container.querySelectorAll(selector)) element.classList.add("vnccs-common-creator-" + name); };
         for (const button of this.container.querySelectorAll("button")) {
+            if (button.classList.contains("vnccs-style-summary") || button.closest(".vnccs-style-gallery")) continue;
             button.type = "button";
             if (!button.closest(".bg-segments") && !button.className.includes("vnccs-common-")) {
                 const action = ["primary", "success", "danger"].some(variant => button.classList.contains(variant));
@@ -853,6 +924,7 @@ export class BackgroundCreatorWidget {
             for (const variant of ["primary", "success", "danger"]) if (button.classList.contains(variant)) button.classList.add("vnccs-common-creator-btn-" + variant);
         }
         for (const control of this.container.querySelectorAll("input,select,textarea")) {
+            if (control.closest(".vnccs-style-gallery")) continue;
             if (control.classList.contains("vnccs-common-creator-gen-param-input") || control.classList.contains("vnccs-common-creator-gen-param-select") || control.classList.contains("vnccs-common-creator-resolution-slider") || control.closest(".vnccs-common-creator-textarea-wrapper")) continue;
             if (control.tagName === "INPUT" && ["checkbox", "file"].includes(control.type)) continue;
             control.classList.add("vnccs-common-creator-" + (control.type === "range" ? "slider" : control.tagName === "SELECT" ? "select" : control.tagName === "TEXTAREA" ? "textarea" : "input"));
@@ -927,13 +999,61 @@ export class BackgroundCreatorWidget {
         await this.acceptDocument(document, true, epoch); return epoch === this.epoch && !this.disposed;
     }
 
+    openWizard() {
+        if (this.wizardDialog || this.workflowBusy || this.busy || this.restoring || this.disposed) return;
+        const epoch = this.epoch;
+        let input, modal;
+        const isCurrent = () => !this.disposed && epoch === this.epoch && this.wizardDialog === modal && this.container.contains(modal.overlay);
+        modal = showModal(this.container, "Background Wizard", () => {
+            const wrap = document.createElement("div"); wrap.className = "bg-wizard-modal";
+            const text = document.createElement("div"); text.className = "bg-wizard-text";
+            text.textContent = "Describe the background in a broad way. The model will expand it into the scene fields while preserving the selected style and scene type.";
+            input = document.createElement("textarea"); input.className = "vnccs-common-creator-textarea bg-wizard-input";
+            input.maxLength = 40000; input.placeholder = "e.g. abandoned garage filled with old machinery, lit by one dusty window";
+            wrap.append(text, input); return wrap;
+        }, [
+            { text: "Cancel" },
+            { text: "FILL FIELDS", class: "primary", action: async (_overlay, button) => {
+                if (!isCurrent()) return false;
+                const description = input.value.trim();
+                if (!description) { input.focus(); return true; }
+                button.textContent = "THINKING...";
+                try {
+                    return !await this.runJob("wizard", description, isCurrent);
+                } catch (error) {
+                    if (isCurrent()) {
+                        this.message(error.message || String(error), true, "Background Wizard Error");
+                        const dialog = this.errorDialog, remove = dialog?.overlay.remove;
+                        if (remove) dialog.overlay.remove = (...args) => {
+                            const result = remove.apply(dialog.overlay, args);
+                            if (isCurrent()) input.focus({ preventScroll: true });
+                            return result;
+                        };
+                    }
+                    return true;
+                } finally {
+                    button.textContent = "FILL FIELDS";
+                }
+            } },
+        ]);
+        modal.modal.classList.add("bg-wizard-dialog");
+        modal.overlay.dataset.backgroundWizard = "";
+        this.wizardDialog = modal;
+        const remove = modal.overlay.remove;
+        modal.overlay.remove = (...args) => {
+            if (this.wizardDialog === modal) this.wizardDialog = null;
+            return remove.apply(modal.overlay, args);
+        };
+    }
+
     async click(event) {
         const button = event.target.closest("button,[data-model-toggle],[data-model-choice]"); if (!button || !this.container.contains(button) || button.disabled) return;
         const epoch = this.epoch;
         try {
             if (button.hasAttribute("data-scroll-variation")) {
                 const list = this.container.querySelector("[data-variation-cards]");
-                list.scrollBy({ left: Number(button.dataset.scrollVariation) * list.clientWidth * .8, behavior: "smooth" }); return;
+                const behavior = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+                list.scrollBy({ left: Number(button.dataset.scrollVariation) * list.clientWidth * .8, behavior }); return;
             }
             if (button.hasAttribute("data-close-variation")) { this.activeVariationId = ""; this.render(); return; }
             if (button.hasAttribute("data-delete-variation")) {
@@ -1012,9 +1132,13 @@ export class BackgroundCreatorWidget {
                 Object.assign(this.state, { background_id: "", selected_image_id: "" }); this.render(); this.sync(); return;
             }
             if (button.hasAttribute("data-upload")) { this.container.querySelector("[data-file]").click(); return; }
-            if (button.hasAttribute("data-wizard")) { await this.runJob("wizard"); return; }
+            if (button.hasAttribute("data-wizard")) { this.openWizard(); return; }
             if (button.dataset.action) await this.runJob(button.dataset.action);
-        } catch (error) { if (epoch === this.epoch && !this.disposed) { this.busy = false; this.updateControls(); this.message(error.message, true); } }
+        } catch (error) { if (epoch === this.epoch && !this.disposed) {
+            this.busy = false; this.updateControls();
+            if (button.isConnected && !button.disabled) button.focus({ preventScroll: true });
+            this.message(error.message, true, button.hasAttribute("data-wizard") ? "Background Wizard Error" : "Background Creator Error");
+        } }
     }
 
     openPreview(card = null) {
@@ -1074,9 +1198,9 @@ export class BackgroundCreatorWidget {
             apply();
         };
         viewport.onpointerdown = event => {
-            if (!ready || ![0, 1].includes(event.button) || event.isPrimary === false) return;
+            if (!ready || event.button !== 0 || event.isPrimary === false) return;
             event.preventDefault(); event.stopPropagation(); viewport.focus({ preventScroll: true });
-            drag = { ...point(event), id: event.pointerId, buttons: event.button === 0 ? 1 : 4 };
+            drag = { ...point(event), id: event.pointerId, buttons: 1 };
             viewport.setPointerCapture(event.pointerId); viewport.classList.add("is-dragging");
         };
         viewport.onpointermove = event => {
@@ -1130,7 +1254,11 @@ export class BackgroundCreatorWidget {
             this.markEdited(); return;
         }
         if (control.hasAttribute("data-lora") || control.hasAttribute("data-lora-strength")) {
-            this.state.editor.generation.lora_stack = [...[...this.container.querySelectorAll("[data-lora]")].map(select => ({ name: select.value, strength: Number(this.container.querySelector(`[data-lora-strength="${select.dataset.lora}"]`).value) })), ...this.state.editor.generation.lora_stack.slice(5)];
+            const previous = this.state.editor.generation.lora_stack;
+            this.state.editor.generation.lora_stack = [...[...this.container.querySelectorAll("[data-lora]")].map(select => {
+                const weight = this.container.querySelector(`[data-lora-strength="${select.dataset.lora}"]`), saved = previous[Number(select.dataset.lora)];
+                return { ...saved, name: select.value, strength: validNumber(weight) ? Number(weight.value) : saved?.strength ?? 1 };
+            }), ...previous.slice(5)];
             this.syncGenerationCards();
             this.markEdited();
         }
@@ -1147,20 +1275,20 @@ export class BackgroundCreatorWidget {
             if (value !== undefined) { control.value = value; this.message("Enter a number within the field limits.", true); }
             return;
         }
-        if (control.hasAttribute("data-style")) {
-            const style = this.config?.styles?.find(style => style.id === control.value);
-            const editor = this.state.editor;
-            if (style) {
-                if (!editor.style_id) editor.custom_style = editor.style;
-                editor.style_id = style.id; editor.style = style.prompt;
-            } else { editor.style = editor.custom_style ?? editor.style; delete editor.style_id; }
-            this.markEdited(); this.render(); return;
-        }
         if (control.tagName === "SELECT" && (control.dataset.setting || control.hasAttribute("data-lora"))) { this.input(event); return; }
         let epoch = this.epoch;
         try {
             if (control.hasAttribute("data-library")) {
-                const id = control.value; if (!id) return; await this.persist(); if (epoch !== this.epoch || this.disposed) return; epoch = ++this.epoch;
+                const id = control.value;
+                try { await this.persist(); }
+                catch (error) { selectValue(control, this.state.background_id); this.render(); throw error; }
+                if (epoch !== this.epoch || this.disposed) return; epoch = ++this.epoch;
+                if (!id) {
+                    this.document = null; this.activeVariationId = ""; this.unsaved = false;
+                    this.state.background_id = ""; this.state.background_name = ""; this.state.selected_image_id = "";
+                    delete this.state.revision;
+                    this.render(); this.sync(); return;
+                }
                 this.restoring = true; this.updateControls();
                 try {
                     const document = await this.request(`/backgrounds/${id}`);
@@ -1180,9 +1308,9 @@ export class BackgroundCreatorWidget {
         } catch (error) { if (epoch === this.epoch && !this.disposed) { this.busy = false; this.updateControls(); this.message(error.message, true); } }
     }
 
-    async runJob(action) {
-        if (this.workflowBusy || this.busy || this.restoring || this.disposed) return;
-        if (!await this.ensureDocument() || this.disposed || this.workflowBusy) return;
+    async runJob(action, description = "", ownsRequest = () => true) {
+        if (this.workflowBusy || this.busy || this.restoring || this.disposed || !ownsRequest()) return false;
+        if (!await this.ensureDocument() || this.disposed || this.workflowBusy || !ownsRequest()) return false;
         const epoch = this.epoch;
         if (action === "background") this.randomizeSeedIfNeeded();
         this.busy = true; this.activeAction = action;
@@ -1190,21 +1318,22 @@ export class BackgroundCreatorWidget {
         this.updateControls(); this.message("Preparing " + action + "…");
         try {
             await this.persist();
-            if (epoch !== this.epoch || this.disposed || this.workflowBusy) return;
+            if (epoch !== this.epoch || this.disposed || this.workflowBusy || !ownsRequest()) return false;
             const id = this.state.background_id;
             const payload = { action, editor: clone(this.state.editor), revision: this.state.revision, image_id: this.state.selected_image_id, _vnccs_seed_resolved: true };
+            if (action === "wizard") payload.description = description;
             let result = await this.json(`/backgrounds/${id}/jobs`, payload);
-            if (this.disposed || epoch !== this.epoch) return;
+            if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
             const jobId = result.job_id;
             this.jobId = jobId; this.updateControls();
-            while (!this.disposed && epoch === this.epoch) {
+            while (!this.disposed && epoch === this.epoch && ownsRequest()) {
                 result = await this.request(`/jobs/${jobId}`);
-                if (this.disposed || epoch !== this.epoch) return;
+                if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
                 this.message(result.message || "Working…");
                 if (["completed", "failed", "cancelled"].includes(result.status)) break;
                 await new Promise(resolve => { this.pollTimer = setTimeout(resolve, 500); this.pollResolve = resolve; });
             }
-            if (this.disposed || epoch !== this.epoch) return;
+            if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
             if (result.status !== "completed") throw new Error(result.error || (result.status === "cancelled" ? "Generation stopped." : "Generation failed."));
             if (result.result.editor) {
                 this.busy = false;
@@ -1222,16 +1351,32 @@ export class BackgroundCreatorWidget {
                 this.sync(); this.render();
             }
             this.message(action === "wizard" ? "Scene attributes filled." : "Background generated and saved.");
+            return true;
         } finally { if (epoch === this.epoch && !this.disposed) { this.stopPreviewGeneration(); this.jobId = ""; this.busy = false; this.activeAction = ""; this.render(); } }
     }
 
     resize() {
-        const height = `${Math.max(300, (this.node.size?.[1] || 800) - 90) / CREATOR_ZOOM}px`;
+        const height = `${Math.max(300, (this.node.size?.[1] || CREATOR_MIN_HEIGHT) - 90) / CREATOR_ZOOM}px`;
         const width = this.container.clientWidth || (this.node.size?.[0] || 1280) / CREATOR_ZOOM;
         if (height !== this.container.style.height || width !== this.layoutWidth) this.customSelects._closeDropdown(false);
         this.layoutWidth = width;
         this.container.classList.toggle("bg-compact", width < 1400);
         if (this.container.style.height !== height) this.container.style.height = height;
+        let missingHeight = 0;
+        // Measure in-flow controls only; collection overlays keep their own scrolling.
+        for (const panel of this.container.querySelectorAll(".bg-panel")) {
+            if (!panel.offsetHeight) continue;
+            const bounds = panel.getBoundingClientRect(), scale = bounds.height / panel.offsetHeight;
+            if (!(scale > 0)) continue;
+            const style = getComputedStyle(panel), inset = parseFloat(style.paddingBottom) + parseFloat(style.borderBottomWidth);
+            for (const child of panel.children) if (child.getClientRects().length) {
+                missingHeight = Math.max(missingHeight, (child.getBoundingClientRect().bottom - bounds.bottom) / scale + inset);
+            }
+        }
+        if (missingHeight > 1) {
+            this.node.setSize?.([this.node.size[0], this.node.size[1] + Math.ceil(missingHeight * CREATOR_ZOOM)]);
+            this.container.style.height = `${(this.node.size[1] - 90) / CREATOR_ZOOM}px`;
+        }
         this.updateVariantScroll();
     }
     dispose() {
@@ -1240,7 +1385,9 @@ export class BackgroundCreatorWidget {
         this.disposed = true; ++this.epoch; this.events.abort(); clearTimeout(this.saveTimer); clearTimeout(this.pollTimer); this.pollResolve?.();
         this.cc.stopPolling();
         for (const finish of [...this.dialogs]) finish(null);
-        this.observer.disconnect(); this.customSelects._closeDropdown?.(false); this.customSelects.dispose(); this.tooltipCleanup?.(); this.container.remove();
+        this.wizardDialog?.overlay.remove();
+        this.errorDialog?.overlay.remove();
+        this.observer.disconnect(); this.stylePickerCleanup?.(); this.customSelects._closeDropdown?.(false); this.customSelects.dispose(); this.tooltipCleanup?.(); this.container.remove();
     }
 }
 
@@ -1265,6 +1412,7 @@ function hideState(node) {
 }
 
 function fit(node) {
+    if (node.size?.[1] < CREATOR_MIN_HEIGHT) node.setSize?.([node.size[0], CREATOR_MIN_HEIGHT]);
     syncDOMWidgetWidth(node, "background_ui");
     node.backgroundCreator?.resize();
 }
@@ -1312,7 +1460,7 @@ app.registerExtension({
                 };
                 state.serializeValue = () => this.backgroundCreator.sync() || state.value;
             }
-            this.setSize?.([1280, 800]);
+            this.setSize?.([1280, CREATOR_MIN_HEIGHT]);
             fit(this);
             syncDOMWidgetWidthSoon(this, "background_ui");
             registerCleanup(this, () => this.backgroundCreator?.dispose());

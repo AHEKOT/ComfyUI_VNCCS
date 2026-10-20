@@ -22,6 +22,12 @@ from PIL import Image
 from conftest import _preload_node
 
 storage = generation = service = routes_module = sampling = progress = _preload_node("background_creator")
+SCENE_COMPOSITION = {
+    "front": "A rusty toolbox rests beside cracked concrete floor tiles.",
+    "back": "A dented metal garage door stands against an exposed brick wall.",
+    "left": "Steel shelves hold stacked tires and old paint cans.",
+    "right": "A wooden workbench sits below a dusty window.",
+}
 
 
 class Response:
@@ -68,7 +74,7 @@ web = types.SimpleNamespace(json_response=Response, FileResponse=FileResponse, R
 
 @pytest.fixture
 def library(monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "root", lambda: tmp_path / "VNCCS" / "scenes")
+    monkeypatch.setattr(storage, "root", lambda: tmp_path / "VNCCS" / "Backgrounds")
     return storage.root()
 
 
@@ -78,7 +84,7 @@ def files(directory):
 
 
 def document_path(document):
-    return storage.root() / document["name"] / f"{document['name']}.json"
+    return storage.root() / document["name"] / f"{document['name']}_config.json"
 
 
 def with_image(name="Sunset room"):
@@ -93,7 +99,7 @@ def test_empty_library_and_named_document_backup(library):
     assert len(document["background_id"]) == 32
     assert document["schema_version"] == 2 and document["revision"] == 1
     assert not {"models", "model", "cgs", "model_settings"} & document.keys()
-    assert sorted(item.name for item in document_path(document).parent.iterdir()) == ["Evening Café.json", "Evening Café.json.backup", "background"]
+    assert sorted(item.name for item in document_path(document).parent.iterdir()) == ["Evening Café_config.json", "Evening Café_config.json.backup"]
     path = document_path(document)
     assert path.is_file()
     assert json.loads(path.read_bytes()) == document
@@ -111,7 +117,8 @@ def test_editor_revisions_selection_and_previous_json_backup(library):
              "unfinished_prompt": "(bright"}
     updated = storage.save_background(document["background_id"], state, document["revision"])
     assert updated["revision"] == document["revision"] + 1
-    assert updated["editor"] == state
+    assert updated["editor"] == {key: value for key, value in state.items() if key != "selected_image_id"}
+    assert updated["selected_image_id"] == state["selected_image_id"]
     assert path.with_suffix(".json.backup").read_bytes() == previous
     state["prompt"] = "Mutated caller object"
     assert storage.load_background(document["background_id"])["editor"]["prompt"] == "Changed"
@@ -123,14 +130,15 @@ def test_legacy_image_is_preserved_when_creating_the_working_preview(library):
     document_path(document).write_text(json.dumps(document))
     first_id = document["selected_image_id"]
     first_path = storage.image_path(document["background_id"], first_id)
-    assert first_path == library / document["name"] / "background" / f"{first_id}.png"
+    assert first_path == library / document["name"] / "source.png"
     original = first_path.read_bytes()
     updated = storage.add_image(document["background_id"], Image.new("RGBA", (20, 10), "blue"),
                                 {"source": "upload"}, document["revision"])
     assert len(updated["images"]) == 2
     assert updated["selected_image_id"] != first_id
-    assert first_path.read_bytes() == original
-    assert storage.image_path(document["background_id"], first_id) == first_path
+    retained = storage.image_path(document["background_id"], first_id)
+    assert retained.read_bytes() == original
+    assert retained == library / document["name"] / "Sources" / "V1.png"
     with Image.open(storage.image_path(document["background_id"], updated["selected_image_id"])) as image:
         assert image.mode == "RGB"
         assert image.size == (20, 10)
@@ -149,7 +157,7 @@ def test_repeated_preview_generation_replaces_one_image_and_refreshes_its_url(li
         url = storage.public_document(document)["images"][0]["url"]
         assert url != old_url and url.endswith(f"?v={document['images'][0]['preview_revision']}")
         old_url = url
-    assert len(list((library / document["name"] / "background").glob("*.png"))) == 1
+    assert len(list((library / document["name"]).glob("*.png"))) == 1
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -159,15 +167,15 @@ def test_preview_write_failure_retains_image_metadata_and_cleans_temporary_files
     before = files(library)
     atomic = storage._atomic
     def write(path, payload):
-        if (failure == "png" and path.suffix == ".png") or (failure == "json" and path.name == f"{document['name']}.json"):
+        if (failure == "png" and path.suffix == ".png") or (failure == "json" and path.name == f"{document['name']}_config.json"):
             raise OSError("Disk full")
         return atomic(path, payload)
     monkeypatch.setattr(storage, "_atomic", write)
     with pytest.raises(OSError, match="Disk full"):
         storage.add_image(document["background_id"], Image.new("RGB", (20, 10), "blue"), {}, document["revision"])
     after = files(library)
-    backup_name = f"{document['name']}/{document['name']}.json.backup"
-    assert after.pop(backup_name) in (before[backup_name], before[f"{document['name']}/{document['name']}.json"])
+    backup_name = f"{document['name']}/{document['name']}_config.json.backup"
+    assert after.pop(backup_name) in (before[backup_name], before[f"{document['name']}/{document['name']}_config.json"])
     before.pop(backup_name)
     assert after == before
     assert storage.load_background(document["background_id"]) == document
@@ -212,7 +220,7 @@ def test_damaged_primary_recovers_backup_read_only_without_replacing_bytes(libra
     before = files(library)
     recovered = storage.load_background(document["background_id"])
     assert recovered["editor"] == {"prompt": "Keep this"}
-    assert recovered["_recovery"]["source"] == f"{document['name']}.json.backup"
+    assert recovered["_recovery"]["source"] == f"{document['name']}_config.json.backup"
     assert path.read_bytes() == damaged
     with pytest.raises(storage.BackgroundStorageError, match="read-only"):
         storage.save_background(document["background_id"], {}, document["revision"])
@@ -284,10 +292,10 @@ def test_image_symlinks_are_rejected(library, tmp_path):
     with pytest.raises(ValueError, match="symbolic links"):
         storage.image_path(document["background_id"], image_id)
 
-def test_defaults_are_isolated_and_only_qi2_fields_survive():
+def test_defaults_are_isolated_and_unknown_authored_fields_survive():
     editor = generation.normalize_editor({"generation_mode": "illustrious",
         "generation": {"diffusion_model_name": "other.safetensors", "mode_settings": {"anima": {}}}})
-    assert editor == {**generation.DEFAULT_EDITOR, "generation": {**generation.DEFAULT_EDITOR["generation"], "diffusion_model_name": "other.safetensors"}}
+    assert editor == {**generation.DEFAULT_EDITOR, "generation_mode": "illustrious", "generation": {**generation.DEFAULT_EDITOR["generation"], "diffusion_model_name": "other.safetensors", "mode_settings": {"anima": {}}}}
     editor["attributes"]["location"] = "Room"
     editor["generation"]["lora_stack"].append({"name": "test"})
     assert "location" not in generation.DEFAULT_EDITOR["attributes"]
@@ -319,6 +327,30 @@ def test_defaults_are_isolated_and_only_qi2_fields_survive():
 def test_rejects_malformed_settings(data):
     with pytest.raises(ValueError):
         generation.normalize_editor(data)
+
+
+@pytest.mark.parametrize("key", ["front", "back", "left", "right"])
+@pytest.mark.parametrize("value", [None, [], 7, "x" * 40001, "bad\x00field"])
+def test_composition_fields_reject_malformed_text(key, value):
+    with pytest.raises(ValueError):
+        generation.normalize_editor({key: value})
+
+
+def test_composition_fields_round_trip_disk_and_structured_prompts(library):
+    editor = generation.normalize_editor({"scene_description": "A dark garage with old junk.", **SCENE_COMPOSITION})
+    prompt = generation.compose_prompt(editor)
+    assert prompt.splitlines()[4:] == [f"{key.title()}: {value}" for key, value in SCENE_COMPOSITION.items()]
+    assert generation.compose_prompt({"prompt": prompt}) == prompt
+    document = storage.create_background("Garage", editor)
+    restored = generation.normalize_editor(storage.load_background(document["background_id"])["editor"])
+    assert restored == editor
+    restored["front"] = ""
+    assert generation.normalize_editor(restored)["front"] == ""
+    assert "Front:" not in generation.compose_prompt(restored)
+    assert generation.normalize_editor({"prompt": prompt, "front": ""})["front"] == ""
+    legacy = generation.normalize_editor({"scene_description": "Keep the original room."})
+    assert legacy["scene_description"] == "Keep the original room."
+    assert all(legacy[key] == "" for key in SCENE_COMPOSITION)
 
 
 @pytest.mark.parametrize("aspect", generation.ASPECTS)
@@ -383,7 +415,7 @@ def runtime(monkeypatch):
         if name == "QwenImage21Cache":
             return (kwargs["model"],)
         if name == "TextGenerate":
-            return ("Enhanced empty background with warm light",)
+            return (generation.compose_prompt({"scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}),)
         if name == "TextEncodeQwenImage21":
             return encode_qwen(**kwargs)
         if name == "EmptyLatentImage":
@@ -415,7 +447,7 @@ def test_text_to_image_pipeline_uses_creator_assets_cache_and_true_empty_latent(
     assert calls["QwenImage21Cache"]["dtype"] == "int8"
     assert calls["TextGenerate"]["sampling_mode"] == generation.TEXT_GENERATION["sampling_mode"]
     assert calls["TextEncodeQwenImage21"]["images"] == {}
-    assert calls["TextEncodeQwenImage21"]["prompt"] == generation.compose_prompt({"scene_description": "Enhanced empty background with warm light"})
+    assert calls["TextEncodeQwenImage21"]["prompt"] == generation.compose_prompt({"scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}) + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
     assert calls["KSampler"]["latent_image"] == {"samples": "empty"}
     assert calls["KSampler"]["steps"] == 25 and calls["KSampler"]["cfg"] == 1
     assert calls["KSampler"]["scheduler"] == "simple" and calls["KSampler"]["denoise"] == 1
@@ -453,7 +485,8 @@ def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(ru
     assert calls["CLIPLoader"] == {"clip_name": "qwen3.5_9b_w4a8_gptq.safetensors", "type": "moss_image", "device": "default"}
     assert calls["VAELoader"]["vae_name"] == "flux2-vae_small.safetensors"
     encodes = [value for name, value in runtime.calls if name == "CLIPTextEncode"]
-    expected = generation.compose_prompt({**editor, "scene_description": "Enhanced empty background with warm light"}) if enhance else generation.compose_prompt(editor)
+    expected = generation.compose_prompt({**editor, "scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}) if enhance else generation.compose_prompt(editor)
+    expected += f" {generation.BACKGROUND_PROMPT_SUFFIX}"
     assert [item["text"] for item in encodes] == [expected, editor["negative"]]
     assert calls["EmptyFlux2LatentImage"] == {"width": image.width, "height": image.height, "batch_size": 1}
     sampler = calls["KSampler"]
@@ -642,7 +675,7 @@ def png(size=(128, 64), color="red"):
 
 @pytest.fixture
 def workspace(monkeypatch, tmp_path):
-    monkeypatch.setattr(storage, "root", lambda: tmp_path / "VNCCS" / "scenes")
+    monkeypatch.setattr(storage, "root", lambda: tmp_path / "VNCCS" / "Backgrounds")
     monkeypatch.setattr(service, "_JOBS", {})
     worker = mock.Mock()
     monkeypatch.setattr(service, "_WORKER", worker)
@@ -684,7 +717,10 @@ def job_with_image(workspace):
 
 
 def job_payload(document, action, **changes):
-    return {"action": action, "revision": document["revision"], "editor": copy.deepcopy(document["editor"]), **changes}
+    payload = {"action": action, "revision": document["revision"], "editor": copy.deepcopy(document["editor"]), **changes}
+    if action == "wizard":
+        payload.setdefault("description", "A quiet room")
+    return payload
 
 
 @pytest.mark.parametrize("payload", [None, [], {"action": "unknown"}, {"action": "export"}, {"action": "model"}, {"action": "cg"}])
@@ -695,12 +731,15 @@ def test_invalid_job_action_never_queues_or_changes_document(workspace, payload)
     assert storage.load_background(workspace.document["background_id"]) == workspace.document
 
 
+@pytest.mark.parametrize("action", ["background", "wizard"])
 @pytest.mark.parametrize("revision", [None, True, 0, 999])
-def test_job_requires_current_integer_revision(workspace, revision):
-    payload = job_payload(workspace.document, "background", revision=revision)
-    with pytest.raises(storage.BackgroundConflictError):
-        service.start_job(workspace.document["background_id"], payload)
-    workspace.worker.submit.assert_not_called()
+def test_jobs_ignore_workflow_revision_and_capture_current_disk_state(workspace, revision, action):
+    payload = job_payload(workspace.document, action, revision=revision)
+    document = storage.save_background(workspace.document["background_id"], workspace.document["editor"])
+    service.start_job(document["background_id"], payload)
+    assert workspace.run_pending()["status"] == "completed"
+    if action == "background":
+        assert storage.load_background(document["background_id"])["revision"] == document["revision"] + 1
 
 
 def test_background_generation_is_queued_and_uses_captured_settings(workspace):
@@ -733,12 +772,22 @@ def test_one_background_cannot_start_conflicting_jobs(workspace):
 
 def test_wizard_returns_draft_without_overwriting_authored_document(workspace):
     document = workspace.document
-    service.start_job(document["background_id"], job_payload(document, "wizard"))
+    service.start_job(document["background_id"], job_payload(document, "wizard", description="Abandoned garage"))
     job = workspace.run_pending()
     assert job["status"] == "completed"
     assert job["result"]["editor"]["attributes"]["location"] == "Tokyo"
     assert storage.load_background(document["background_id"]) == document
     workspace.generated.assert_not_called()
+    assert workspace.wizard.call_args.args[0] == "Abandoned garage"
+
+
+@pytest.mark.parametrize("description", [None, "", "   ", [], "x" * 40001])
+def test_wizard_rejects_invalid_brief_before_queueing(workspace, description):
+    payload = job_payload(workspace.document, "wizard", description=description)
+    with pytest.raises(ValueError):
+        service.start_job(workspace.document["background_id"], payload)
+    workspace.worker.submit.assert_not_called()
+    assert storage.load_background(workspace.document["background_id"]) == workspace.document
 
 
 @pytest.mark.parametrize("condition", ["archived", "recovered"])
@@ -747,7 +796,7 @@ def test_uneditable_documents_fail_before_inference(workspace, condition):
     if condition == "archived":
         document = storage.archive_background(document["background_id"], document["revision"])
     else:
-        path = storage.root() / document["name"] / f"{document['name']}.json"
+        path = storage.root() / document["name"] / f"{document['name']}_config.json"
         path.write_bytes(b"{damaged")
     with pytest.raises(ValueError):
         service.start_job(document["background_id"], job_payload(document, "background"))
@@ -836,7 +885,7 @@ def call(routes, method, suffix, request):
     return asyncio.run(routes[(method, service.API_BASE + suffix)](request))
 
 
-def test_http_create_load_save_conflict_and_archive_preserve_document(routes, workspace):
+def test_http_create_load_save_and_archive_ignore_stale_workflow_revision(routes, workspace):
     response = call(routes, "POST", "/backgrounds", Request({"name": "HTTP room", "editor": {"description": "Old scene"}}))
     assert response.status == 200
     document = json.loads(response.text)
@@ -848,12 +897,36 @@ def test_http_create_load_save_conflict_and_archive_preserve_document(routes, wo
     assert updated["editor"]["description"] == "Updated scene"
     response = call(routes, "PATCH", "/backgrounds/{background_id}",
         Request({"revision": document["revision"], "editor": {}}, info=info))
-    assert response.status == 409
+    assert response.status == 200
+    updated = json.loads(response.text)
+    assert updated["editor"] == generation.normalize_editor({})
     response = call(routes, "GET", "/backgrounds/{background_id}", Request(info=info))
     assert json.loads(response.text)["revision"] == updated["revision"]
-    response = call(routes, "DELETE", "/backgrounds/{background_id}", Request({"revision": updated["revision"]}, info=info))
+    response = call(routes, "DELETE", "/backgrounds/{background_id}", Request({"revision": document["revision"]}, info=info))
     assert response.status == 200 and json.loads(response.text)["archived"] is True
     response = call(routes, "GET", "/backgrounds/{background_id}", Request(info=info))
+    assert response.status == 200 and json.loads(response.text)["archived"] is True
+
+
+@pytest.mark.parametrize("revision", [None, 0, 999])
+def test_background_http_actions_ignore_missing_or_obsolete_workflow_revisions(routes, workspace, revision):
+    document = job_with_image(workspace)
+    info = {"background_id": document["background_id"]}
+    metadata = {} if revision is None else {"revision": revision}
+    response = call(routes, "PATCH", "/backgrounds/{background_id}",
+                    Request({**metadata, "editor": {"scene_description": "Current session"}}, info=info))
+    assert response.status == 200
+    assert json.loads(response.text)["editor"]["scene_description"] == "Current session"
+    png = io.BytesIO()
+    Image.new("RGB", (12, 6), "green").save(png, format="PNG")
+    multipart = {"data": json.dumps(metadata), "image": types.SimpleNamespace(file=io.BytesIO(png.getvalue()))}
+    response = call(routes, "POST", "/backgrounds/{background_id}/upload", Request(info=info, multipart=multipart))
+    assert response.status == 200
+    uploaded = json.loads(response.text)
+    assert uploaded["images"][-1]["settings"]["source"] == "upload"
+    with Image.open(storage.image_path(document["background_id"], uploaded["selected_image_id"])) as image:
+        assert image.size == (12, 6)
+    response = call(routes, "DELETE", "/backgrounds/{background_id}", Request(metadata, info=info))
     assert response.status == 200 and json.loads(response.text)["archived"] is True
 
 
@@ -886,7 +959,7 @@ def test_http_limits_reject_payload_before_processing(routes):
     request = Request(raw=b"{}", headers={"Content-Length": str(service.MAX_REQUEST_BYTES + 1)})
     with pytest.raises(web.HTTPRequestEntityTooLarge):
         call(routes, "POST", "/backgrounds", request)
-    response = call(routes, "POST", "/backgrounds", Request(raw=b" " * (256 * 1024 + 1)))
+    response = call(routes, "POST", "/backgrounds", Request(raw=b" " * (service.MAX_JSON_BYTES + 1)))
     assert response.status == 400
 
 
@@ -1024,7 +1097,7 @@ def test_widget_preview_and_run_share_the_same_cache(workspace):
     workspace.generated.assert_called_once()
 
 
-@pytest.mark.parametrize("change", ["prompt", "seed", "model", "lora", "weights", "enhancer"])
+@pytest.mark.parametrize("change", ["prompt", "front", "back", "left", "right", "seed", "model", "lora", "weights", "enhancer", "suffix"])
 def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_preview(workspace, monkeypatch, change):
     run_background(workspace.document)
     document = storage.load_background(workspace.document["background_id"])
@@ -1033,11 +1106,13 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     original_revision = document["images"][0]["preview_revision"]
     editor = copy.deepcopy(document["editor"])
     if change == "prompt": editor["scene_description"] = "A different room"
+    if change in SCENE_COMPOSITION: editor[change] = SCENE_COMPOSITION[change]
     if change == "seed": editor["generation"]["seed"] += 1
     if change == "model": editor["generation"] = {"model_type": "moss"}
     if change == "lora": editor["generation"]["lora_stack"] = [{"name": "room.safetensors", "strength": 0.6}]
     if change == "weights": generation._resolve_model_path("diffusion_models", generation.ASSETS["diffusion_models"]).write_bytes(b"updated weights")
-    if change == "enhancer": monkeypatch.setattr(generation, "SCENE_EXPANSION_SYSTEM", generation.SCENE_EXPANSION_SYSTEM + "Updated wording.")
+    if change == "enhancer": monkeypatch.setattr(generation, "BACKGROUND_ENHANCEMENT_SYSTEM", generation.BACKGROUND_ENHANCEMENT_SYSTEM + "Updated wording.")
+    if change == "suffix": monkeypatch.setattr(generation, "BACKGROUND_PROMPT_SUFFIX", generation.BACKGROUND_PROMPT_SUFFIX + " Updated wording.")
     result = run_background(document, editor=editor)
     assert result["ui"]["background_preview"][0]["source"] == "generated"
     assert workspace.generated.call_count == 2
@@ -1183,7 +1258,7 @@ def test_selected_diffusion_model_rekeys_cache_and_preserves_five_lora_slots(run
     generation.generate_image({"prompt": "An exact room prompt.", "generation": settings}, "custom", threading.Event())
     assert [call["unet_name"] for name, call in runtime.calls if name == "UNETLoader"] == ["custom/rooms.safetensors"]
     assert [call["lora_name"] for name, call in runtime.calls if name == "LoraLoader"] == ["room.safetensors"]
-    assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"].splitlines()[-1] == "Scene description: An exact room prompt."
+    assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"].splitlines()[-1] == f"Scene description: An exact room prompt. {generation.BACKGROUND_PROMPT_SUFFIX}"
     generation.generate_image({"generation": {"prompt_enhance": False}}, "default", threading.Event())
     assert len([name for name, _ in runtime.calls if name == "UNETLoader"]) == 2
 
@@ -1216,32 +1291,53 @@ def test_requested_four_line_prompt_and_legacy_scene_migration():
     assert generation.compose_prompt(migrated).splitlines()[-1] == "Scene description: "
 
 
-def test_prompt_enhancement_only_changes_scene_description(runtime, monkeypatch):
+@pytest.mark.parametrize("model_type", ["qi2", "moss"])
+@pytest.mark.parametrize("prefilled", [False, True])
+def test_prompt_enhancement_expands_all_scene_fields_and_keeps_scene_settings(runtime, monkeypatch, model_type, prefilled):
     editor = {"style": "Anime, digital art, cel shaded", "scene_description": "A futuristic circular room.",
-              "attributes": {"time": "Night", "scene_type": "Interior"}}
+              "attributes": {"time": "Night", "scene_type": "Interior"},
+              "generation": {"model_type": model_type}, **(SCENE_COMPOSITION if prefilled else {})}
+    original = copy.deepcopy(editor)
+    runtime.decoded_size[0] = generation.dimensions(editor)
+    expanded = {key: value + " Soft daylight reveals the worn surfaces." for key, value in SCENE_COMPOSITION.items()}
     def call(name, **kwargs):
         if name == "TextGenerate":
             runtime.calls.append((name, kwargs))
-            return ("Style: Wrong style\nTime: Day\nInterior/Exterior: Exterior\nScene description: An enhanced futuristic circular room.",)
+            return (generation.compose_prompt({"style": "Wrong style", "attributes": {"scene_type": "Exterior"},
+                "scene_description": "An enhanced futuristic circular room.", **expanded}),)
         return runtime.call(name, **kwargs)
     monkeypatch.setattr(generation, "_call_comfy_node", call)
-    generation.generate_image(editor, "structured-enhancement", threading.Event())
-    prompt = dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"]
-    assert prompt == "Style: Anime, digital art, cel shaded\nTime: Day\nInterior/Exterior: Interior\nScene description: An enhanced futuristic circular room."
+    _, metadata = generation.generate_image(editor, "structured-enhancement", threading.Event())
+    prompt = next(values["text"] if model_type == "moss" else values["prompt"] for name, values in runtime.calls
+                  if name == ("CLIPTextEncode" if model_type == "moss" else "TextEncodeQwenImage21"))
+    expected = generation.compose_prompt({**editor, "scene_description": "An enhanced futuristic circular room.", **expanded})
+    assert prompt == metadata["prompt"] == expected + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
+    request = dict(runtime.calls)["TextGenerate"]
+    assert request["prompt"] == generation.compose_prompt(editor)
+    assert "Return exactly eight lines" in request["system_prompt"]
+    assert "Fill every field, including fields left empty by the user" in request["system_prompt"]
+    assert "preserving its objects, positions and constraints" in request["system_prompt"]
+    assert editor == original and metadata["editor"] == generation.normalize_editor(original)
 
 
-def test_wizard_returns_the_four_scene_fields(runtime, monkeypatch):
-    fields = {"style": "Anime, digital art, cel shaded", "time": "Night", "scene_type": "Interior", "scene_description": "A room with a circular stone table."}
+@pytest.mark.parametrize("description", ["A futuristic room", ""])
+def test_wizard_returns_all_scene_fields_and_accepts_composition_only_briefs(runtime, monkeypatch, description):
+    fields = {"style": "Anime, digital art, cel shaded", "time": "Night", "scene_type": "Interior",
+              "scene_description": "A room with a circular stone table.", **SCENE_COMPOSITION}
+    supplied = {"front": SCENE_COMPOSITION["front"]}
     def call(name, **kwargs):
         if name == "TextGenerate":
             runtime.calls.append((name, kwargs))
             return (json.dumps(fields),)
         return runtime.call(name, **kwargs)
     monkeypatch.setattr(generation, "_call_comfy_node", call)
-    editor = generation.wizard("A futuristic room", {}, "four-field-wizard", threading.Event())
+    editor = generation.wizard(description, supplied, "scene-wizard", threading.Event())
     assert editor["scene_description"] == fields["scene_description"]
     assert editor["style"] == fields["style"]
     assert editor["attributes"] == {"time": "Day", "scene_type": "Interior"}
+    assert {key: editor[key] for key in SCENE_COMPOSITION} == SCENE_COMPOSITION
+    schema = json.loads(dict(runtime.calls)["TextGenerate"]["system_prompt"].split("not a finished answer: ")[1])
+    assert schema["front"] == supplied["front"] and all(schema[key] == "" for key in ("back", "left", "right"))
     assert generation.compose_prompt(editor).splitlines()[1] == "Time: Day"
 
 
@@ -1259,8 +1355,8 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
         "while the lamp casts gentle amber shadows across the bedding. A narrow writing desk, a potted plant "
         "and neatly stacked notebooks complete the calm, lived-in room."
     )
-    expected = generation.compose_prompt({**editor, "scene_description": description})
-    fields = {"style": editor["style"], "time": "Night", "scene_type": "Interior", "scene_description": description}
+    expected = generation.compose_prompt({**editor, "scene_description": description, **SCENE_COMPOSITION})
+    fields = {"style": editor["style"], "time": "Night", "scene_type": "Interior", "scene_description": description, **SCENE_COMPOSITION}
     def call(name, **kwargs):
         if name == "TextGenerate":
             runtime.calls.append((name, kwargs))
@@ -1272,7 +1368,7 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
         assert generation.compose_prompt(result) == expected
     else:
         _, metadata = generation.generate_image(editor, "sparse-enhancement", threading.Event())
-        assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"] == expected
+        assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"] == expected + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
         assert metadata["editor"]["scene_description"] == "badroom"
     request = dict(runtime.calls)["TextGenerate"]
     assert "badroom" in request["prompt"]
@@ -1281,8 +1377,8 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
     assert "foreground/midground/background" in request["system_prompt"]
     assert "Style" in request["system_prompt"] and "Interior/Exterior" in request["system_prompt"]
     if use_wizard:
-        assert "exactly four string keys in this order: style, time, scene_type, scene_description" in request["system_prompt"]
-        assert json.loads(request["system_prompt"].split("not a finished answer: ")[1]) == {**fields, "time": "Day", "scene_description": "badroom"}
+        assert "exactly eight string keys in this order: style, time, scene_type, scene_description, front, back, left, right" in request["system_prompt"]
+        assert json.loads(request["system_prompt"].split("not a finished answer: ")[1]) == {**fields, "time": "Day", "scene_description": "badroom", **{key: "" for key in SCENE_COMPOSITION}}
     else:
         assert "Keep Style, Time and Interior/Exterior exactly as supplied" in request["system_prompt"]
         assert request["prompt"] == generation.compose_prompt(editor)
@@ -1362,7 +1458,7 @@ def test_replacing_preview_preserves_sources_of_already_saved_background_sets(li
     assert storage.image_path(document["background_id"], identity).read_bytes() == original
 
 
-def test_background_sets_publish_complete_immutable_images_and_same_json(library, monkeypatch):
+def test_background_sets_publish_current_images_version_previous_images_and_same_json(library, monkeypatch):
     document = with_image("Published variants")
     before = files(library)
     cards = generation.normalize_editor({})["variants"]
@@ -1375,10 +1471,10 @@ def test_background_sets_publish_complete_immutable_images_and_same_json(library
     assert saved["generated_sets"][0]["variants"] == cards
     assert [path.name for path in paths] == ["00_Original.png", "01_Morning.png", "02_Evening.png", "03_Night.png"]
     for path, image in zip(paths, images):
-        assert path.is_relative_to(library / document["name"] / "background" / "sets")
+        assert path.is_relative_to(library / document["name"] / "Images")
         with Image.open(path) as loaded:
             assert loaded.size == image.size
-    assert (library / document["name"] / "background" / f"{document['selected_image_id']}.png").read_bytes() == before[f"{document['name']}/background/{document['selected_image_id']}.png"]
+    assert (library / document["name"] / "source.png").read_bytes() == before[f"{document['name']}/source.png"]
     before_failure = files(library)
     commit = storage._commit
     monkeypatch.setattr(storage, "_commit", mock.Mock(side_effect=OSError("Disk full")))
@@ -1390,7 +1486,13 @@ def test_background_sets_publish_complete_immutable_images_and_same_json(library
         storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, settings, document["revision"])
     assert files(library) == before_failure
     more = storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, settings, saved["revision"])
-    assert set(more).isdisjoint(paths) and all(path.is_file() for path in paths)
+    assert more == paths and all(path.is_file() for path in paths)
+    updated = storage.load_background(document["background_id"])
+    assert [group["version"] for group in updated["generated_sets"]] == ["V1", ""]
+    for index, path in enumerate(paths):
+        archived = path.parent / "V1" / path.name
+        assert archived.read_bytes() == before_failure[path.relative_to(library).as_posix()]
+        assert storage.background_set_image_path(document["background_id"], saved["generated_sets"][0]["set_id"], index) == archived
 
 
 def test_publishing_background_sets_does_not_expire_the_creators_comfy_cache(library, monkeypatch):
@@ -1419,12 +1521,16 @@ def test_complete_prompts_are_logged_at_info_before_encoding(runtime, monkeypatc
               "generation": {"model_type": model_type, "prompt_enhance": enhance}}
     runtime.decoded_size[0] = generation.dimensions(editor)
     raw_result = "Style: Wrong style\nTime: Night\nInterior/Exterior: Exterior\nScene description: " + enhanced.strip()
-    expected = generation.compose_prompt({**editor, "scene_description": enhanced if enhance else description})
+    raw_result += "\n" + "\n".join(f"{key.title()}: {value}" for key, value in SCENE_COMPOSITION.items())
+    expected = generation.compose_prompt({**editor, "scene_description": enhanced if enhance else description,
+        **(SCENE_COMPOSITION if enhance else {})})
+    expected += " Wide landscape composition, 16:9. Background only, no people or characters, no text or logos, no watermark, no border, no collage."
     def call(name, **kwargs):
         if name == "TextGenerate":
             logged = [record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "text_generation_input"]
             assert len(logged) == 1
             assert logged[0].vnccs["prompt"] == kwargs["prompt"] == generation.compose_prompt(editor)
+            assert generation.BACKGROUND_PROMPT_SUFFIX not in kwargs["prompt"]
             assert logged[0].vnccs["system_prompt"] == kwargs["system_prompt"]
             runtime.calls.append((name, kwargs))
             return ("<think>Private reasoning</think>\n" + raw_result,)
@@ -1449,6 +1555,7 @@ def test_complete_prompts_are_logged_at_info_before_encoding(runtime, monkeypatc
         assert outputs[0].vnccs["output"] == raw_result
         assert raw_result in outputs[0].getMessage() and "Private reasoning" not in outputs[0].getMessage()
     assert metadata["prompt"] == expected
+    assert metadata["prompt"].count(generation.BACKGROUND_PROMPT_SUFFIX) == 1
 
 
 def test_wizard_logs_its_system_prompt_brief_and_complete_result(runtime, monkeypatch, caplog):
@@ -1508,7 +1615,7 @@ def test_explicit_saved_day_variant_remains_authored_data():
     assert generation.normalize_editor(editor)["variants"][-1] == day
 
 
-def test_saved_sets_publish_only_after_commit_and_serve_immutable_owned_images(routes, workspace, monkeypatch):
+def test_saved_sets_publish_only_after_commit_and_serve_fresh_owned_images(routes, workspace, monkeypatch):
     document = job_with_image(workspace)
     cards = generation.normalize_editor({})["variants"]
     events = []
@@ -1528,10 +1635,10 @@ def test_saved_sets_publish_only_after_commit_and_serve_immutable_owned_images(r
     group = public["generated_sets"][-1]
     assert group["source_image_id"] == document["selected_image_id"]
     for index, image in enumerate(group["images"]):
-        assert image["url"].endswith(f"/sets/{group['set_id']}/{index}")
+        assert image["url"].endswith(f"/sets/{group['set_id']}/{index}?v={image['revision']}")
         info = {"background_id": document["background_id"], "set_id": group["set_id"], "index": str(index)}
         result = call(routes, "GET", "/backgrounds/{background_id}/sets/{set_id}/{index}", Request(info=info))
-        assert result.status == 200 and "immutable" in result.headers["Cache-Control"]
+        assert result.status == 200 and result.headers["Cache-Control"] == "no-store"
         assert result.path == storage.background_set_image_path(document["background_id"], group["set_id"], index)
     for invalid in ["-1", "99", "not-an-index"]:
         info["index"] = invalid
@@ -1542,10 +1649,11 @@ def test_saved_sets_publish_only_after_commit_and_serve_immutable_owned_images(r
     info["set_id"] = group["set_id"]
     assert call(routes, "GET", "/backgrounds/{background_id}/sets/{set_id}/{index}", Request(info=info)).status == 404
     group = saved["generated_sets"][-1]
-    group["images"][1]["file"] = f"background/{document['selected_image_id']}.png"
-    monkeypatch.setattr(storage, "_locate", lambda _id: (storage.root() / saved["name"], saved, b""))
+    group["images"][1]["file"] = "source.png"
+    monkeypatch.setattr(storage, "_locate", lambda _id: (storage.root() / saved["name"], saved, storage._json_bytes(saved)))
     with pytest.raises(ValueError, match="outside its saved set"):
         storage.background_set_image_path(document["background_id"], group["set_id"], 1)
+    group["images"][1]["file"] = "Images/01_Morning.png"
     monkeypatch.setattr(storage, "_commit", mock.Mock(side_effect=OSError("Disk full")))
     with pytest.raises(OSError, match="Disk full"):
         storage.publish_background_set(document["background_id"], document["selected_image_id"], cards,
@@ -1571,26 +1679,62 @@ def test_routes_have_no_model_cg_or_legacy_endpoints(routes):
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_stale_workflow_cannot_replace_newer_saved_editor(workspace, legacy):
+def test_same_workflow_runs_repeatedly_after_disk_settings_change(workspace, legacy):
     document = job_with_image(workspace)
     state = background_run_state(document)
     if legacy:
         state.pop("revision")
-    newer = copy.deepcopy(document["editor"])
-    newer["scene_description"] = "Newer scene saved by the other editor"
-    storage.save_background(document["background_id"], newer, document["revision"])
-    before = files(storage.root())
-    with pytest.raises(storage.BackgroundConflictError, match="changed"):
-        storage.VNCCS_BackgroundCreator().create_background(background_data=json.dumps(state))
-    assert files(storage.root()) == before
-    assert storage.load_background(document["background_id"])["editor"] == newer
+    raw = json.dumps(state)
+    original_image = storage.image_path(document["background_id"], document["selected_image_id"]).read_bytes()
+    for _ in range(2):
+        newer = copy.deepcopy(document["editor"])
+        newer["scene_description"] = "Saved settings from a previous session"
+        storage.save_background(document["background_id"], newer)
+        result = storage.VNCCS_BackgroundCreator().create_background(background_data=raw)
+        assert result["ui"]["background_preview"][0]["source"] == "upload"
+        saved = storage.load_background(document["background_id"])
+        assert generation.normalize_editor(saved["editor"]) == state["editor"]
+        assert storage.image_path(document["background_id"], document["selected_image_id"]).read_bytes() == original_image
+        assert json.dumps(state) == raw
     workspace.generated.assert_not_called()
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_matching_workflow_can_randomize_seed_and_restore_missing_preview(workspace, monkeypatch, legacy):
+    editor = copy.deepcopy(workspace.document["editor"])
+    editor["generation"]["seed_mode"] = "randomize"
+    document = storage.save_background(workspace.document["background_id"], editor, workspace.document["revision"])
+    run_background(document, _vnccs_seed_resolved=True)
+    document = storage.load_background(document["background_id"])
+    storage.image_path(document["background_id"], document["selected_image_id"]).unlink()
+    state = background_run_state(document)
+    if legacy:
+        state.pop("revision")
+    else:
+        state["revision"] -= 1
+    monkeypatch.setattr(sys.modules["_vnccs.utils"], "generate_seed", lambda _: 123)
+    result = storage.VNCCS_BackgroundCreator().create_background(background_data=json.dumps(state))
+    saved = storage.load_background(document["background_id"])
+    assert result["ui"]["background_preview"][0]["source"] == "generated"
+    assert saved["editor"]["generation"]["seed"] == 123
+    assert storage.image_path(saved["background_id"], saved["selected_image_id"]).is_file()
+    assert workspace.generated.call_count == 2
+
+
+def test_background_can_be_saved_without_a_workflow_revision(library):
+    document = with_image()
+    image = storage.image_path(document["background_id"], document["selected_image_id"])
+    before = image.read_bytes()
+    saved = storage.save_background(document["background_id"], {"prompt": "Current workflow settings"})
+    assert saved["editor"]["prompt"] == "Current workflow settings"
+    assert saved["revision"] == document["revision"] + 1
+    assert image.read_bytes() == before
+
+
 @pytest.mark.parametrize("revision", [None, True, 0, -1, 1.5, "2"])
-def test_workflow_revision_must_be_a_positive_integer(revision):
+def test_obsolete_workflow_revision_metadata_cannot_block_validation(revision):
     raw = json.dumps({"schema_version": 2, "revision": revision})
-    assert storage.VNCCS_BackgroundCreator.VALIDATE_INPUTS(raw) is not True
+    assert storage.VNCCS_BackgroundCreator.VALIDATE_INPUTS(raw) is True
 
 
 def test_workflow_reports_its_committed_revision(workspace):
@@ -1662,22 +1806,17 @@ def test_turbo_resolves_current_control_center_catalog_path(monkeypatch):
     assert generation.configuration()["turbo_lora"]["status"] == "missing"
 
 
-def test_style_dropdown_catalog_and_prompts_never_forward_character_references(monkeypatch):
+def test_background_catalog_uses_full_environment_prompts_and_keeps_work_references(monkeypatch):
     from nodes import character_styles
-    monkeypatch.setattr(character_styles, "load_user_styles", lambda: [{
-        "id": "user_watercolor", "label": "My watercolor", "description": "Short summary", "reference": "Alice Example",
-        "prompt": "Ink wash and watercolor\nReference: Alice Example; Bob Example\nPaper grain and soft edges"}])
+    monkeypatch.setattr(character_styles, "load_user_styles", lambda path=None: [])
     choices = generation.style_choices()
-    shonen = next(item for item in choices if item["id"] == "shonen_anime")
-    assert "Confident" in shonen["prompt"] and "Naruto" not in shonen["prompt"]
-    custom = next(item for item in choices if item["id"] == "user_watercolor")
-    assert custom["prompt"] == "Ink wash and watercolor\nPaper grain and soft edges"
-    assert set(custom) == {"id", "label", "prompt"}
-    editor = generation.normalize_editor({"style_id": custom["id"], "style": custom["prompt"]})
-    assert editor["style_id"] == custom["id"]
-    prompt = generation.compose_prompt(editor)
-    assert "Alice Example" not in prompt and "Reference:" not in prompt and "Paper grain" in prompt
-    assert "Alice Example" not in generation.compose_prompt({"style": "Ink wash\nReference: Alice Example"})
+    assert len(choices) == 100
+    ghibli = next(item for item in choices if item["id"] == "bg_soft_ghibli_watercolor")
+    assert "Reference: Studio Ghibli; My Neighbor Totoro." in ghibli["prompt"]
+    assert "supplied environment" in ghibli["prompt"]
+    prompt = generation.compose_prompt({"style_id": ghibli["id"], "style": ghibli["prompt"]})
+    assert "Reference: Studio Ghibli; My Neighbor Totoro." in prompt
+    assert prompt.startswith("Style: Soft Ghibli Watercolor.")
     assert len(generation.normalize_editor({"style": "x" * 3000})["style"]) == 3000
 
 
@@ -1697,16 +1836,29 @@ def test_random_seed_resolves_once_for_preview_and_workflow(workspace, monkeypat
     assert generation._resolve_editor_seed(editor)["generation"]["seed"] == 102
 
 
+@pytest.mark.parametrize("model_type", ["qi2", "moss"])
 @pytest.mark.parametrize("enhance", [False, True])
-def test_style_references_never_reach_prompt_enhancement_or_qwen_encoding(runtime, enhance):
-    editor = {"style_id": "user_ink", "style": "Ink wash\nReference: Alice Example; Bob Example\nSoft paper grain",
-              "scene_description": "Empty library", "generation": {"prompt_enhance": enhance}}
-    _image, metadata = generation.generate_image(editor, "style-without-reference", threading.Event())
-    for name, values in runtime.calls:
-        if name in {"TextGenerate", "TextEncodeQwenImage21"}:
-            assert "Alice Example" not in values["prompt"] and "Bob Example" not in values["prompt"]
-            assert "Reference:" not in values["prompt"] and "Soft paper grain" in values["prompt"]
-    assert "Alice Example" not in metadata["prompt"] and "Reference:" not in metadata["prompt"]
+def test_style_references_reach_prompt_enhancement_and_model_encoding(runtime, monkeypatch, enhance, model_type):
+    from nodes import character_styles
+    saved = {"id": "user_" + "a" * 32, "label": "Ink wash", "prompt": "Ink wash\nSoft paper grain",
+             "description": "Soft ink rendering", "reference": "Alice Example; Bob Example", "image": "", "user": True,
+             "revision": "1"}
+    monkeypatch.setattr(character_styles, "load_user_styles", lambda path=None: [saved])
+    style = next(item for item in generation.style_choices() if item["id"] == saved["id"])
+    assert "Reference: Alice Example; Bob Example" in style["prompt"]
+    editor = {"style_id": style["id"], "style": style["prompt"],
+              "scene_description": "Empty library", "generation": {"prompt_enhance": enhance, "model_type": model_type}}
+    runtime.decoded_size[0] = generation.dimensions(editor)
+    _image, metadata = generation.generate_image(editor, "style-with-reference", threading.Event())
+    if enhance:
+        enhancement_prompt = next(values["prompt"] for name, values in runtime.calls if name == "TextGenerate")
+        assert "Reference: Alice Example; Bob Example" in enhancement_prompt
+    encoded_prompt = next(values["prompt"] if model_type == "qi2" else values["text"]
+                          for name, values in runtime.calls
+                          if name == ("TextEncodeQwenImage21" if model_type == "qi2" else "CLIPTextEncode"))
+    assert "Reference: Alice Example; Bob Example" in encoded_prompt
+    assert "Soft paper grain" in encoded_prompt
+    assert metadata["prompt"] == encoded_prompt
 
 
 def test_custom_style_draft_survives_background_json_without_entering_selected_prompt(library):
@@ -1724,10 +1876,10 @@ def test_custom_style_draft_survives_background_json_without_entering_selected_p
 
 def test_corrupt_user_styles_do_not_block_background_configuration_or_replace_authored_files(library, monkeypatch, tmp_path):
     from nodes import character_styles
-    path = tmp_path / "character_styles.user.json"
+    path = tmp_path / "background_styles.user.json"
     original = b'{"styles": [broken'
     path.write_bytes(original)
-    monkeypatch.setattr(character_styles, "USER_CHARACTER_STYLES_PATH", str(path))
+    monkeypatch.setattr(generation, "USER_BACKGROUND_STYLES_PATH", path)
     monkeypatch.setattr(generation, "_turbo_entry", lambda: None)
     document = storage.create_background("Healthy room", generation.normalize_editor({"style": "My saved rendering"}))
     before = files(library)
@@ -1749,3 +1901,291 @@ def test_negative_prompt_reaches_each_encoder_without_entering_enhanced_scene(ru
     else:
         assert [values["text"] for name, values in runtime.calls if name == "CLIPTextEncode"][-1] == editor["negative"]
     assert metadata["negative"] == editor["negative"] and editor["negative"] not in metadata["prompt"]
+
+
+@pytest.mark.parametrize("failure", ["json", "publish"])
+@pytest.mark.parametrize("regenerate", [False, True])
+def test_background_publication_failure_restores_images_json_and_previous_versions(library, monkeypatch, failure, regenerate):
+    document = with_image("Transactional room")
+    cards = generation.normalize_editor({})["variants"]
+    images = [Image.new("RGB", (16, 8), (index * 40, 0, 0)) for index in range(4)]
+    storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, {}, document["revision"])
+    document = storage.load_background(document["background_id"])
+    before = files(library)
+    primary = document_path(document)
+    replace = storage.os.replace
+    def fail(source, target):
+        if failure == "json" and Path(target) == primary:
+            raise OSError("Publication failed")
+        if failure == "publish" and Path(source).name.startswith(".vnccs-sprites-"):
+            raise OSError("Publication failed")
+        return replace(source, target)
+    monkeypatch.setattr(storage.os, "replace", fail)
+    with pytest.raises(OSError, match="Publication failed"):
+        storage.publish_background_set(document["background_id"], document["selected_image_id"], cards,
+            [Image.new("RGB", (16, 8), "blue") for _ in images], {}, document["revision"],
+            regenerate_indices=[1] if regenerate else None)
+    assert files(library) == before
+    assert storage.load_background(document["background_id"]) == document
+    assert not list(library.rglob(".vnccs-*"))
+
+
+def test_background_regeneration_changes_only_selected_file_and_keeps_archives(library):
+    document = with_image("Selected variant")
+    cards = generation.normalize_editor({})["variants"]
+    images = [Image.new("RGB", (16, 8), (index * 40, 0, 0)) for index in range(4)]
+    for _ in range(2):
+        paths = storage.publish_background_set(document["background_id"], document["selected_image_id"], cards,
+                                               images, {"seed": 10}, document["revision"])
+        document = storage.load_background(document["background_id"])
+    before = files(library)
+    stamps = [path.stat().st_mtime_ns for path in paths]
+    old = storage.public_document(document)["generated_sets"][-1]
+    images[2] = Image.new("RGB", (16, 8), "blue")
+    result = storage.publish_background_set(document["background_id"], document["selected_image_id"], cards,
+                                            images, {"seed": 20}, document["revision"], regenerate_indices=[2])
+    saved = storage.load_background(document["background_id"])
+    current = storage.public_document(saved)["generated_sets"][-1]
+    assert result == paths and current["set_id"] == old["set_id"]
+    assert [group["version"] for group in saved["generated_sets"]] == ["V1", ""]
+    assert not (paths[0].parent / "V2").exists()
+    for index, path in enumerate(paths):
+        relative = path.relative_to(library).as_posix()
+        assert (path.read_bytes() != before[relative]) == (index == 2)
+        assert (current["images"][index]["url"] != old["images"][index]["url"]) == (index == 2)
+        if index != 2:
+            assert path.stat().st_mtime_ns == stamps[index]
+            assert current["images"][index]["settings"] == {"seed": 10}
+    assert current["images"][2]["settings"] == {"seed": 20}
+    for relative, payload in before.items():
+        if "/V1/" in relative:
+            assert (library / relative).read_bytes() == payload
+
+
+def test_every_full_background_run_uses_next_readable_version(library):
+    document = with_image("Versioned backgrounds")
+    cards = generation.normalize_editor({})["variants"]
+    images = [Image.new("RGB", (16, 8)) for _ in range(4)]
+    for _ in range(3):
+        storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, {}, document["revision"])
+        document = storage.load_background(document["background_id"])
+    assert [group["version"] for group in document["generated_sets"]] == ["V1", "V2", ""]
+    directory = library / document["name"]
+    assert {path.name for path in (directory / "Images").iterdir()} == {"V1", "V2", "00_Original.png", "01_Morning.png", "02_Evening.png", "03_Night.png"}
+    assert not (directory / "background").exists()
+    assert not (directory / "sets").exists()
+    assert document_path(document).name == "Versioned backgrounds_config.json"
+    assert storage.image_path(document["background_id"], document["selected_image_id"]).name == "source.png"
+
+
+def test_backup_references_the_retained_source_and_archived_output_files(library):
+    document = with_image("Recoverable outputs")
+    cards = generation.normalize_editor({})["variants"]
+    images = [Image.new("RGB", (16, 8), "red") for _ in range(4)]
+    for _ in range(2):
+        storage.publish_background_set(document["background_id"], document["selected_image_id"], cards,
+                                       images, {}, document["revision"])
+        document = storage.load_background(document["background_id"])
+    path = document_path(document)
+    backup = json.loads(path.with_suffix(".json.backup").read_bytes())
+    assert backup["generated_sets"][-1]["version"] == "V1"
+    assert all("/V1/" in entry["file"] for entry in backup["generated_sets"][-1]["images"])
+    old_id = document["selected_image_id"]
+    document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), "blue"), {}, document["revision"])
+    backup = json.loads(path.with_suffix(".json.backup").read_bytes())
+    retained = next(entry for entry in backup["images"] if entry["image_id"] == old_id)
+    assert retained["file"] == "Sources/V1.png"
+    with Image.open(path.parent / retained["file"]) as image:
+        assert image.getpixel((0, 0)) == (255, 0, 0)
+
+
+def test_additional_authored_fields_survive_http_save_and_reopening(routes, library):
+    editor = {"scene_description": "A room", "render_notes": {"authored": "Keep me"},
+              "attributes": {"custom_note": "Keep this too"},
+              "generation": {"custom_sampler_note": "Also keep", "lora_stack": [{"name": "", "strength": 1, "note": "Keep LoRA metadata"}]},
+              "generation_profiles": {"moss": {"custom_profile_note": "Keep inactive profile"}}}
+    document = storage.create_background("Authored fields", generation.normalize_editor(editor))
+    response = call(routes, "PATCH", "/backgrounds/{background_id}",
+                    Request({"editor": editor}, info={"background_id": document["background_id"]}))
+    assert response.status == 200
+    saved = storage.load_background(document["background_id"])["editor"]
+    assert saved["render_notes"] == editor["render_notes"]
+    assert saved["attributes"]["custom_note"] == "Keep this too"
+    assert saved["generation"]["custom_sampler_note"] == "Also keep"
+    assert saved["generation"]["lora_stack"][0]["note"] == "Keep LoRA metadata"
+    assert saved["generation_profiles"]["moss"]["custom_profile_note"] == "Keep inactive profile"
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_background_inference_boundary_cleans_executor_on_all_exits(monkeypatch, failure):
+    calls = []
+    monkeypatch.setattr(generation, "cleanup_runtime", lambda: calls.append("cleanup"))
+    monkeypatch.setattr(generation, "set_interrupt", lambda value: None)
+    try:
+        with generation._model_session("cleanup-proof", threading.Event()):
+            if failure:
+                raise ValueError("Inference failed")
+    except ValueError:
+        assert failure
+    assert calls == ["cleanup"]
+    assert generation._ACTIVE is None
+
+
+@pytest.mark.parametrize("scene_type", ["Ocean", "", "interior"])
+def test_scene_type_is_an_owned_enum(scene_type):
+    with pytest.raises(ValueError, match="Interior or Exterior"):
+        generation.normalize_editor({"attributes": {"scene_type": scene_type}})
+
+
+def test_maximum_variant_details_round_trip_workflow_api_and_disk(routes, library):
+    editor = generation.normalize_editor({"scene_description": "A room", "variants": [
+        {"id": f"variant_{i}", "name": f"Variant {i}", "time": "Morning", "weather": "", "additional_details": "🌧" * 8000}
+        for i in range(64)]})
+    document = storage.create_background("Large authored scene", editor)
+    state = {"schema_version": 2, "background_id": document["background_id"], "editor": editor}
+    raw = json.dumps(state, ensure_ascii=False)
+    assert len(raw.encode("utf-8")) > 256 * 1024
+    assert generation.parse_state(raw)["editor"] == editor
+    response = call(routes, "PATCH", "/backgrounds/{background_id}",
+                    Request(raw=json.dumps({"editor": editor}, ensure_ascii=False).encode("utf-8"), info={"background_id": document["background_id"]}))
+    assert response.status == 200
+    assert storage.load_background(document["background_id"])["editor"]["variants"] == editor["variants"]
+
+
+def test_cache_keys_include_complete_enhancer_template_but_not_authored_notes(workspace, monkeypatch):
+    baseline = generation._background_cache_key({})
+    assert generation._background_cache_key({"generation": {"custom_note": "Do not affect inference"}}) == baseline
+    monkeypatch.setattr(generation, "BACKGROUND_ENHANCEMENT_SYSTEM", generation.BACKGROUND_ENHANCEMENT_SYSTEM + " New output instruction.")
+    assert generation._background_cache_key({}) != baseline
+
+
+@pytest.fixture
+def background_style_storage(monkeypatch, tmp_path):
+    from nodes import character_styles
+    monkeypatch.setattr(generation, "USER_BACKGROUND_STYLES_PATH", tmp_path / "background" / "background_styles.user.json")
+    monkeypatch.setattr(generation, "STYLE_PREVIEWS_DIR", tmp_path / "background" / "style_previews")
+    monkeypatch.setattr(character_styles, "USER_CHARACTER_STYLES_PATH", str(tmp_path / "character" / "character_styles.user.json"))
+    monkeypatch.setattr(character_styles, "STYLE_PREVIEWS_DIR", str(tmp_path / "character" / "style_previews"))
+    return character_styles
+
+
+def test_background_styles_are_100_unique_traceable_environment_renderings(background_style_storage):
+    import re
+    raw = json.loads((generation.STYLE_TEMPLATE_DIR / "background_styles.json").read_text())
+    assert set(raw) == {"version", "default_style", "groups", "sources", "aliases"}
+    assert raw["version"] == 7 and raw["aliases"] == {}
+    assert raw["sources"] == [{
+        "name": "Neon's Style Explorer",
+        "url": "https://github.com/Neon-Sparks/ComfyUI-NeonsStyleExplorer",
+        "credit": "100 environment styles adapted from the upstream catalog under the MIT license; see NEON_STYLES_LICENSE.txt. Original source revisions are recorded in that license file.",
+        "style_count": 100,
+    }]
+    catalog = generation.style_catalog()
+    styles = [style for group in catalog["groups"] for style in group["styles"]]
+    assert len(styles) == len({style["id"] for style in styles}) == len({style["label"].casefold() for style in styles}) == 100
+    assert catalog["default_style"] in {style["id"] for style in styles}
+    assert len(catalog["groups"]) == 8
+    assert (generation.STYLE_TEMPLATE_DIR / "NEON_STYLES_LICENSE.txt").is_file()
+    forbidden = r"\b(?:characters?|people|person|portraits?|body|faces?|girls?|boys?|women|men|skin|hair|eyes|costumes?)\b"
+    for style in styles:
+        assert set(style) == {"id", "label", "prompt", "description", "reference", "image"}
+        assert re.fullmatch(r"bg_[a-z0-9_]+", style["id"])
+        assert style["label"] and style["reference"] and style["description"] and style["prompt"]
+        assert len(style["description"]) <= 240 and len(style["prompt"]) <= 16000
+        assert not re.search(forbidden, style["description"] + " " + style["prompt"], re.I), style["id"]
+        assert "preserving its layout, objects, perspective, time and weather" in style["prompt"]
+        assert not re.search(r"\b(?:at night|at dawn|at sunset|light rain|stormy|full.body|close.up)\b", style["prompt"], re.I)
+        assert style["prompt"].startswith(f"Style: {style['label']}.\nReference: {style['reference']}")
+        assert "\nVisual description: " in style["prompt"]
+        assert style["image"] == ""
+    assert not generation.USER_BACKGROUND_STYLES_PATH.exists()
+
+
+@pytest.mark.parametrize("model_type", ["qi2", "moss"])
+def test_background_cover_uses_current_inference_settings_without_writing_backgrounds(workspace, background_style_storage, model_type):
+    before = files(storage.root())
+    editor = generation.normalize_editor({"scene_description": "An empty garage with old tools", "style": "Old custom text", "aspect": "16:9",
+        "generation": {"model_type": model_type, "seed": 777, "seed_mode": "randomize", "resolution_mp": 3.5,
+                       "steps": 19, "cfg": 2, "prompt_enhance": True, "lora_stack": [{"name": "room.safetensors", "strength": .7}]}})
+    original = copy.deepcopy(editor)
+    workspace.generated.return_value = (Image.new("RGB", (1056, 1056), "blue"), {})
+    result = generation.generate_style_preview({"style_id": "bg_soft_ghibli_watercolor", "editor": editor})
+    used, draw_id, cancelled = workspace.generated.call_args.args
+    assert used["aspect"] == "1:1" and used["generation"]["seed"] == 0 and used["generation"]["seed_mode"] == "fixed"
+    assert used["generation"]["model_type"] == model_type and used["generation"]["resolution_mp"] == 3.5
+    assert used["generation"]["steps"] == 19 and used["generation"]["cfg"] == 2
+    assert used["generation"]["prompt_enhance"] is True and used["generation"]["lora_stack"] == editor["generation"]["lora_stack"]
+    assert used["scene_description"] == editor["scene_description"] and "Studio Ghibli" in used["style"]
+    assert draw_id.startswith("style_") and not cancelled.is_set()
+    assert editor == original and files(storage.root()) == before
+    assert result["saved"] is True and result["image"].startswith(generation.API_BASE + "/styles/preview?")
+    with Image.open(result["path"]) as image:
+        assert image.format == "WEBP" and image.size == (1024, 1024) and image.mode == "RGB"
+    catalog_style = next(style for style in generation.style_choices() if style["id"] == result["style_id"])
+    assert catalog_style["image"] == result["image"]
+    assert not Path(background_style_storage.STYLE_PREVIEWS_DIR).exists()
+
+
+@pytest.mark.parametrize("style_id", ["missing", "../escape", "user_" + "a" * 32, "", None])
+def test_background_cover_rejects_unknown_or_unsafe_styles(workspace, background_style_storage, style_id):
+    with pytest.raises(ValueError):
+        generation.generate_style_preview({"style_id": style_id, "editor": {}})
+    workspace.generated.assert_not_called()
+
+
+def test_background_custom_cover_and_empty_scene_use_environment_fallback(workspace, background_style_storage):
+    workspace.generated.return_value = (Image.new("RGB", (32, 32)), {})
+    generation.generate_style_preview({"style_id": "custom", "editor": {"custom_style": "Blue ink washes"}})
+    editor = workspace.generated.call_args.args[0]
+    assert editor["style"] == "Blue ink washes" and "wooden table" in editor["scene_description"]
+    with pytest.raises(ValueError, match="Enter a custom style"):
+        generation.generate_style_preview({"style_id": "custom", "editor": {"custom_style": ""}})
+
+
+@pytest.mark.parametrize("action", ["edit", "delete"])
+def test_background_user_cover_does_not_publish_after_style_changes(workspace, background_style_storage, action):
+    helper = background_style_storage
+    saved = helper.save_user_style({"label": "My background", "prompt": "Watercolor"}, generation.USER_BACKGROUND_STYLES_PATH)
+    def render(*args):
+        if action == "edit":
+            helper.save_user_style({**saved, "prompt": "Ink"}, generation.USER_BACKGROUND_STYLES_PATH)
+        else:
+            helper.delete_user_style(saved["id"], generation.USER_BACKGROUND_STYLES_PATH, preview_directory=generation.STYLE_PREVIEWS_DIR)
+        return Image.new("RGB", (32, 32)), {}
+    workspace.generated.side_effect = render
+    with pytest.raises(ValueError, match="changed during rendering|no longer exists"):
+        generation.generate_style_preview({"style_id": saved["id"], "editor": {}})
+    assert not list(generation.STYLE_PREVIEWS_DIR.glob("*.webp"))
+
+
+def test_background_style_http_crud_preview_ack_and_character_isolation(routes, workspace, background_style_storage, monkeypatch):
+    helper = background_style_storage
+    character = helper.save_user_style({"label": "Character", "prompt": "Cel shading"})
+    character_cover = helper.save_style_preview(character["id"], Image.new("RGB", (32, 32), "red"))
+    character_before = files(Path(helper.USER_CHARACTER_STYLES_PATH).parent)
+    result = call(routes, "POST", "/styles", Request({"label": "Scenery", "description": "Ink", "prompt": "Fine ink"}))
+    assert result.status == 200
+    saved = json.loads(result.text)["style"]
+    assert helper.load_user_styles(generation.USER_BACKGROUND_STYLES_PATH)[0]["id"] == saved["id"]
+    events = []
+    monkeypatch.setitem(sys.modules, "server", types.SimpleNamespace(PromptServer=types.SimpleNamespace(instance=types.SimpleNamespace(send_sync=lambda name, data: events.append((name, data))))))
+    workspace.generated.return_value = (Image.new("RGB", (32, 32), "blue"), {})
+    result = call(routes, "POST", "/styles/preview", Request({"style_id": saved["id"], "node_id": "7", "request_id": "cover-1", "editor": {}}))
+    assert result.status == 200, result.text
+    cover = json.loads(result.text)
+    assert cover["saved"] is True and cover["style_id"] == saved["id"]
+    assert [data["status"] for name, data in events] == ["queued", "running", "done"]
+    assert all(name == "vnccs.style_preview.stage" and data["node_id"] == "7" and data["request_id"] == "cover-1" for name, data in events)
+    request = Request(); request.query = {"style": saved["id"]}
+    assert call(routes, "GET", "/styles/preview", request).path == Path(cover["path"])
+    assert len(json.loads(call(routes, "GET", "/styles", Request()).text)["groups"][-1]["styles"]) == 1
+    result = call(routes, "POST", "/styles/delete", Request({"id": saved["id"]}))
+    assert json.loads(result.text) == {"deleted": True, "style_id": saved["id"]}
+    assert not Path(cover["path"]).exists()
+    assert files(Path(helper.USER_CHARACTER_STYLES_PATH).parent) == character_before
+    assert Path(character_cover["path"]).is_file()
+    assert call(routes, "GET", "/styles/preview", request).status == 404
+    denied = Request({"style_id": "custom"}, headers={"X-VNCCS-CSRF": ""})
+    assert call(routes, "POST", "/styles/preview", denied).status == 403
+    assert call(routes, "POST", "/styles", Request({"prompt": "x" * 16001, "label": "Too long"})).status == 400
+    assert call(routes, "POST", "/styles/preview", Request(raw=b"[]")).status == 400

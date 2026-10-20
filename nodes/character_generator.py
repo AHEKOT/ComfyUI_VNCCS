@@ -416,7 +416,7 @@ def _safe_cache_dir(cache_dir):
         return ""
     roots = [base_output_dir()]
     if folder_paths is not None:
-        roots.append(os.path.join(folder_paths.get_output_directory(), "VNCCS", "scenes"))
+        roots.append(os.path.join(folder_paths.get_output_directory(), "VNCCS", "Backgrounds"))
     for root in roots:
         if _is_under(root, cache_abs):
             try:
@@ -2998,7 +2998,7 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
             values = self._extract_pipe(pipe)
             if not (self._is_qi2_pipe(values) or self._is_klein_pipe(values) or self._is_h3_pipe(values)):
                 raise ValueError("Select a QI2, Klein9b or MiniMax H3 editing model in Control Center")
-            cache_dir = scoped_cache_dir(str(backgrounds._path(document["name"], "cache", "poses", _safe_cache_part(unique_id))), self._progress_scope)
+            cache_dir = scoped_cache_dir(str(backgrounds._path(document["name"], "cache", "generator", _safe_cache_part(unique_id))), self._progress_scope)
             _remember_generator_context(unique_id, "VNCCS_BackgroundGenerator", cache_dir, pipe, self._progress_scope)
             order = ("source_upscaler", "background_generation", "upscaler")
             start, selected = self._regenerate_from(payload), self._regenerate_index(payload)
@@ -3061,7 +3061,8 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
                 [self._tensor_item_to_pil(image[0]) for image in final],
                 {"upscaler": settings["upscaler"], "generation": settings["pose_generation"],
                  "sampler": self._sampler_settings(values, settings["pose_sampler"]),
-                 "model": values.get("model_entry") or {"kind": values["model_kind"]}}, document["revision"])
+                 "model": values.get("model_entry") or {"kind": values["model_kind"]}}, document["revision"],
+                regenerate_indices=None if not start else ([selected] if selected is not None else list(range(0 if start == order[0] else 1, len(final)))))
             for index, (image, path) in enumerate(zip(final, paths)):
                 self._emit(unique_id, order[2], "done", image, "Background set saved", len(labels), len(labels),
                            cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels, preview_paths=[str(path)])

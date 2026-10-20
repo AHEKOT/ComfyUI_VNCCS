@@ -81,7 +81,7 @@ def pipeline(tmp_path, monkeypatch):
     node._qi2_decode = lambda image, vae: image
     node._vae_decode_settings = lambda value: value
     node._validate_conditioning_for_model = lambda *args: None
-    monkeypatch.setattr(backgrounds, "root", lambda: tmp_path / "VNCCS" / "scenes")
+    monkeypatch.setattr(backgrounds, "root", lambda: tmp_path / "VNCCS" / "Backgrounds")
     document = backgrounds.create_background("Bedroom", backgrounds.normalize_editor({}))
     document = backgrounds.add_image(document["background_id"], Image.new("RGB", (16, 8)), {"source": "upload"}, document["revision"])
     prompts = backgrounds.variant_output(document, document["editor"], document["selected_image_id"])
@@ -121,7 +121,10 @@ def test_regenerating_one_variant_uses_caches_and_preserves_the_others(pipeline)
     for index in [0, 1, 3]:
         assert result[index] is first[index]
     assert result[2] is not first[2]
-    assert len(backgrounds.load_background(p.document["background_id"])["generated_sets"]) == 2
+    saved = backgrounds.load_background(p.document["background_id"])
+    assert len(saved["generated_sets"]) == 1
+    assert saved["generated_sets"][0]["version"] == ""
+    assert not (backgrounds.root() / saved["name"] / "Images" / "V1").exists()
 
 
 def test_final_upscale_regeneration_does_not_rerun_source_or_model(pipeline):
