@@ -358,8 +358,7 @@ def test_composition_fields_round_trip_disk_and_structured_prompts(library):
 def test_dimensions_follow_aspect_and_bounded_pixel_budget(aspect, mp):
     width, height = generation.dimensions({"aspect": aspect, "generation": {"resolution_mp": mp}})
     a, b = map(int, aspect.split(":"))
-    assert width % 8 == height % 8 == 0
-    assert width * b == height * a
+    assert width % 32 == height % 32 == 0
     assert 64 <= width <= 4096 and 64 <= height <= 4096
     assert width * height <= 16_000_000
     assert width / height == pytest.approx(a / b, rel=0.08)
@@ -498,7 +497,7 @@ def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(ru
     assert not {"QwenImage21Cache", "TextEncodeQwenImage21", "EmptyLatentImage", "LoraLoader", "SamplerCustomAdvanced"}.intersection(names)
     assert ("TextGenerate" in names) is enhance
     if enhance:
-        assert calls["TextGenerate"]["system_prompt"].startswith(generation.SCENE_EXPANSION_SYSTEM)
+        assert calls["TextGenerate"]["system_prompt"] == generation._background_enhancement_system_prompt()
         assert "Keep Style, Time and Interior/Exterior exactly as supplied" in calls["TextGenerate"]["system_prompt"]
     assert metadata["model"] == "moss" and metadata["editor"]["generation"]["turbo"] is False
     assert metadata["prompt"] == expected
@@ -1112,7 +1111,9 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     if change == "model": editor["generation"] = {"model_type": "moss"}
     if change == "lora": editor["generation"]["lora_stack"] = [{"name": "room.safetensors", "strength": 0.6}]
     if change == "weights": generation._resolve_model_path("diffusion_models", generation.ASSETS["diffusion_models"]).write_bytes(b"updated weights")
-    if change == "enhancer": monkeypatch.setattr(generation, "BACKGROUND_ENHANCEMENT_SYSTEM", generation.BACKGROUND_ENHANCEMENT_SYSTEM + "Updated wording.")
+    if change == "enhancer":
+        prompt = generation._background_enhancement_system_prompt()
+        monkeypatch.setattr(generation, "_background_enhancement_system_prompt", lambda: prompt + "Updated wording.")
     if change == "suffix": monkeypatch.setattr(generation, "BACKGROUND_PROMPT_SUFFIX", generation.BACKGROUND_PROMPT_SUFFIX + " Updated wording.")
     result = run_background(document, editor=editor)
     assert result["ui"]["background_preview"][0]["source"] == "generated"
@@ -1315,12 +1316,13 @@ def test_prompt_enhancement_expands_all_scene_fields_and_keeps_scene_settings(ru
     assert prompt == metadata["prompt"] == expected + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
     request = dict(runtime.calls)["TextGenerate"]
     assert request["prompt"] == generation.compose_prompt(editor)
+    assert request["system_prompt"] == generation.BACKGROUND_ENHANCEMENT_SYSTEM_PATH.read_text(encoding="utf-8").strip()
     assert "Return exactly eight lines" in request["system_prompt"]
-    assert "Fill every scene field without inventing unrelated focal objects or decorative motifs" in request["system_prompt"]
-    assert "preserving its objects, positions and constraints" in request["system_prompt"]
-    assert "Describe only physical scene content, objects and spatial relationships" in request["system_prompt"]
-    assert "Never repeat, paraphrase or apply Style inside" in request["system_prompt"]
-    assert "light sources and shadows, colors and atmosphere" not in request["system_prompt"]
+    assert "The selected Style controls the visual treatment of every visible element" in request["system_prompt"]
+    assert "Scene description, Front, Back, Left and Right" in request["system_prompt"]
+    assert "every described object, surface, structure and environmental feature" in request["system_prompt"]
+    assert "Do not merely repeat the Style value" in request["system_prompt"]
+    assert "Preserve the scene identity, scene type, time, weather, viewpoint, composition" in request["system_prompt"]
     assert editor == original and metadata["editor"] == generation.normalize_editor(original)
 
 
@@ -1408,20 +1410,22 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
     request = dict(runtime.calls)["TextGenerate"]
     assert "badroom" in request["prompt"]
     static_prompt = request["system_prompt"].split("The following object supplies")[0]
-    assert "obvious typos from context" in static_prompt and "bedroom" not in static_prompt
-    assert "80-140 words" in request["system_prompt"]
-    assert "foreground/midground/background" in request["system_prompt"]
+    assert "obvious typos" in static_prompt and "bedroom" not in static_prompt
     assert "Style" in request["system_prompt"] and "Interior/Exterior" in request["system_prompt"]
-    assert "Do not invent or elaborate visual style, rendering technique, lighting" in request["system_prompt"]
-    assert "Style is the only field that controls aesthetics and rendering" in request["system_prompt"]
-    assert "light sources and shadows, colors and atmosphere" not in request["system_prompt"]
-    assert "surfaces, depth and lighting" not in request["system_prompt"]
     if use_wizard:
+        assert "80-140 words" in request["system_prompt"]
+        assert "foreground/midground/background" in request["system_prompt"]
+        assert "Do not invent or elaborate visual style, rendering technique, lighting" in request["system_prompt"]
+        assert "Style is the only field that controls aesthetics and rendering" in request["system_prompt"]
         assert "exactly eight string keys in this order: style, time, scene_type, scene_description, front, back, left, right" in request["system_prompt"]
         assert json.loads(request["system_prompt"].split("not a finished answer: ")[1]) == {
             **fields, "time": "Day", "scene_type": "", "scene_description": "badroom",
             **{key: "" for key in SCENE_COMPOSITION}}
     else:
+        assert request["system_prompt"] == generation._background_enhancement_system_prompt()
+        assert "100-180 words" in request["system_prompt"]
+        assert "every described object, surface, structure and environmental feature" in request["system_prompt"]
+        assert "Do not merely repeat the Style value" in request["system_prompt"]
         assert "Keep Style, Time and Interior/Exterior exactly as supplied" in request["system_prompt"]
         assert request["prompt"] == generation.compose_prompt(editor)
     assert editor == original
@@ -1808,15 +1812,16 @@ def test_catalog_and_healthy_documents_survive_an_unreadable_neighbor(routes, wo
     assert path.read_bytes() == b"{broken" and path.with_suffix(".json.backup").read_bytes() == b"[]"
 
 
-@pytest.mark.parametrize("aspect, expected", [("9:16", (1080, 1920)), ("16:9", (1920, 1080))])
-def test_resolution_matches_creator_scale_and_exact_aspect(aspect, expected):
+@pytest.mark.parametrize("aspect, expected", [("9:16", (1056, 1888)), ("16:9", (1888, 1056))])
+def test_resolution_matches_model_grid_and_selected_aspect(aspect, expected):
     assert generation.dimensions({"aspect": aspect, "generation": {"resolution_mp": 2}}) == expected
     for model in ("qi2", "moss"):
         width, height = generation.dimensions({"aspect": aspect, "generation": {"model_type": model, "resolution_mp": 4}})
         a, b = map(int, aspect.split(":"))
-        assert width * b == height * a
-        if model == "moss":
-            assert width % 16 == height % 16 == 0
+        step = 16 if model == "moss" else 32
+        assert width % step == height % step == 0
+        assert width / height == pytest.approx(a / b, rel=0.01)
+    assert generation.dimensions({"aspect": "16:9", "generation": {"model_type": "qi2", "resolution_mp": 4.1}}) == (2688, 1504)
 
 
 def test_turbo_defaults_and_previous_settings_survive_profiles():
@@ -1848,17 +1853,15 @@ def test_turbo_resolves_current_control_center_catalog_path(monkeypatch):
     assert generation.configuration()["turbo_lora"]["status"] == "missing"
 
 
-def test_background_catalog_uses_full_environment_prompts_and_keeps_work_references(monkeypatch):
+def test_background_catalog_uses_the_exact_unique_dataset_prompts(monkeypatch):
     from nodes import character_styles
     monkeypatch.setattr(character_styles, "load_user_styles", lambda path=None: [])
     choices = generation.style_choices()
-    assert len(choices) == 100
-    ghibli = next(item for item in choices if item["id"] == "bg_soft_ghibli_watercolor")
-    assert "Reference: Studio Ghibli; My Neighbor Totoro." in ghibli["prompt"]
-    assert "supplied environment" in ghibli["prompt"]
+    assert len(choices) == 25
+    ghibli = next(item for item in choices if item["id"] == "bg_ghibli_pastoral_fantasy_anime")
+    assert ghibli["prompt"] == "Studio Ghibli-inspired pastoral fantasy anime, lush hand-painted detail, warm natural colors"
     prompt = generation.compose_prompt({"style_id": ghibli["id"], "style": ghibli["prompt"]})
-    assert "Reference: Studio Ghibli; My Neighbor Totoro." in prompt
-    assert prompt.startswith("Style: Soft Ghibli Watercolor.")
+    assert prompt.startswith(f"Style: {ghibli['prompt']}\n")
     assert len(generation.normalize_editor({"style": "x" * 3000})["style"]) == 3000
 
 
@@ -2097,7 +2100,8 @@ def test_maximum_variant_details_round_trip_workflow_api_and_disk(routes, librar
 def test_cache_keys_include_complete_enhancer_template_but_not_authored_notes(workspace, monkeypatch):
     baseline = generation._background_cache_key({})
     assert generation._background_cache_key({"generation": {"custom_note": "Do not affect inference"}}) == baseline
-    monkeypatch.setattr(generation, "BACKGROUND_ENHANCEMENT_SYSTEM", generation.BACKGROUND_ENHANCEMENT_SYSTEM + " New output instruction.")
+    prompt = generation._background_enhancement_system_prompt()
+    monkeypatch.setattr(generation, "_background_enhancement_system_prompt", lambda: prompt + " New output instruction.")
     assert generation._background_cache_key({}) != baseline
 
 
@@ -2111,35 +2115,32 @@ def background_style_storage(monkeypatch, tmp_path):
     return character_styles
 
 
-def test_background_styles_are_100_unique_traceable_environment_renderings(background_style_storage):
+def test_background_styles_are_the_25_unique_user_dataset_prompts(background_style_storage):
     import re
     raw = json.loads((generation.STYLE_TEMPLATE_DIR / "background_styles.json").read_text())
     assert set(raw) == {"version", "default_style", "groups", "sources", "aliases"}
     assert raw["version"] == 7 and raw["aliases"] == {}
     assert raw["sources"] == [{
-        "name": "Neon's Style Explorer",
-        "url": "https://github.com/Neon-Sparks/ComfyUI-NeonsStyleExplorer",
-        "credit": "100 environment styles adapted from the upstream catalog under the MIT license; see NEON_STYLES_LICENSE.txt. Original source revisions are recorded in that license file.",
-        "style_count": 100,
+        "name": "VNCCS Backgrounds Dataset",
+        "credit": "25 unique style prompts selected from the user-provided anime background prompt dataset.",
+        "style_count": 25,
     }]
     catalog = generation.style_catalog()
     styles = [style for group in catalog["groups"] for style in group["styles"]]
-    assert len(styles) == len({style["id"] for style in styles}) == len({style["label"].casefold() for style in styles}) == 100
+    assert len(styles) == len({style["id"] for style in styles}) == len({style["label"].casefold() for style in styles}) == 25
     assert catalog["default_style"] in {style["id"] for style in styles}
-    assert len(catalog["groups"]) == 8
-    assert (generation.STYLE_TEMPLATE_DIR / "NEON_STYLES_LICENSE.txt").is_file()
+    assert generation.DEFAULT_EDITOR["style"] == next(style["prompt"] for style in styles if style["id"] == catalog["default_style"])
+    assert len(catalog["groups"]) == 1
     forbidden = r"\b(?:characters?|people|person|portraits?|body|faces?|girls?|boys?|women|men|skin|hair|eyes|costumes?)\b"
     for style in styles:
         assert set(style) == {"id", "label", "prompt", "description", "reference", "image"}
         assert re.fullmatch(r"bg_[a-z0-9_]+", style["id"])
-        assert style["label"] and style["reference"] and style["description"] and style["prompt"]
+        assert style["label"] and style["description"] and style["prompt"]
+        assert style["description"] == style["prompt"] and style["reference"] == ""
         assert len(style["description"]) <= 240 and len(style["prompt"]) <= 16000
         assert not re.search(forbidden, style["description"] + " " + style["prompt"], re.I), style["id"]
-        assert "preserving its layout, objects, perspective, time and weather" in style["prompt"]
         assert not re.search(r"\b(?:at night|at dawn|at sunset|light rain|stormy|full.body|close.up)\b", style["prompt"], re.I)
-        assert style["prompt"].startswith(f"Style: {style['label']}.\nReference: {style['reference']}")
-        assert "\nVisual description: " in style["prompt"]
-        assert f"Reference: {style['reference']}" in generation.compose_prompt({"style": style["prompt"]}).splitlines()[0]
+        assert generation.compose_prompt({"style": style["prompt"]}).splitlines()[0] == f"Style: {style['prompt']}"
         assert style["image"] == ""
     assert not generation.USER_BACKGROUND_STYLES_PATH.exists()
 
@@ -2152,13 +2153,14 @@ def test_background_cover_uses_current_inference_settings_without_writing_backgr
                        "steps": 19, "cfg": 2, "prompt_enhance": True, "lora_stack": [{"name": "room.safetensors", "strength": .7}]}})
     original = copy.deepcopy(editor)
     workspace.generated.return_value = (Image.new("RGB", (1056, 1056), "blue"), {})
-    result = generation.generate_style_preview({"style_id": "bg_soft_ghibli_watercolor", "editor": editor})
+    result = generation.generate_style_preview({"style_id": "bg_ghibli_pastoral_fantasy_anime", "editor": editor})
     used, draw_id, cancelled = workspace.generated.call_args.args
     assert used["aspect"] == "1:1" and used["generation"]["seed"] == 0 and used["generation"]["seed_mode"] == "fixed"
     assert used["generation"]["model_type"] == model_type and used["generation"]["resolution_mp"] == 3.5
     assert used["generation"]["steps"] == 19 and used["generation"]["cfg"] == 2
     assert used["generation"]["prompt_enhance"] is True and used["generation"]["lora_stack"] == editor["generation"]["lora_stack"]
-    assert used["scene_description"] == editor["scene_description"] and "Studio Ghibli" in used["style"]
+    assert used["scene_description"] == editor["scene_description"]
+    assert used["style"] == "Studio Ghibli-inspired pastoral fantasy anime, lush hand-painted detail, warm natural colors"
     assert draw_id.startswith("style_") and not cancelled.is_set()
     assert editor == original and files(storage.root()) == before
     assert result["saved"] is True and result["image"].startswith(generation.API_BASE + "/styles/preview?")

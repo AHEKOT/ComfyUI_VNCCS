@@ -36,6 +36,7 @@ _ID = re.compile(r"^[a-f0-9]{32}$")
 STYLE_TEMPLATE_DIR = Path(__file__).parents[1] / "background_template"
 USER_BACKGROUND_STYLES_PATH = STYLE_TEMPLATE_DIR / "background_styles.user.json"
 STYLE_PREVIEWS_DIR = STYLE_TEMPLATE_DIR / "style_previews"
+BACKGROUND_ENHANCEMENT_SYSTEM_PATH = STYLE_TEMPLATE_DIR / "background_prompt_enhancer_system.txt"
 
 
 class BackgroundConflictError(RuntimeError):
@@ -513,7 +514,7 @@ DEFAULT_EDITOR = {
     "attributes": {
         "scene_type": "Interior", "time": "Day",
     },
-    "aspect": "16:9", "style": "Hand-painted anime", "aesthetics": "", "negative": "",
+    "aspect": "16:9", "style": "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain", "aesthetics": "", "negative": "",
     "variants": [{"id": name.lower(), "name": name, "time": name, "weather": "", "additional_details": ""}
                  for name in ("Morning", "Evening", "Night")],
     "generation": {
@@ -566,15 +567,12 @@ BACKGROUND_PROMPT_SUFFIX = (
     "Wide landscape composition, 16:9. Background only, no people or characters, no text or logos, "
     "no watermark, no border, no collage."
 )
-BACKGROUND_ENHANCEMENT_SYSTEM = (
-    SCENE_EXPANSION_SYSTEM +
-    "Keep Style, Time and Interior/Exterior exactly as supplied. Expand Scene description, Front, Back, Left and Right. "
-    "Return exactly eight lines in the following order, with no blank lines or extra fields. "
-    "Copy the first three values unchanged and write a concrete description for each remaining field:\n"
-    "Style: <unchanged style>\nTime: <unchanged time>\nInterior/Exterior: <unchanged setting>\n"
-    "Scene description: <overall setting>\nFront: <foreground objects and placement>\n"
-    "Back: <distant objects and architecture>\nLeft: <objects on the left>\nRight: <objects on the right>"
-)
+
+
+def _background_enhancement_system_prompt():
+    return BACKGROUND_ENHANCEMENT_SYSTEM_PATH.read_text(encoding="utf-8").strip()
+
+
 ASPECTS = ("16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "3:2", "2:3")
 LEGACY_SCENE_LABELS = {"composition": "Composition", "location": "Location", "era": "Era", "architecture": "Architecture",
                        "lighting": "Lighting", "weather": "Weather", "mood": "Atmosphere",
@@ -758,14 +756,17 @@ def variant_output(document, editor, image_id):
 def dimensions(editor: dict[str, Any]) -> tuple[int, int]:
     editor = normalize_editor(editor)
     a, b = (int(value) for value in editor["aspect"].split(":"))
-    divisor = math.gcd(a, b)
-    step = 16 if editor["generation"]["model_type"] == "moss" else 8
-    width_unit, height_unit = a // divisor * step, b // divisor * step
-    # Match Creator's MP scale while rounding both sides by one common factor.
-    pixels = round(editor["generation"]["resolution_mp"] * 1024) * 1024
-    units = max(math.ceil(64 / min(width_unit, height_unit)), round(math.sqrt(pixels / (width_unit * height_unit))))
-    units = min(units, 4096 // max(width_unit, height_unit), int(math.sqrt(16_000_000 / (width_unit * height_unit))))
-    return width_unit * units, height_unit * units
+    step = 16 if editor["generation"]["model_type"] == "moss" else 32
+    pixels = editor["generation"]["resolution_mp"] * 1_000_000
+    width, height = math.sqrt(pixels * a / b), math.sqrt(pixels * b / a)
+    scale = min(1, 4096 / max(width, height))
+    width, height = (max(64, min(4096, int(round(value * scale / step)) * step)) for value in (width, height))
+    while width * height > 16_000_000:
+        if width >= height:
+            width -= step
+        else:
+            height -= step
+    return width, height
 
 
 def _parse_prompt(text):
@@ -973,7 +974,7 @@ def _background_cache_key(editor):
     payload = {"prompt": compose_prompt(editor), "suffix": BACKGROUND_PROMPT_SUFFIX,
                "negative": editor["negative"], "dimensions": dimensions(editor),
                "generation": settings, "files": [_model_file_signature(_resolve_model_path(category, name)) for category, name in files],
-               "enhancer": [BACKGROUND_ENHANCEMENT_SYSTEM, TEXT_GENERATION] if settings["prompt_enhance"] else None}
+               "enhancer": [_background_enhancement_system_prompt(), TEXT_GENERATION] if settings["prompt_enhance"] else None}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -1153,7 +1154,7 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event):
         if settings["prompt_enhance"]:
             _stage(draw_id, cancel_event, "conditioning", 0.18, "Enhancing the background prompt")
             enhanced = _generate_text(clip, prompt,
-                BACKGROUND_ENHANCEMENT_SYSTEM,
+                _background_enhancement_system_prompt(),
                 draw_id=draw_id, context="Moss prompt enhancement" if moss else "Qwen Image 2.1 prompt enhancement")
             if enhanced:
                 enhanced = _text(enhanced, "Enhanced prompt", 16000)

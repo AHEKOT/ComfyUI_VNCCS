@@ -105,7 +105,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-background-cre
 export const DEFAULT_EDITOR = Object.freeze({
     description: "", scene_description: "", front: "", back: "", left: "", right: "", prompt: "", attributes: { scene_type: "Interior", time: "Day" },
     variants: ["Morning", "Evening", "Night"].map(name => ({ id: name.toLowerCase(), name, time: name, weather: "", additional_details: "" })),
-    aspect: "16:9", style: "Hand-painted anime", aesthetics: "", negative: "",
+    aspect: "16:9", style: "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain", aesthetics: "", negative: "",
     generation: { model_type: "qi2", steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, resolution_mp: 2, seed_mode: "fixed", turbo: false, turbo_previous_settings: null, prompt_enhance: true, cache_device: "gpu", cache_dtype: "int8", lora_stack: [], diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors" },
 });
 export const MOSS_GENERATION = Object.freeze({ model_type: "moss", steps: 25, cfg: 2.5, sampler: "er_sde", scheduler: "simple", turbo: false,

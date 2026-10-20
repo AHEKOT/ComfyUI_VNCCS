@@ -1,843 +1,208 @@
 {
   "version": 7,
-  "default_style": "bg_painted_anime_gouache",
+  "default_style": "bg_1990s_hand_painted_cel_anime",
   "groups": [
     {
-      "label": "Anime Backgrounds",
+      "label": "Anime and Illustrated Backgrounds",
       "styles": [
         {
-          "id": "bg_painted_anime_gouache",
-          "label": "Painted Anime Gouache",
-          "prompt": "Style: Painted Anime Gouache.\nReference: Traditional Japanese animation background art.\nVisual description: Hand-painted anime scenery with opaque gouache, fine material accents and layered atmospheric depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Hand-painted anime scenery with opaque gouache, fine material accents and layered atmospheric depth.",
-          "reference": "Traditional Japanese animation background art",
+          "id": "bg_1990s_hand_painted_cel_anime",
+          "label": "1990s Hand-Painted Cel Anime",
+          "prompt": "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain",
+          "description": "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_soft_ghibli_watercolor",
-          "label": "Soft Ghibli Watercolor",
-          "prompt": "Style: Soft Ghibli Watercolor.\nReference: Studio Ghibli; My Neighbor Totoro.\nVisual description: Transparent watercolor washes, delicate drawn architecture and softly textured vegetation with gentle color transitions. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Transparent watercolor washes, delicate drawn architecture and softly textured vegetation with gentle color transitions.",
-          "reference": "Studio Ghibli; My Neighbor Totoro",
+          "id": "bg_ghibli_pastoral_fantasy_anime",
+          "label": "Ghibli Pastoral Fantasy Anime",
+          "prompt": "Studio Ghibli-inspired pastoral fantasy anime, lush hand-painted detail, warm natural colors",
+          "description": "Studio Ghibli-inspired pastoral fantasy anime, lush hand-painted detail, warm natural colors",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_ghibli_fantasy_painting",
-          "label": "Ghibli Fantasy Painting",
-          "prompt": "Style: Ghibli Fantasy Painting.\nReference: Studio Ghibli; Howl's Moving Castle.\nVisual description: Richly painted surfaces, intricate natural textures and rounded organic shapes, with jewel-like color accents. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Richly painted surfaces, intricate natural textures and rounded organic shapes, with jewel-like color accents.",
-          "reference": "Studio Ghibli; Howl's Moving Castle",
+          "id": "bg_shinkai_cinematic_anime",
+          "label": "Shinkai Cinematic Anime",
+          "prompt": "Makoto Shinkai-inspired cinematic anime, luminous skies, precise architecture, sparkling reflections",
+          "description": "Makoto Shinkai-inspired cinematic anime, luminous skies, precise architecture, sparkling reflections",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_cinematic_anime_painting",
-          "label": "Cinematic Anime Painting",
-          "prompt": "Style: Cinematic Anime Painting.\nReference: Weathering with You; CoMix Wave Films.\nVisual description: Detailed painted scenery with subtle compositing glow, restrained bloom and carefully separated depth planes. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Detailed painted scenery with subtle compositing glow, restrained bloom and carefully separated depth planes.",
-          "reference": "Weathering with You; CoMix Wave Films",
+          "id": "bg_japanese_psychological_horror_anime",
+          "label": "Japanese Psychological Horror Anime",
+          "prompt": "Japanese psychological horror anime, muted colors, oppressive framing, unsettling environmental detail",
+          "description": "Japanese psychological horror anime, muted colors, oppressive framing, unsettling environmental detail",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_lineless_anime_painting",
-          "label": "Lineless Anime Painting",
-          "prompt": "Style: Lineless Anime Painting.\nReference: Painterly anime background art.\nVisual description: Color shapes define architecture and terrain without heavy outlines; textured brush edges soften distant detail. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Color shapes define architecture and terrain without heavy outlines; textured brush edges soften distant detail.",
-          "reference": "Painterly anime background art",
+          "id": "bg_realistic_contemporary_anime",
+          "label": "Realistic Contemporary Anime",
+          "prompt": "Realistic contemporary anime, restrained linework, physically believable materials, photographic perspective",
+          "description": "Realistic contemporary anime, restrained linework, physically believable materials, photographic perspective",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_crisp_anime_cel_shading",
-          "label": "Crisp Anime Cel Shading",
-          "prompt": "Style: Crisp Anime Cel Shading.\nReference: Classic cel animation.\nVisual description: Clean contour lines, precisely bounded shadows and flat color planes with selective environmental texture. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clean contour lines, precisely bounded shadows and flat color planes with selective environmental texture.",
-          "reference": "Classic cel animation",
+          "id": "bg_1980s_cyberpunk_anime",
+          "label": "1980s Cyberpunk Anime",
+          "prompt": "1980s cyberpunk anime, dense mechanical detail, airbrushed shadows, electric neon accents",
+          "description": "1980s cyberpunk anime, dense mechanical detail, airbrushed shadows, electric neon accents",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_anime_watercolor_sketch",
-          "label": "Anime Watercolor Sketch",
-          "prompt": "Style: Anime Watercolor Sketch.\nReference: Watercolor anime concept art.\nVisual description: Light pencil contours beneath transparent washes, visible paper grain and loose pigment edges on scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Light pencil contours beneath transparent washes, visible paper grain and loose pigment edges on scenery.",
-          "reference": "Watercolor anime concept art",
+          "id": "bg_1970s_space_opera_anime",
+          "label": "1970s Space Opera Anime",
+          "prompt": "1970s space opera anime, bold painted shapes, analog machinery, retro science-fiction design",
+          "description": "1970s space opera anime, bold painted shapes, analog machinery, retro science-fiction design",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_gentle_slice_of_life_anime",
-          "label": "Gentle Slice-of-Life Anime",
-          "prompt": "Style: Gentle Slice-of-Life Anime.\nReference: Aria; Non Non Biyori.\nVisual description: Soft low-contrast shading, muted pastels and lovingly observed everyday surfaces with quiet visual clarity. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Soft low-contrast shading, muted pastels and lovingly observed everyday surfaces with quiet visual clarity.",
-          "reference": "Aria; Non Non Biyori",
+          "id": "bg_2000s_slice_of_life_anime",
+          "label": "2000s Slice-of-Life Anime",
+          "prompt": "2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail",
+          "description": "2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_kyoto_animation_realism",
-          "label": "Kyoto Animation Realism",
-          "prompt": "Style: Kyoto Animation Realism.\nReference: Kyoto Animation; Hyouka.\nVisual description: Finely observed architecture and materials, restrained linework and nuanced color reflections in polished anime scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Finely observed architecture and materials, restrained linework and nuanced color reflections in polished anime scenery.",
-          "reference": "Kyoto Animation; Hyouka",
+          "id": "bg_watercolor_travel_anime",
+          "label": "Watercolor Travel Anime",
+          "prompt": "Watercolor travel anime, translucent pigment washes, delicate pencil outlines, textured paper",
+          "description": "Watercolor travel anime, translucent pigment washes, delicate pencil outlines, textured paper",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_gritty_anime_realism",
-          "label": "Gritty Anime Realism",
-          "prompt": "Style: Gritty Anime Realism.\nReference: Patlabor; Production I.G.\nVisual description: Dense architectural detail, irregular worn textures, subdued pigments and precise weighty ink contours. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Dense architectural detail, irregular worn textures, subdued pigments and precise weighty ink contours.",
-          "reference": "Patlabor; Production I.G",
+          "id": "bg_minimalist_iyashikei_anime",
+          "label": "Minimalist Iyashikei Anime",
+          "prompt": "Minimalist iyashikei anime, spacious composition, restrained detail, subdued seasonal colors",
+          "description": "Minimalist iyashikei anime, spacious composition, restrained detail, subdued seasonal colors",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_akira_technical_painting",
-          "label": "Akira Technical Painting",
-          "prompt": "Style: Akira Technical Painting.\nReference: Akira; Ghost in the Shell (1995).\nVisual description: Meticulous industrial linework, layered painted surfaces and strong graphic shadows with restrained saturated accents. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Meticulous industrial linework, layered painted surfaces and strong graphic shadows with restrained saturated accents.",
-          "reference": "Akira; Ghost in the Shell (1995)",
+          "id": "bg_noir_anime",
+          "label": "Noir Anime",
+          "prompt": "Noir anime, hard-edged shadows, desaturated colors, dramatic architectural silhouettes",
+          "description": "Noir anime, hard-edged shadows, desaturated colors, dramatic architectural silhouettes",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_1980s_ova_backgrounds",
-          "label": "1980s OVA Backgrounds",
-          "prompt": "Style: 1980s OVA Backgrounds.\nReference: 1980s theatrical anime and OVAs.\nVisual description: Airbrushed gradients, intricate painted textures, analog cel softness and subtle film grain. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Airbrushed gradients, intricate painted textures, analog cel softness and subtle film grain.",
-          "reference": "1980s theatrical anime and OVAs",
+          "id": "bg_ukiyo_e_anime",
+          "label": "Ukiyo-e Anime",
+          "prompt": "Ukiyo-e-inspired anime, woodblock textures, flat color fields, elegant contour lines",
+          "description": "Ukiyo-e-inspired anime, woodblock textures, flat color fields, elegant contour lines",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_1990s_painted_anime",
-          "label": "1990s Painted Anime",
-          "prompt": "Style: 1990s Painted Anime.\nReference: 1990s Japanese television animation.\nVisual description: Hand-painted background plates with clean ink accents, softened cel edges and gently aged analog colors. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Hand-painted background plates with clean ink accents, softened cel edges and gently aged analog colors.",
-          "reference": "1990s Japanese television animation",
+          "id": "bg_taisho_romantic_anime",
+          "label": "Taisho Romantic Anime",
+          "prompt": "Taisho romantic anime, delicate ink lines, ornate period design, muted jewel colors",
+          "description": "Taisho romantic anime, delicate ink lines, ornate period design, muted jewel colors",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_2000s_soft_digital_anime",
-          "label": "2000s Soft Digital Anime",
-          "prompt": "Style: 2000s Soft Digital Anime.\nReference: Early digital slice-of-life animation.\nVisual description: Clean digital background painting, soft ambient gradients and simple readable material textures. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clean digital background painting, soft ambient gradients and simple readable material textures.",
-          "reference": "Early digital slice-of-life animation",
+          "id": "bg_gothic_dark_fantasy_anime",
+          "label": "Gothic Dark Fantasy Anime",
+          "prompt": "Gothic dark fantasy anime, intricate stonework, dramatic painted lighting, weathered textures",
+          "description": "Gothic dark fantasy anime, intricate stonework, dramatic painted lighting, weathered textures",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_shinkai_detailed_scenery",
-          "label": "Shinkai Detailed Scenery",
-          "prompt": "Style: Shinkai Detailed Scenery.\nReference: Your Name; Makoto Shinkai.\nVisual description: Highly detailed anime background painting with luminous color separation, crisp architectural accents and layered depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Highly detailed anime background painting with luminous color separation, crisp architectural accents and layered depth.",
-          "reference": "Your Name; Makoto Shinkai",
+          "id": "bg_cozy_fantasy_anime",
+          "label": "Cozy Fantasy Anime",
+          "prompt": "Cozy fantasy anime, rounded architecture, tactile painted surfaces, soft magical illumination",
+          "description": "Cozy fantasy anime, rounded architecture, tactile painted surfaces, soft magical illumination",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_loose_contemporary_anime",
-          "label": "Loose Contemporary Anime",
-          "prompt": "Style: Loose Contemporary Anime.\nReference: Contemporary independent anime.\nVisual description: Expressive uneven contours, playful shape simplification and visible digital brush marks across environmental forms. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Expressive uneven contours, playful shape simplification and visible digital brush marks across environmental forms.",
-          "reference": "Contemporary independent anime",
+          "id": "bg_dieselpunk_adventure_anime",
+          "label": "Dieselpunk Adventure Anime",
+          "prompt": "Dieselpunk adventure anime, riveted machinery, bold perspective, smoky earth-tone palette",
+          "description": "Dieselpunk adventure anime, riveted machinery, bold perspective, smoky earth-tone palette",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_technical_anime_architecture",
-          "label": "Technical Anime Architecture",
-          "prompt": "Style: Technical Anime Architecture.\nReference: Patlabor mechanical and architectural background art.\nVisual description: Precise mechanical drafting, fine panel lines, controlled perspective and crisp material separation in painted scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Precise mechanical drafting, fine panel lines, controlled perspective and crisp material separation in painted scenery.",
-          "reference": "Patlabor mechanical and architectural background art",
+          "id": "bg_solarpunk_anime",
+          "label": "Solarpunk Anime",
+          "prompt": "Solarpunk anime, airy architectural illustration, lush vegetation, optimistic natural colors",
+          "description": "Solarpunk anime, airy architectural illustration, lush vegetation, optimistic natural colors",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_flat_graphic_anime",
-          "label": "Flat Graphic Anime",
-          "prompt": "Style: Flat Graphic Anime.\nReference: Superflat anime illustration.\nVisual description: Bold silhouettes, minimal tonal modeling, clean color blocks and sharply simplified environmental shapes. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Bold silhouettes, minimal tonal modeling, clean color blocks and sharply simplified environmental shapes.",
-          "reference": "Superflat anime illustration",
+          "id": "bg_nature_reclaimed_post_apocalyptic_anime",
+          "label": "Nature-Reclaimed Post-Apocalyptic Anime",
+          "prompt": "Nature-reclaimed post-apocalyptic anime, detailed environmental storytelling, faded colors, soft atmospheric light",
+          "description": "Nature-reclaimed post-apocalyptic anime, detailed environmental storytelling, faded colors, soft atmospheric light",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_frieren_storybook_painting",
-          "label": "Frieren Storybook Painting",
-          "prompt": "Style: Frieren Storybook Painting.\nReference: Frieren: Beyond Journey's End; Madhouse.\nVisual description: Delicate painted masonry and foliage, muted mineral colors, fine line accents and spacious atmospheric layering. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Delicate painted masonry and foliage, muted mineral colors, fine line accents and spacious atmospheric layering.",
-          "reference": "Frieren: Beyond Journey's End; Madhouse",
+          "id": "bg_surreal_dreamscape_anime",
+          "label": "Surreal Dreamscape Anime",
+          "prompt": "Surreal dreamscape anime, precise ordinary details, impossible spatial relationships, quiet pastel atmosphere",
+          "description": "Surreal dreamscape anime, precise ordinary details, impossible spatial relationships, quiet pastel atmosphere",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_fantasy_ink_wash_scenery",
-          "label": "Fantasy Ink-Wash Scenery",
-          "prompt": "Style: Fantasy Ink-Wash Scenery.\nReference: Chinese ink-wash fantasy illustration.\nVisual description: Flowing brush contours, translucent ink washes and delicate mineral-color accents give scenery a lyrical painted finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Flowing brush contours, translucent ink washes and delicate mineral-color accents give scenery a lyrical painted finish.",
-          "reference": "Chinese ink-wash fantasy illustration",
+          "id": "bg_psychedelic_science_fiction_anime",
+          "label": "Psychedelic Science-Fiction Anime",
+          "prompt": "Psychedelic science-fiction anime, saturated complementary colors, organic geometry, luminous painted gradients",
+          "description": "Psychedelic science-fiction anime, saturated complementary colors, organic geometry, luminous painted gradients",
+          "reference": "",
           "image": ""
-        }
-      ]
-    },
-    {
-      "label": "Animated Film Backgrounds",
-      "styles": [
-        {
-          "id": "bg_classic_animation_painting",
-          "label": "Classic Animation Painting",
-          "prompt": "Style: Classic Animation Painting.\nReference: Traditional animated feature background art.\nVisual description: Rich opaque background painting with purposeful brush texture, clean silhouettes and coherent color scripting. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Rich opaque background painting with purposeful brush texture, clean silhouettes and coherent color scripting.",
-          "reference": "Traditional animated feature background art",
-          "image": ""
-        },
-        {
-          "id": "bg_multiplane_animation_painting",
-          "label": "Multiplane Animation Painting",
-          "prompt": "Style: Multiplane Animation Painting.\nReference: Classic multiplane animation backgrounds.\nVisual description: Clearly layered painted scenery with varied edge softness, controlled detail and smooth atmospheric recession. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clearly layered painted scenery with varied edge softness, controlled detail and smooth atmospheric recession.",
-          "reference": "Classic multiplane animation backgrounds",
-          "image": ""
-        },
-        {
-          "id": "bg_paint_on_glass_scenery",
-          "label": "Paint-on-Glass Scenery",
-          "prompt": "Style: Paint-on-Glass Scenery.\nReference: Paint-on-glass animation.\nVisual description: Translucent oily pigment, softened smears and luminous blended edges evoke paint animated directly on glass. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Translucent oily pigment, softened smears and luminous blended edges evoke paint animated directly on glass.",
-          "reference": "Paint-on-glass animation",
-          "image": ""
-        },
-        {
-          "id": "bg_painted_animation_tale",
-          "label": "Painted Animation Tale",
-          "prompt": "Style: Painted Animation Tale.\nReference: Soviet painted animation.\nVisual description: Soft gouache textures, expressive simplified forms and subtle paper grain create a handcrafted animated-film finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Soft gouache textures, expressive simplified forms and subtle paper grain create a handcrafted animated-film finish.",
-          "reference": "Soviet painted animation",
-          "image": ""
-        },
-        {
-          "id": "bg_1950s_graphic_animation",
-          "label": "1950s Graphic Animation",
-          "prompt": "Style: 1950s Graphic Animation.\nReference: UPA animation.\nVisual description: Angular stylized scenery, flat color fields, spare ink details and playful geometric simplification. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Angular stylized scenery, flat color fields, spare ink details and playful geometric simplification.",
-          "reference": "UPA animation",
-          "image": ""
-        },
-        {
-          "id": "bg_psychedelic_animation",
-          "label": "Psychedelic Animation",
-          "prompt": "Style: Psychedelic Animation.\nReference: Yellow Submarine (1968).\nVisual description: Fluid decorative contours, saturated complementary colors and rhythmic flat shapes reinterpret scenery graphically. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Fluid decorative contours, saturated complementary colors and rhythmic flat shapes reinterpret scenery graphically.",
-          "reference": "Yellow Submarine (1968)",
-          "image": ""
-        },
-        {
-          "id": "bg_painted_2d_and_3d_hybrid",
-          "label": "Painted 2D and 3D Hybrid",
-          "prompt": "Style: Painted 2D and 3D Hybrid.\nReference: Contemporary painted hybrid animation.\nVisual description: Sculptural environmental forms carry visible brush strokes, sharp graphic accents and layered painterly shading. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Sculptural environmental forms carry visible brush strokes, sharp graphic accents and layered painterly shading.",
-          "reference": "Contemporary painted hybrid animation",
-          "image": ""
-        },
-        {
-          "id": "bg_arcane_painterly_scenery",
-          "label": "Arcane Painterly Scenery",
-          "prompt": "Style: Arcane Painterly Scenery.\nReference: Arcane; Fortiche.\nVisual description: Faceted painted materials, graphic edge accents, rich tonal depth and bold controlled color contrast. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Faceted painted materials, graphic edge accents, rich tonal depth and bold controlled color contrast.",
-          "reference": "Arcane; Fortiche",
-          "image": ""
-        },
-        {
-          "id": "bg_gravity_falls_backgrounds",
-          "label": "Gravity Falls Backgrounds",
-          "prompt": "Style: Gravity Falls Backgrounds.\nReference: Gravity Falls.\nVisual description: Clean angular outlines, stylized organic shapes and textured flat-color scenery with a restrained illustrated palette. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clean angular outlines, stylized organic shapes and textured flat-color scenery with a restrained illustrated palette.",
-          "reference": "Gravity Falls",
-          "image": ""
-        },
-        {
-          "id": "bg_disney_storybook_painting",
-          "label": "Disney Storybook Painting",
-          "prompt": "Style: Disney Storybook Painting.\nReference: Classic Walt Disney Animation backgrounds.\nVisual description: Lush layered gouache, elegant shape rhythms and carefully modeled painted surfaces with storybook depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Lush layered gouache, elegant shape rhythms and carefully modeled painted surfaces with storybook depth.",
-          "reference": "Classic Walt Disney Animation backgrounds",
-          "image": ""
-        }
-      ]
-    },
-    {
-      "label": "Traditional Painting",
-      "styles": [
-        {
-          "id": "bg_opaque_gouache",
-          "label": "Opaque Gouache",
-          "prompt": "Style: Opaque Gouache.\nReference: Traditional gouache painting.\nVisual description: Matte opaque pigment, chalky blended transitions and deliberate visible brush strokes define environmental surfaces. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Matte opaque pigment, chalky blended transitions and deliberate visible brush strokes define environmental surfaces.",
-          "reference": "Traditional gouache painting",
-          "image": ""
-        },
-        {
-          "id": "bg_loose_watercolor",
-          "label": "Loose Watercolor",
-          "prompt": "Style: Loose Watercolor.\nReference: Loose watercolor painting.\nVisual description: Transparent washes, pigment blooms and irregular soft edges reveal textured paper beneath the scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Transparent washes, pigment blooms and irregular soft edges reveal textured paper beneath the scenery.",
-          "reference": "Loose watercolor painting",
-          "image": ""
-        },
-        {
-          "id": "bg_wet_on_wet_watercolor",
-          "label": "Wet-on-Wet Watercolor",
-          "prompt": "Style: Wet-on-Wet Watercolor.\nReference: Wet-on-wet watercolor.\nVisual description: Diffused pigment flows into wet paper, merging color gently while a few dry accents define the scene. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Diffused pigment flows into wet paper, merging color gently while a few dry accents define the scene.",
-          "reference": "Wet-on-wet watercolor",
-          "image": ""
-        },
-        {
-          "id": "bg_textured_acrylic",
-          "label": "Textured Acrylic",
-          "prompt": "Style: Textured Acrylic.\nReference: Acrylic landscape painting.\nVisual description: Layered opaque acrylic color, dry-brush scumbling and crisp painterly edges give surfaces tactile depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Layered opaque acrylic color, dry-brush scumbling and crisp painterly edges give surfaces tactile depth.",
-          "reference": "Acrylic landscape painting",
-          "image": ""
-        },
-        {
-          "id": "bg_classical_oil_painting",
-          "label": "Classical Oil Painting",
-          "prompt": "Style: Classical Oil Painting.\nReference: Traditional oil painting.\nVisual description: Layered oil glazes, nuanced tonal modeling and visible canvas weave render environmental materials richly. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Layered oil glazes, nuanced tonal modeling and visible canvas weave render environmental materials richly.",
-          "reference": "Traditional oil painting",
-          "image": ""
-        },
-        {
-          "id": "bg_palette_knife_oil",
-          "label": "Palette-Knife Oil",
-          "prompt": "Style: Palette-Knife Oil.\nReference: Impasto landscape painting.\nVisual description: Thick ridges of oil paint and broad palette-knife facets describe scenery through tactile broken color. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Thick ridges of oil paint and broad palette-knife facets describe scenery through tactile broken color.",
-          "reference": "Impasto landscape painting",
-          "image": ""
-        },
-        {
-          "id": "bg_impressionist_painting",
-          "label": "Impressionist Painting",
-          "prompt": "Style: Impressionist Painting.\nReference: Claude Monet; Impressionism.\nVisual description: Broken brush strokes, color-rich shadows and softly fused edges suggest materials through optical color mixing. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Broken brush strokes, color-rich shadows and softly fused edges suggest materials through optical color mixing.",
-          "reference": "Claude Monet; Impressionism",
-          "image": ""
-        },
-        {
-          "id": "bg_post_impressionist_painting",
-          "label": "Post-Impressionist Painting",
-          "prompt": "Style: Post-Impressionist Painting.\nReference: Paul Cezanne; Post-Impressionism.\nVisual description: Structured brush marks, expressive color relationships and simplified solid forms give scenery painted rhythm. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Structured brush marks, expressive color relationships and simplified solid forms give scenery painted rhythm.",
-          "reference": "Paul Cezanne; Post-Impressionism",
-          "image": ""
-        },
-        {
-          "id": "bg_soft_tonalist_painting",
-          "label": "Soft Tonalist Painting",
-          "prompt": "Style: Soft Tonalist Painting.\nReference: Tonalist landscape painting.\nVisual description: Closely related muted colors, soft boundaries and finely graded values create unified atmospheric scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Closely related muted colors, soft boundaries and finely graded values create unified atmospheric scenery.",
-          "reference": "Tonalist landscape painting",
-          "image": ""
-        },
-        {
-          "id": "bg_romantic_landscape_painting",
-          "label": "Romantic Landscape Painting",
-          "prompt": "Style: Romantic Landscape Painting.\nReference: Romantic landscape painting.\nVisual description: Refined oil detail, expressive tonal contrast and layered atmospheric depth give the environment a monumental painted finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Refined oil detail, expressive tonal contrast and layered atmospheric depth give the environment a monumental painted finish.",
-          "reference": "Romantic landscape painting",
-          "image": ""
-        },
-        {
-          "id": "bg_luminous_landscape_oil",
-          "label": "Luminous Landscape Oil",
-          "prompt": "Style: Luminous Landscape Oil.\nReference: Hudson River School; Luminism.\nVisual description: Fine transparent glazing, luminous tonal transitions and carefully observed material detail create clear painted depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Fine transparent glazing, luminous tonal transitions and carefully observed material detail create clear painted depth.",
-          "reference": "Hudson River School; Luminism",
-          "image": ""
-        },
-        {
-          "id": "bg_naturalist_landscape_oil",
-          "label": "Naturalist Landscape Oil",
-          "prompt": "Style: Naturalist Landscape Oil.\nReference: Barbizon School.\nVisual description: Earthy color harmonies, observed surface texture and loose natural brushwork create grounded painted scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Earthy color harmonies, observed surface texture and loose natural brushwork create grounded painted scenery.",
-          "reference": "Barbizon School",
-          "image": ""
-        },
-        {
-          "id": "bg_japanese_mineral_painting",
-          "label": "Japanese Mineral Painting",
-          "prompt": "Style: Japanese Mineral Painting.\nReference: Nihonga painting.\nVisual description: Fine contour lines, matte mineral pigments and subtle fibrous paper texture define elegant environmental forms. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Fine contour lines, matte mineral pigments and subtle fibrous paper texture define elegant environmental forms.",
-          "reference": "Nihonga painting",
-          "image": ""
-        },
-        {
-          "id": "bg_chinese_landscape_ink",
-          "label": "Chinese Landscape Ink",
-          "prompt": "Style: Chinese Landscape Ink.\nReference: Shan shui painting.\nVisual description: Layered ink washes, textured brush strokes and sparse mineral accents articulate the environment with calligraphic clarity. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Layered ink washes, textured brush strokes and sparse mineral accents articulate the environment with calligraphic clarity.",
-          "reference": "Shan shui painting",
-          "image": ""
-        },
-        {
-          "id": "bg_japanese_ink_wash",
-          "label": "Japanese Ink Wash",
-          "prompt": "Style: Japanese Ink Wash.\nReference: Sumi-e painting.\nVisual description: Economical brush gestures, soft ink gradients and expressive changes in line weight simplify the supplied scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Economical brush gestures, soft ink gradients and expressive changes in line weight simplify the supplied scenery.",
-          "reference": "Sumi-e painting",
-          "image": ""
-        },
-        {
-          "id": "bg_expressive_chinese_ink",
-          "label": "Expressive Chinese Ink",
-          "prompt": "Style: Expressive Chinese Ink.\nReference: Xieyi painting.\nVisual description: Free flowing ink strokes, pooled washes and sparse color accents suggest surfaces with spontaneous brush energy. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Free flowing ink strokes, pooled washes and sparse color accents suggest surfaces with spontaneous brush energy.",
-          "reference": "Xieyi painting",
-          "image": ""
-        },
-        {
-          "id": "bg_ukiyo_e_woodblock",
-          "label": "Ukiyo-e Woodblock",
-          "prompt": "Style: Ukiyo-e Woodblock.\nReference: Hokusai; Hiroshige.\nVisual description: Flat color areas, firm carved contours, subtle paper grain and delicate printed gradients describe the scene. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Flat color areas, firm carved contours, subtle paper grain and delicate printed gradients describe the scene.",
-          "reference": "Hokusai; Hiroshige",
-          "image": ""
-        },
-        {
-          "id": "bg_modern_japanese_woodcut",
-          "label": "Modern Japanese Woodcut",
-          "prompt": "Style: Modern Japanese Woodcut.\nReference: Sosaku hanga printmaking.\nVisual description: Bold carved shapes, uneven ink coverage and visible wood grain give scenery a handcrafted printed surface. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Bold carved shapes, uneven ink coverage and visible wood grain give scenery a handcrafted printed surface.",
-          "reference": "Sosaku hanga printmaking",
-          "image": ""
-        },
-        {
-          "id": "bg_rinpa_decorative_painting",
-          "label": "Rinpa Decorative Painting",
-          "prompt": "Style: Rinpa Decorative Painting.\nReference: Rinpa School.\nVisual description: Elegant organic contours, mineral pigments and restrained gold-leaf accents flatten scenery into decorative painted shapes. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Elegant organic contours, mineral pigments and restrained gold-leaf accents flatten scenery into decorative painted shapes.",
-          "reference": "Rinpa School",
-          "image": ""
-        },
-        {
-          "id": "bg_metaphysical_oil_painting",
-          "label": "Metaphysical Oil Painting",
-          "prompt": "Style: Metaphysical Oil Painting.\nReference: Giorgio de Chirico's architectural paintings.\nVisual description: Smooth restrained brushwork, simplified solid forms and deliberate value separation give familiar scenery an uncanny stillness. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Smooth restrained brushwork, simplified solid forms and deliberate value separation give familiar scenery an uncanny stillness.",
-          "reference": "Giorgio de Chirico's architectural paintings",
-          "image": ""
-        }
-      ]
-    },
-    {
-      "label": "Drawing and Print",
-      "styles": [
-        {
-          "id": "bg_calligraphic_brush_drawing",
-          "label": "Calligraphic Brush Drawing",
-          "prompt": "Style: Calligraphic Brush Drawing.\nReference: Brush-and-ink drawing.\nVisual description: Variable-width ink strokes, expressive dry-brush texture and economical washes define environmental structures. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Variable-width ink strokes, expressive dry-brush texture and economical washes define environmental structures.",
-          "reference": "Brush-and-ink drawing",
-          "image": ""
-        },
-        {
-          "id": "bg_graphite_environment_study",
-          "label": "Graphite Environment Study",
-          "prompt": "Style: Graphite Environment Study.\nReference: Graphite drawing.\nVisual description: Layered graphite hatching, soft rubbed shading and fine pencil edges render surfaces on lightly textured paper. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Layered graphite hatching, soft rubbed shading and fine pencil edges render surfaces on lightly textured paper.",
-          "reference": "Graphite drawing",
-          "image": ""
-        },
-        {
-          "id": "bg_charcoal_environment_study",
-          "label": "Charcoal Environment Study",
-          "prompt": "Style: Charcoal Environment Study.\nReference: Academic charcoal drawing.\nVisual description: Velvety charcoal masses, lifted highlights and crisp compressed-charcoal accents model environmental volumes. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Velvety charcoal masses, lifted highlights and crisp compressed-charcoal accents model environmental volumes.",
-          "reference": "Academic charcoal drawing",
-          "image": ""
-        },
-        {
-          "id": "bg_colored_pencil_scenery",
-          "label": "Colored-Pencil Scenery",
-          "prompt": "Style: Colored-Pencil Scenery.\nReference: Colored-pencil illustration.\nVisual description: Layered colored-pencil strokes, fine paper tooth and softly built-up tones create detailed tactile scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Layered colored-pencil strokes, fine paper tooth and softly built-up tones create detailed tactile scenery.",
-          "reference": "Colored-pencil illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_fine_pen_and_ink",
-          "label": "Fine Pen and Ink",
-          "prompt": "Style: Fine Pen and Ink.\nReference: Pen-and-ink illustration.\nVisual description: Precise pen contours, varied line density and delicate stippling describe architectural and natural textures. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Precise pen contours, varied line density and delicate stippling describe architectural and natural textures.",
-          "reference": "Pen-and-ink illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_crosshatched_scenery",
-          "label": "Crosshatched Scenery",
-          "prompt": "Style: Crosshatched Scenery.\nReference: Crosshatched illustration.\nVisual description: Intersecting ink lines build shadow density, material texture and depth while preserving clear environmental contours. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Intersecting ink lines build shadow density, material texture and depth while preserving clear environmental contours.",
-          "reference": "Crosshatched illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_etched_landscape",
-          "label": "Etched Landscape",
-          "prompt": "Style: Etched Landscape.\nReference: Traditional etching.\nVisual description: Fine incised lines, delicate crosshatching and softly toned paper give scenery an antique intaglio finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Fine incised lines, delicate crosshatching and softly toned paper give scenery an antique intaglio finish.",
-          "reference": "Traditional etching",
-          "image": ""
-        },
-        {
-          "id": "bg_architectural_marker_sketch",
-          "label": "Architectural Marker Sketch",
-          "prompt": "Style: Architectural Marker Sketch.\nReference: Traditional architectural marker rendering.\nVisual description: Broad translucent marker strokes, overlapping color bands and crisp pen accents define environmental surfaces. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Broad translucent marker strokes, overlapping color bands and crisp pen accents define environmental surfaces.",
-          "reference": "Traditional architectural marker rendering",
-          "image": ""
-        },
-        {
-          "id": "bg_manga_screentone_scenery",
-          "label": "Manga Screentone Scenery",
-          "prompt": "Style: Manga Screentone Scenery.\nReference: Black-and-white manga background art.\nVisual description: Clean black ink contours, patterned screentone shadows and controlled white highlights create readable monochrome scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clean black ink contours, patterned screentone shadows and controlled white highlights create readable monochrome scenery.",
-          "reference": "Black-and-white manga background art",
-          "image": ""
-        },
-        {
-          "id": "bg_detailed_manga_scenery",
-          "label": "Detailed Manga Scenery",
-          "prompt": "Style: Detailed Manga Scenery.\nReference: Detailed seinen manga background art.\nVisual description: Dense fine hatching, realistic environmental textures and forceful black shadow shapes create intricate inked scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Dense fine hatching, realistic environmental textures and forceful black shadow shapes create intricate inked scenery.",
-          "reference": "Detailed seinen manga background art",
-          "image": ""
-        }
-      ]
-    },
-    {
-      "label": "Digital Environment Art",
-      "styles": [
-        {
-          "id": "bg_cinematic_matte_painting",
-          "label": "Cinematic Matte Painting",
-          "prompt": "Style: Cinematic Matte Painting.\nReference: Film environment matte painting.\nVisual description: Seamlessly integrated painted detail, convincing material texture and controlled atmospheric depth produce cinematic scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Seamlessly integrated painted detail, convincing material texture and controlled atmospheric depth produce cinematic scenery.",
-          "reference": "Film environment matte painting",
-          "image": ""
-        },
-        {
-          "id": "bg_photobash_environment_art",
-          "label": "Photobash Environment Art",
-          "prompt": "Style: Photobash Environment Art.\nReference: Environment concept art.\nVisual description: Photo-derived textures merge with decisive digital paint, coherent values and selectively sharpened environmental detail. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Photo-derived textures merge with decisive digital paint, coherent values and selectively sharpened environmental detail.",
-          "reference": "Environment concept art",
-          "image": ""
-        },
-        {
-          "id": "bg_environment_speedpainting",
-          "label": "Environment Speedpainting",
-          "prompt": "Style: Environment Speedpainting.\nReference: Digital environment speedpainting.\nVisual description: Broad confident brush shapes, economical surface accents and clear value grouping suggest scenery without overworking it. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Broad confident brush shapes, economical surface accents and clear value grouping suggest scenery without overworking it.",
-          "reference": "Digital environment speedpainting",
-          "image": ""
-        },
-        {
-          "id": "bg_expressive_digital_painting",
-          "label": "Expressive Digital Painting",
-          "prompt": "Style: Expressive Digital Painting.\nReference: Painterly digital environment art.\nVisual description: Visible digital brush strokes, varied edge control and rich color layering emphasize the painted nature of the environment. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Visible digital brush strokes, varied edge control and rich color layering emphasize the painted nature of the environment.",
-          "reference": "Painterly digital environment art",
-          "image": ""
-        },
-        {
-          "id": "bg_faceted_digital_painting",
-          "label": "Faceted Digital Painting",
-          "prompt": "Style: Faceted Digital Painting.\nReference: Faceted digital concept painting.\nVisual description: Angular color facets, chiseled brush planes and graphic shadow shapes describe environmental materials and volumes. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Angular color facets, chiseled brush planes and graphic shadow shapes describe environmental materials and volumes.",
-          "reference": "Faceted digital concept painting",
-          "image": ""
-        },
-        {
-          "id": "bg_detailed_fantasy_painting",
-          "label": "Detailed Fantasy Painting",
-          "prompt": "Style: Detailed Fantasy Painting.\nReference: Contemporary fantasy environment illustration.\nVisual description: Richly textured digital paint, intricate material accents and smoothly layered atmospheric values render fantasy scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Richly textured digital paint, intricate material accents and smoothly layered atmospheric values render fantasy scenery.",
-          "reference": "Contemporary fantasy environment illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_gothic_concept_painting",
-          "label": "Gothic Concept Painting",
-          "prompt": "Style: Gothic Concept Painting.\nReference: Castlevania environment concept art.\nVisual description: Refined dark brushwork, ornate material detail and sharply separated tonal masses give scenery a gothic illustrated finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Refined dark brushwork, ornate material detail and sharply separated tonal masses give scenery a gothic illustrated finish.",
-          "reference": "Castlevania environment concept art",
-          "image": ""
-        },
-        {
-          "id": "bg_graphic_sci_fi_concept_art",
-          "label": "Graphic Sci-Fi Concept Art",
-          "prompt": "Style: Graphic Sci-Fi Concept Art.\nReference: Sparth; Aleksi Briclot environment art.\nVisual description: Bold geometric brush masses, selective crisp edges and disciplined color accents create readable environment concept art. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Bold geometric brush masses, selective crisp edges and disciplined color accents create readable environment concept art.",
-          "reference": "Sparth; Aleksi Briclot environment art",
-          "image": ""
-        },
-        {
-          "id": "bg_luminous_pastel_painting",
-          "label": "Luminous Pastel Painting",
-          "prompt": "Style: Luminous Pastel Painting.\nReference: Luminous pastel digital painting.\nVisual description: Soft luminous pigment, gently blended pastel hues and delicate grain create airy illustrated environmental surfaces. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Soft luminous pigment, gently blended pastel hues and delicate grain create airy illustrated environmental surfaces.",
-          "reference": "Luminous pastel digital painting",
-          "image": ""
-        },
-        {
-          "id": "bg_soft_lo_fi_illustration",
-          "label": "Soft Lo-Fi Illustration",
-          "prompt": "Style: Soft Lo-Fi Illustration.\nReference: Lo-fi environment illustration.\nVisual description: Reduced environmental detail, muted color harmonies, softly textured shading and understated grain create relaxed illustrated scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Reduced environmental detail, muted color harmonies, softly textured shading and understated grain create relaxed illustrated scenery.",
-          "reference": "Lo-fi environment illustration",
-          "image": ""
-        }
-      ]
-    },
-    {
-      "label": "Graphic and Paper Art",
-      "styles": [
-        {
-          "id": "bg_superflat_pop_scenery",
-          "label": "Superflat Pop Scenery",
-          "prompt": "Style: Superflat Pop Scenery.\nReference: Superflat pop illustration.\nVisual description: Clean silhouettes, bold color areas and minimal depth shading turn the supplied scenery into vivid graphic illustration. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clean silhouettes, bold color areas and minimal depth shading turn the supplied scenery into vivid graphic illustration.",
-          "reference": "Superflat pop illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_vintage_travel_illustration",
-          "label": "Vintage Travel Illustration",
-          "prompt": "Style: Vintage Travel Illustration.\nReference: 1930s travel-poster illustration.\nVisual description: Simplified environmental shapes, limited printed colors and gentle lithographic texture evoke vintage travel artwork. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Simplified environmental shapes, limited printed colors and gentle lithographic texture evoke vintage travel artwork.",
-          "reference": "1930s travel-poster illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_flat_vector_scenery",
-          "label": "Flat Vector Scenery",
-          "prompt": "Style: Flat Vector Scenery.\nReference: Graphic vector environment illustration.\nVisual description: Precisely bounded vector shapes, a compact color palette and subtle geometric gradients create clear stylized scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Precisely bounded vector shapes, a compact color palette and subtle geometric gradients create clear stylized scenery.",
-          "reference": "Graphic vector environment illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_layered_paper_cutout",
-          "label": "Layered Paper Cutout",
-          "prompt": "Style: Layered Paper Cutout.\nReference: Layered cut-paper illustration.\nVisual description: Overlapping cut-paper shapes, visible paper fibers and small contact shadows build tactile environmental depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Overlapping cut-paper shapes, visible paper fibers and small contact shadows build tactile environmental depth.",
-          "reference": "Layered cut-paper illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_craft_paper_scenery",
-          "label": "Craft-Paper Scenery",
-          "prompt": "Style: Craft-Paper Scenery.\nReference: Papercraft environment art.\nVisual description: Folded colored paper, crisp seams and matte fibrous surfaces reinterpret the environment as handcrafted paper construction. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Folded colored paper, crisp seams and matte fibrous surfaces reinterpret the environment as handcrafted paper construction.",
-          "reference": "Papercraft environment art",
-          "image": ""
-        },
-        {
-          "id": "bg_folded_origami_scenery",
-          "label": "Folded Origami Scenery",
-          "prompt": "Style: Folded Origami Scenery.\nReference: Origami art.\nVisual description: Angular paper folds, sharp creases and lightly shaded planar surfaces give the supplied scenery an origami-like material treatment. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Angular paper folds, sharp creases and lightly shaded planar surfaces give the supplied scenery an origami-like material treatment.",
-          "reference": "Origami art",
-          "image": ""
-        },
-        {
-          "id": "bg_paper_quilling_scenery",
-          "label": "Paper Quilling Scenery",
-          "prompt": "Style: Paper Quilling Scenery.\nReference: Paper quilling.\nVisual description: Coiled paper strips, raised curled edges and fine contact shadows form tactile contours across the environment. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Coiled paper strips, raised curled edges and fine contact shadows form tactile contours across the environment.",
-          "reference": "Paper quilling",
-          "image": ""
-        },
-        {
-          "id": "bg_contemporary_woodblock_scenery",
-          "label": "Contemporary Woodblock Scenery",
-          "prompt": "Style: Contemporary Woodblock Scenery.\nReference: Contemporary ukiyo-e illustration.\nVisual description: Confident carved contours, graphic color layering and subtle modern gradients combine with paper and woodblock texture. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Confident carved contours, graphic color layering and subtle modern gradients combine with paper and woodblock texture.",
-          "reference": "Contemporary ukiyo-e illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_clean_geometric_scenery",
-          "label": "Clean Geometric Scenery",
-          "prompt": "Style: Clean Geometric Scenery.\nReference: Geometric vector illustration.\nVisual description: Crisp vector contours, smooth color planes and restrained geometric simplification describe the supplied environment. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Crisp vector contours, smooth color planes and restrained geometric simplification describe the supplied environment.",
-          "reference": "Geometric vector illustration",
-          "image": ""
-        },
-        {
-          "id": "bg_precisionist_architecture",
-          "label": "Precisionist Architecture",
-          "prompt": "Style: Precisionist Architecture.\nReference: Precisionist architectural painting.\nVisual description: Sharp geometric boundaries, smooth tonal planes and meticulous structural lines emphasize environmental form. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Sharp geometric boundaries, smooth tonal planes and meticulous structural lines emphasize environmental form.",
-          "reference": "Precisionist architectural painting",
-          "image": ""
-        }
-      ]
-    },
-    {
-      "label": "Film and Photography",
-      "styles": [
-        {
-          "id": "bg_35mm_cinema",
-          "label": "35mm Cinema",
-          "prompt": "Style: 35mm Cinema.\nReference: 35mm motion-picture photography.\nVisual description: Naturalistic environmental detail, restrained film grain, smooth highlight roll-off and carefully balanced color grading. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Naturalistic environmental detail, restrained film grain, smooth highlight roll-off and carefully balanced color grading.",
-          "reference": "35mm motion-picture photography",
-          "image": ""
-        },
-        {
-          "id": "bg_black_and_white_film_noir",
-          "label": "Black-and-White Film Noir",
-          "prompt": "Style: Black-and-White Film Noir.\nReference: 1940s film noir cinematography.\nVisual description: Deep monochrome tonal separation, rich silver-grain texture and sharply controlled environmental contrast. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Deep monochrome tonal separation, rich silver-grain texture and sharply controlled environmental contrast.",
-          "reference": "1940s film noir cinematography",
-          "image": ""
-        },
-        {
-          "id": "bg_classic_technicolor",
-          "label": "Classic Technicolor",
-          "prompt": "Style: Classic Technicolor.\nReference: 1950s Technicolor films.\nVisual description: Rich three-strip color separation, dense saturated pigments and smooth analog tonal transitions in cinematic scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Rich three-strip color separation, dense saturated pigments and smooth analog tonal transitions in cinematic scenery.",
-          "reference": "1950s Technicolor films",
-          "image": ""
-        },
-        {
-          "id": "bg_1970s_film_realism",
-          "label": "1970s Film Realism",
-          "prompt": "Style: 1970s Film Realism.\nReference: 1970s New Hollywood cinematography.\nVisual description: Organic grain, slightly muted earthy colors and naturalistic material texture give scenery an analog cinematic finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Organic grain, slightly muted earthy colors and naturalistic material texture give scenery an analog cinematic finish.",
-          "reference": "1970s New Hollywood cinematography",
-          "image": ""
-        },
-        {
-          "id": "bg_1990s_indie_film",
-          "label": "1990s Indie Film",
-          "prompt": "Style: 1990s Indie Film.\nReference: 1990s independent cinema.\nVisual description: Fine 35mm grain, understated contrast and gently imperfect color response preserve an intimate cinematic texture. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Fine 35mm grain, understated contrast and gently imperfect color response preserve an intimate cinematic texture.",
-          "reference": "1990s independent cinema",
-          "image": ""
-        },
-        {
-          "id": "bg_architectural_photography",
-          "label": "Architectural Photography",
-          "prompt": "Style: Architectural Photography.\nReference: Professional architectural photography.\nVisual description: Precise environmental detail, natural material color, controlled highlights and clear realistic tonal depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Precise environmental detail, natural material color, controlled highlights and clear realistic tonal depth.",
-          "reference": "Professional architectural photography",
-          "image": ""
-        },
-        {
-          "id": "bg_interior_design_photography",
-          "label": "Interior Design Photography",
-          "prompt": "Style: Interior Design Photography.\nReference: Interior design photography.\nVisual description: Refined surface detail, neutral color reproduction and balanced tonal gradients create polished editorial environment photography. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Refined surface detail, neutral color reproduction and balanced tonal gradients create polished editorial environment photography.",
-          "reference": "Interior design photography",
-          "image": ""
-        },
-        {
-          "id": "bg_large_format_landscape_photo",
-          "label": "Large-Format Landscape Photo",
-          "prompt": "Style: Large-Format Landscape Photo.\nReference: Large-format landscape photography.\nVisual description: Fine natural textures, expansive tonal latitude and precise color separation render scenery with large-format clarity. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Fine natural textures, expansive tonal latitude and precise color separation render scenery with large-format clarity.",
-          "reference": "Large-format landscape photography",
-          "image": ""
-        },
-        {
-          "id": "bg_kodachrome_color",
-          "label": "Kodachrome Color",
-          "prompt": "Style: Kodachrome Color.\nReference: Kodachrome slide photography.\nVisual description: Deep warm reds, clear blues, fine analog grain and dense slide-film color give scenery a vintage photographic finish. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Deep warm reds, clear blues, fine analog grain and dense slide-film color give scenery a vintage photographic finish.",
-          "reference": "Kodachrome slide photography",
-          "image": ""
-        },
-        {
-          "id": "bg_velvia_landscape_color",
-          "label": "Velvia Landscape Color",
-          "prompt": "Style: Velvia Landscape Color.\nReference: Fujichrome Velvia landscape photography.\nVisual description: Rich emeralds, vivid chromatic separation and crisp fine-grained detail create saturated slide-film scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Rich emeralds, vivid chromatic separation and crisp fine-grained detail create saturated slide-film scenery.",
-          "reference": "Fujichrome Velvia landscape photography",
-          "image": ""
-        }
-      ]
-    },
-    {
-      "label": "3D and Game Backgrounds",
-      "styles": [
-        {
-          "id": "bg_hand_painted_3d",
-          "label": "Hand-Painted 3D",
-          "prompt": "Style: Hand-Painted 3D.\nReference: Hand-painted game environment art.\nVisual description: Solid environmental forms carry hand-painted textures, visible brush accents and softened stylized material shading. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Solid environmental forms carry hand-painted textures, visible brush accents and softened stylized material shading.",
-          "reference": "Hand-painted game environment art",
-          "image": ""
-        },
-        {
-          "id": "bg_cel_shaded_3d_scenery",
-          "label": "Cel-Shaded 3D Scenery",
-          "prompt": "Style: Cel-Shaded 3D Scenery.\nReference: Anime-style cel-shaded environments.\nVisual description: Three-dimensional environment forms use crisp stepped shadows, clean outlines and restrained painted texture. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Three-dimensional environment forms use crisp stepped shadows, clean outlines and restrained painted texture.",
-          "reference": "Anime-style cel-shaded environments",
-          "image": ""
-        },
-        {
-          "id": "bg_game_cinematic_scenery",
-          "label": "Game Cinematic Scenery",
-          "prompt": "Style: Game Cinematic Scenery.\nReference: Contemporary game-engine environment cinematics.\nVisual description: Detailed environment assets, physically coherent surfaces and polished realtime cinematic shading create immersive scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Detailed environment assets, physically coherent surfaces and polished realtime cinematic shading create immersive scenery.",
-          "reference": "Contemporary game-engine environment cinematics",
-          "image": ""
-        },
-        {
-          "id": "bg_photorealistic_3d",
-          "label": "Photorealistic 3D",
-          "prompt": "Style: Photorealistic 3D.\nReference: Photorealistic environment visualization.\nVisual description: Accurate material roughness, subtle surface imperfections and physically coherent reflections create realistic rendered scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Accurate material roughness, subtle surface imperfections and physically coherent reflections create realistic rendered scenery.",
-          "reference": "Photorealistic environment visualization",
-          "image": ""
-        },
-        {
-          "id": "bg_detailed_pbr_scenery",
-          "label": "Detailed PBR Scenery",
-          "prompt": "Style: Detailed PBR Scenery.\nReference: PBR game environment materials.\nVisual description: Distinct roughness, fine normal-map texture and physically consistent material response emphasize environmental surfaces. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Distinct roughness, fine normal-map texture and physically consistent material response emphasize environmental surfaces.",
-          "reference": "PBR game environment materials",
-          "image": ""
         },
         {
-          "id": "bg_low_poly_scenery",
-          "label": "Low-Poly Scenery",
-          "prompt": "Style: Low-Poly Scenery.\nReference: Low-poly game environment art.\nVisual description: Clearly visible polygon facets, simplified environmental shapes and restrained flat-shaded color create clean stylized scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Clearly visible polygon facets, simplified environmental shapes and restrained flat-shaded color create clean stylized scenery.",
-          "reference": "Low-poly game environment art",
+          "id": "bg_franco_belgian_ligne_claire_comic",
+          "label": "Franco-Belgian Ligne Claire Comic",
+          "prompt": "Franco-Belgian ligne claire comic, uniform clean outlines, flat colors, meticulous perspective",
+          "description": "Franco-Belgian ligne claire comic, uniform clean outlines, flat colors, meticulous perspective",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_voxel_scenery",
-          "label": "Voxel Scenery",
-          "prompt": "Style: Voxel Scenery.\nReference: Voxel environment art.\nVisual description: Small cubic building units, stepped silhouettes and carefully grouped voxel colors reinterpret the supplied environment. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Small cubic building units, stepped silhouettes and carefully grouped voxel colors reinterpret the supplied environment.",
-          "reference": "Voxel environment art",
+          "id": "bg_european_watercolor_graphic_novel",
+          "label": "European Watercolor Graphic Novel",
+          "prompt": "European watercolor graphic novel, expressive ink contours, earthy washes, visible paper grain",
+          "description": "European watercolor graphic novel, expressive ink contours, earthy washes, visible paper grain",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_16_bit_pixel_backgrounds",
-          "label": "16-Bit Pixel Backgrounds",
-          "prompt": "Style: 16-Bit Pixel Backgrounds.\nReference: 16-bit console background art.\nVisual description: Crisp pixel clusters, limited console-era colors and deliberate dithering describe environmental texture and layered depth. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Crisp pixel clusters, limited console-era colors and deliberate dithering describe environmental texture and layered depth.",
-          "reference": "16-bit console background art",
+          "id": "bg_american_superhero_comic",
+          "label": "American Superhero Comic",
+          "prompt": "American superhero comic, bold inks, halftone shading, dynamic architectural perspective",
+          "description": "American superhero comic, bold inks, halftone shading, dynamic architectural perspective",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_pre_rendered_adventure_backgrounds",
-          "label": "Pre-Rendered Adventure Backgrounds",
-          "prompt": "Style: Pre-Rendered Adventure Backgrounds.\nReference: 1990s pre-rendered adventure-game backgrounds.\nVisual description: Detailed pre-rendered environmental surfaces, softly baked shading and subtle pixel-era color reduction evoke classic adventure scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Detailed pre-rendered environmental surfaces, softly baked shading and subtle pixel-era color reduction evoke classic adventure scenery.",
-          "reference": "1990s pre-rendered adventure-game backgrounds",
+          "id": "bg_black_white_japanese_manga",
+          "label": "Black-and-White Japanese Manga",
+          "prompt": "Black-and-white Japanese manga, detailed pen backgrounds, screentone gradients, crisp cross-hatching",
+          "description": "Black-and-white Japanese manga, detailed pen backgrounds, screentone gradients, crisp cross-hatching",
+          "reference": "",
           "image": ""
         },
         {
-          "id": "bg_ps1_retro_scenery",
-          "label": "PS1 Retro Scenery",
-          "prompt": "Style: PS1 Retro Scenery.\nReference: PlayStation-era survival-horror environments.\nVisual description: Low-resolution environmental textures, visible polygon edges, restrained dithering and imperfect affine-style detail create retro 3D scenery. Apply this rendering to the supplied environment, preserving its layout, objects, perspective, time and weather.",
-          "description": "Low-resolution environmental textures, visible polygon edges, restrained dithering and imperfect affine-style detail create retro 3D scenery.",
-          "reference": "PlayStation-era survival-horror environments",
+          "id": "bg_art_nouveau_fantasy_comic",
+          "label": "Art Nouveau Fantasy Comic",
+          "prompt": "Art Nouveau fantasy comic, flowing ink contours, botanical ornament, muted metallic accents",
+          "description": "Art Nouveau fantasy comic, flowing ink contours, botanical ornament, muted metallic accents",
+          "reference": "",
           "image": ""
         }
       ]
@@ -845,10 +210,9 @@
   ],
   "sources": [
     {
-      "name": "Neon's Style Explorer",
-      "url": "https://github.com/Neon-Sparks/ComfyUI-NeonsStyleExplorer",
-      "credit": "100 environment styles adapted from the upstream catalog under the MIT license; see NEON_STYLES_LICENSE.txt. Original source revisions are recorded in that license file.",
-      "style_count": 100
+      "name": "VNCCS Backgrounds Dataset",
+      "credit": "25 unique style prompts selected from the user-provided anime background prompt dataset.",
+      "style_count": 25
     }
   ],
   "aliases": {}

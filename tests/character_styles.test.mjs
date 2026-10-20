@@ -919,7 +919,7 @@ test('the complete style collection stays in one scrollable gallery without page
     assert.equal(ctx.snapshots.at(-1).style_prompt, 'Prompt 99');
 });
 
-test("Background gallery generates all 100 covers through its own route and restores their URLs", async () => {
+test("Background gallery generates all 25 dataset covers through its own route and restores their URLs", async () => {
     const data = JSON.parse(readFileSync(new URL("../background_template/background_styles.json", import.meta.url), "utf8"));
     const styles = data.groups.flatMap(group => group.styles);
     const base = "/vnccs/background-creator/styles";
@@ -942,14 +942,14 @@ test("Background gallery generates all 100 covers through its own route and rest
     assert.equal(generate.disabled, false);
     const before = structuredClone(info);
     assert.equal(await ctx.picker.generatePreviews(), true);
-    assert.equal(calls.filter(call => call.options?.method === "POST").length, 100);
+    assert.equal(calls.filter(call => call.options?.method === "POST").length, 25);
     assert.ok(calls.every(call => call.url === base || call.url === `${base}/preview`));
-    assert.equal(walk(find(ctx.host, "vnccs-style-grid")).filter(el => el.tagName === "img").length, 100);
+    assert.equal(walk(find(ctx.host, "vnccs-style-grid")).filter(el => el.tagName === "img").length, 25);
     assert.deepEqual(info, before);
     assert.equal(payload.editor.generation.seed, 17);
     ctx.picker.close();
     await find(ctx.picker.root, "vnccs-style-summary").onclick();
-    assert.equal(walk(find(ctx.host, "vnccs-style-grid")).filter(el => el.tagName === "img").length, 100);
+    assert.equal(walk(find(ctx.host, "vnccs-style-grid")).filter(el => el.tagName === "img").length, 25);
     ctx.teardown();
 });
 
