@@ -297,6 +297,7 @@ def test_defaults_are_isolated_and_only_qi2_fields_survive():
 
 @pytest.mark.parametrize("data", [[], "{}", {"attributes": []}, {"generation": []},
     {"scene_description": 1}, {"scene_description": "x" * 40001}, {"prompt": 1}, {"prompt": "x" * 40001}, {"description": 1}, {"description": "x" * 8001}, {"style": "bad\x00style"},
+    {"custom_style": None}, {"custom_style": "x" * 16001}, {"custom_style": "bad\x00style"},
     {"aspect": "not-an-aspect"}, {"aspect": []}, {"attributes": {"objects": ["desk"]}},
     {"attributes": {"composition": []}}, {"attributes": {"composition": "x" * 2001}},
     {"generation": {"diffusion_model_name": "../secret"}}, {"generation": {"diffusion_model_name": ""}},
@@ -325,7 +326,8 @@ def test_rejects_malformed_settings(data):
 def test_dimensions_follow_aspect_and_bounded_pixel_budget(aspect, mp):
     width, height = generation.dimensions({"aspect": aspect, "generation": {"resolution_mp": mp}})
     a, b = map(int, aspect.split(":"))
-    assert width % 16 == height % 16 == 0
+    assert width % 8 == height % 8 == 0
+    assert width * b == height * a
     assert 64 <= width <= 4096 and 64 <= height <= 4096
     assert width * height <= 16_000_000
     assert width / height == pytest.approx(a / b, rel=0.08)
@@ -444,6 +446,7 @@ def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(ru
               "attributes": {"time": "Night", "scene_type": "Interior"},
               "negative": "nsfw, worst quality, bad anatomy, watermark, jpeg artifact",
               "generation": {"model_type": "moss", "prompt_enhance": enhance, "turbo": True}}
+    runtime.decoded_size[0] = generation.dimensions(editor)
     image, metadata = generation.generate_image(editor, "moss-t2i", threading.Event())
     calls, names = dict(runtime.calls), [name for name, _ in runtime.calls]
     assert calls["UNETLoader"]["unet_name"] == "moss_image_sft_int8_convrot.safetensors"
@@ -469,6 +472,7 @@ def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(ru
 
 def test_switching_generation_families_reloads_assets_and_keeps_text_encoders_fresh(runtime):
     for model_type in ("moss", "moss", "qi2"):
+        runtime.decoded_size[0] = generation.dimensions({"generation": {"model_type": model_type}})
         generation.generate_image({"generation": {"model_type": model_type, "prompt_enhance": False}}, model_type, threading.Event())
     assert [value["unet_name"] for name, value in runtime.calls if name == "UNETLoader"] == [
         generation.MOSS_ASSETS["diffusion_models"], generation.ASSETS["diffusion_models"]]
@@ -523,10 +527,15 @@ def test_turbo_uses_main_project_adapter_and_advanced_sampler(runtime, monkeypat
 
 
 @pytest.mark.parametrize("settings", [{"turbo": True}, {"turbo": True, "steps": 6, "cfg": 2}])
-def test_turbo_rejects_unsupported_schedule_before_loading(runtime, settings):
-    with pytest.raises(ValueError, match="six steps and CFG 1"):
-        generation.generate_image({"generation": settings}, "turbo-bad", threading.Event())
-    assert runtime.calls == []
+def test_turbo_normalizes_schedule_like_character_creator(runtime, settings):
+    adapter = types.SimpleNamespace(apply_viggle_turbo_lora=lambda model, name, strength: model)
+    monkey = mock.patch.dict(sys.modules, {generation.__package__ + ".character_generator": adapter,
+        generation.__package__ + ".qi2_viggle": types.SimpleNamespace(viggle_turbo_sigmas=lambda latent: [1, 0])})
+    with monkey:
+        _image, metadata = generation.generate_image({"generation": settings}, "turbo-normalized", threading.Event())
+    assert metadata["editor"]["generation"]["steps"] == 6
+    assert metadata["editor"]["generation"]["cfg"] == 1
+    assert "SamplerCustomAdvanced" in [name for name, _ in runtime.calls]
 
 
 def test_cancelled_pending_job_never_loads_models_or_interrupts_other_jobs(runtime):
@@ -938,16 +947,31 @@ def test_node_outputs_the_uploaded_background_without_inference(library, monkeyp
     assert node.OUTPUT_IS_LIST == (False, True)
     document = storage.create_background("Output", generation.normalize_editor({}))
     document = storage.add_image(document["background_id"], Image.new("RGB", (160, 80), "blue"), {"source": "upload"}, document["revision"])
-    monkeypatch.setattr(storage, "_preview_tensor", lambda source: np.asarray(Image.open(source))[None])
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(from_numpy=lambda pixels:
+        types.SimpleNamespace(unsqueeze=lambda axis: np.expand_dims(pixels, axis))))
     inference = mock.Mock(side_effect=AssertionError("Uploaded backgrounds must not run inference"))
     monkeypatch.setattr(storage, "generate_image", inference)
     raw = json.dumps({"schema_version": 2, "background_id": document["background_id"]})
     result = node.create_background(background_data=raw)
     tensor, prompts = result["result"]
     assert len(prompts) == 3 and tensor.shape == (1, 80, 160, 3)
+    assert tensor.dtype == np.float32
+    np.testing.assert_array_equal(tensor[0, 0, 0], [0.0, 0.0, 1.0])
     with pytest.raises(ValueError, match="Select or create"):
         node.create_background()
     inference.assert_not_called()
+
+
+def test_preview_uses_real_torch_rgb_batch_when_available(library):
+    torch = pytest.importorskip("torch")
+    document = storage.create_background("Real tensor")
+    document = storage.add_image(document["background_id"], Image.new("RGB", (7, 5), (255, 128, 0)),
+                                 {"source": "upload"}, document["revision"])
+    result = storage.VNCCS_BackgroundCreator().create_background(background_data=json.dumps({
+        "schema_version": 2, "background_id": document["background_id"]}))["result"][0]
+    assert isinstance(result, torch.Tensor) and result.dtype == torch.float32
+    assert tuple(result.shape) == (1, 5, 7, 3)
+    torch.testing.assert_close(result[0, 0, 0], torch.tensor([1.0, 128 / 255, 0.0]))
 
 
 def test_removed_import_operation_cannot_change_saved_backgrounds(library):
@@ -962,7 +986,7 @@ def test_removed_import_operation_cannot_change_saved_backgrounds(library):
 
 def background_run_state(document, **changes):
     return {"schema_version": 2, "background_id": document["background_id"], "selected_image_id": document["selected_image_id"],
-            "editor": copy.deepcopy(document["editor"]), **changes}
+            "revision": document["revision"], "editor": copy.deepcopy(document["editor"]), **changes}
 
 
 def run_background(document, **changes):
@@ -1164,11 +1188,14 @@ def test_selected_diffusion_model_rekeys_cache_and_preserves_five_lora_slots(run
     assert len([name for name, _ in runtime.calls if name == "UNETLoader"]) == 2
 
 
-def test_turbo_model_cannot_apply_a_second_acceleration_adapter(runtime):
-    with pytest.raises(ValueError, match="already includes acceleration"):
-        generation.generate_image({"generation": {"diffusion_model_name": "qwen_image_2.1_turbo_int8_convrot.safetensors",
-            "turbo": True, "steps": 6}}, "double-turbo", threading.Event())
-    assert not runtime.calls
+def test_turbo_model_disables_second_adapter_and_preserves_explicit_steps(runtime):
+    _image, metadata = generation.generate_image({"generation": {
+        "diffusion_model_name": "qwen_image_2.1_turbo_int8_convrot.safetensors", "turbo": True, "steps": 10, "cfg": 1.5}},
+        "built-in-turbo", threading.Event())
+    settings = metadata["editor"]["generation"]
+    assert (settings["turbo"], settings["steps"], settings["cfg"]) == (False, 10, 1.5)
+    assert "KSampler" in [name for name, _ in runtime.calls]
+    assert "SamplerCustomAdvanced" not in [name for name, _ in runtime.calls]
 
 
 def test_requested_four_line_prompt_and_legacy_scene_migration():
@@ -1390,6 +1417,7 @@ def test_complete_prompts_are_logged_at_info_before_encoding(runtime, monkeypatc
     negative = ("No people, text or logos. " * 20).strip()
     editor = {"style": "Anime, cel shaded", "scene_description": description, "negative": negative,
               "generation": {"model_type": model_type, "prompt_enhance": enhance}}
+    runtime.decoded_size[0] = generation.dimensions(editor)
     raw_result = "Style: Wrong style\nTime: Night\nInterior/Exterior: Exterior\nScene description: " + enhanced.strip()
     expected = generation.compose_prompt({**editor, "scene_description": enhanced if enhance else description})
     def call(name, **kwargs):
@@ -1540,3 +1568,184 @@ def test_routes_have_no_model_cg_or_legacy_endpoints(routes):
     assert routes
     for method, path in routes:
         assert not any(part in path.split("/") for part in ("models", "cg", "legacy"))
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_stale_workflow_cannot_replace_newer_saved_editor(workspace, legacy):
+    document = job_with_image(workspace)
+    state = background_run_state(document)
+    if legacy:
+        state.pop("revision")
+    newer = copy.deepcopy(document["editor"])
+    newer["scene_description"] = "Newer scene saved by the other editor"
+    storage.save_background(document["background_id"], newer, document["revision"])
+    before = files(storage.root())
+    with pytest.raises(storage.BackgroundConflictError, match="changed"):
+        storage.VNCCS_BackgroundCreator().create_background(background_data=json.dumps(state))
+    assert files(storage.root()) == before
+    assert storage.load_background(document["background_id"])["editor"] == newer
+    workspace.generated.assert_not_called()
+
+
+@pytest.mark.parametrize("revision", [None, True, 0, -1, 1.5, "2"])
+def test_workflow_revision_must_be_a_positive_integer(revision):
+    raw = json.dumps({"schema_version": 2, "revision": revision})
+    assert storage.VNCCS_BackgroundCreator.VALIDATE_INPUTS(raw) is not True
+
+
+def test_workflow_reports_its_committed_revision(workspace):
+    result = run_background(workspace.document)
+    document = storage.load_background(workspace.document["background_id"])
+    assert result["ui"]["background_preview"][0]["revision"] == document["revision"]
+
+
+def test_catalog_and_healthy_documents_survive_an_unreadable_neighbor(routes, workspace, monkeypatch):
+    damaged = storage.create_background("Damaged neighbor", {})
+    path = document_path(damaged)
+    path.write_bytes(b"{broken")
+    path.with_suffix(".json.backup").write_bytes(b"[]")
+    healthy = workspace.document
+    monkeypatch.setattr(storage, "_directories", lambda: [path.parent, document_path(healthy).parent])
+    before = files(storage.root())
+    result = call(routes, "GET", "/backgrounds", Request())
+    assert result.status == 200
+    catalog = json.loads(result.text)
+    assert [item["background_id"] for item in catalog["backgrounds"]] == [healthy["background_id"]]
+    assert catalog["errors"][0]["name"] == damaged["name"]
+    assert "original files are preserved" in catalog["errors"][0]["error"]
+    assert storage.load_background(healthy["background_id"]) == healthy
+    assert files(storage.root()) == before
+    changed = storage.save_background(healthy["background_id"], {"scene_description": "Healthy edit"}, healthy["revision"])
+    assert changed["editor"]["scene_description"] == "Healthy edit"
+    with pytest.raises(storage.BackgroundStorageError, match="original files are preserved"):
+        storage.save_background(damaged["background_id"], {}, damaged["revision"])
+    assert path.read_bytes() == b"{broken" and path.with_suffix(".json.backup").read_bytes() == b"[]"
+
+
+@pytest.mark.parametrize("aspect, expected", [("9:16", (1080, 1920)), ("16:9", (1920, 1080))])
+def test_resolution_matches_creator_scale_and_exact_aspect(aspect, expected):
+    assert generation.dimensions({"aspect": aspect, "generation": {"resolution_mp": 2}}) == expected
+    for model in ("qi2", "moss"):
+        width, height = generation.dimensions({"aspect": aspect, "generation": {"model_type": model, "resolution_mp": 4}})
+        a, b = map(int, aspect.split(":"))
+        assert width * b == height * a
+        if model == "moss":
+            assert width % 16 == height % 16 == 0
+
+
+def test_turbo_defaults_and_previous_settings_survive_profiles():
+    settings = generation.normalize_editor({"generation": {
+        "diffusion_model_name": "QI2/qwen_image_2.1_turbo_int8_convrot.safetensors"}})["generation"]
+    assert (settings["steps"], settings["cfg"], settings["turbo"]) == (8, 1, False)
+    previous = {"steps": 40, "cfg": 2.5}
+    editor = generation.normalize_editor({"generation": {"turbo": True, "steps": 7, "cfg": 2,
+        "seed_mode": "randomize", "turbo_previous_settings": previous}})
+    assert editor["generation"]["turbo_previous_settings"] == previous
+    assert editor["generation"]["seed_mode"] == "randomize"
+    assert generation.normalize_editor(editor) == editor
+    for invalid in ({"seed_mode": "bad"}, {"turbo_previous_settings": []}):
+        with pytest.raises(ValueError):
+            generation.normalize_editor({"generation": invalid})
+
+
+def test_turbo_resolves_current_control_center_catalog_path(monkeypatch):
+    from nodes import vnccs_control_center as center
+    entry = {"name": "Qwen Image 2.1 Viggle Turbo", "kind": "QI2", "type": "TurboLora",
+             "local_path": "models/loras/QI2/Viggle/current.safetensors"}
+    monkeypatch.setattr(center, "_get_cc_config", lambda repo: {"lora": [entry]})
+    monkeypatch.setattr(center, "_apply_active_installed_paths", lambda value: value)
+    monkeypatch.setattr(generation, "_installed", lambda category: ["QI2/Viggle/current.safetensors"] if category == "loras" else [])
+    assert generation._turbo_name() == "QI2/Viggle/current.safetensors"
+    config = generation.configuration()
+    assert config["turbo_lora"]["status"] == "installed"
+    monkeypatch.setattr(generation, "_installed", lambda category: [])
+    assert generation.configuration()["turbo_lora"]["status"] == "missing"
+
+
+def test_style_dropdown_catalog_and_prompts_never_forward_character_references(monkeypatch):
+    from nodes import character_styles
+    monkeypatch.setattr(character_styles, "load_user_styles", lambda: [{
+        "id": "user_watercolor", "label": "My watercolor", "description": "Short summary", "reference": "Alice Example",
+        "prompt": "Ink wash and watercolor\nReference: Alice Example; Bob Example\nPaper grain and soft edges"}])
+    choices = generation.style_choices()
+    shonen = next(item for item in choices if item["id"] == "shonen_anime")
+    assert "Confident" in shonen["prompt"] and "Naruto" not in shonen["prompt"]
+    custom = next(item for item in choices if item["id"] == "user_watercolor")
+    assert custom["prompt"] == "Ink wash and watercolor\nPaper grain and soft edges"
+    assert set(custom) == {"id", "label", "prompt"}
+    editor = generation.normalize_editor({"style_id": custom["id"], "style": custom["prompt"]})
+    assert editor["style_id"] == custom["id"]
+    prompt = generation.compose_prompt(editor)
+    assert "Alice Example" not in prompt and "Reference:" not in prompt and "Paper grain" in prompt
+    assert "Alice Example" not in generation.compose_prompt({"style": "Ink wash\nReference: Alice Example"})
+    assert len(generation.normalize_editor({"style": "x" * 3000})["style"]) == 3000
+
+
+def test_random_seed_resolves_once_for_preview_and_workflow(workspace, monkeypatch):
+    from _vnccs import utils
+    seeds = iter([101, 102])
+    monkeypatch.setattr(utils, "generate_seed", lambda value: next(seeds))
+    editor = generation.normalize_editor({"generation": {"seed_mode": "randomize", "seed": 7}})
+    assert generation._resolve_editor_seed(editor)["generation"]["seed"] == 101
+    assert generation._resolve_editor_seed(editor, True)["generation"]["seed"] == 7
+    document = workspace.document
+    payload = job_payload(document, "background", editor=editor, _vnccs_seed_resolved=True)
+    generation.start_job(document["background_id"], payload)
+    workspace.run_pending()
+    assert workspace.generated.call_args.args[0]["generation"]["seed"] == 7
+    assert editor["generation"]["seed"] == 7
+    assert generation._resolve_editor_seed(editor)["generation"]["seed"] == 102
+
+
+@pytest.mark.parametrize("enhance", [False, True])
+def test_style_references_never_reach_prompt_enhancement_or_qwen_encoding(runtime, enhance):
+    editor = {"style_id": "user_ink", "style": "Ink wash\nReference: Alice Example; Bob Example\nSoft paper grain",
+              "scene_description": "Empty library", "generation": {"prompt_enhance": enhance}}
+    _image, metadata = generation.generate_image(editor, "style-without-reference", threading.Event())
+    for name, values in runtime.calls:
+        if name in {"TextGenerate", "TextEncodeQwenImage21"}:
+            assert "Alice Example" not in values["prompt"] and "Bob Example" not in values["prompt"]
+            assert "Reference:" not in values["prompt"] and "Soft paper grain" in values["prompt"]
+    assert "Alice Example" not in metadata["prompt"] and "Reference:" not in metadata["prompt"]
+
+
+def test_custom_style_draft_survives_background_json_without_entering_selected_prompt(library):
+    editor = generation.normalize_editor({"style_id": "watercolor", "style": "Watercolor washes",
+                                          "custom_style": "My authored ink style", "negative": "text, watermark"})
+    document = storage.create_background("Saved custom style", editor)
+    updated = storage.save_background(document["background_id"], generation.normalize_editor(editor), document["revision"])
+    restored = generation.normalize_editor(storage.load_background(document["background_id"])["editor"])
+    assert restored["custom_style"] == "My authored ink style"
+    assert restored["negative"] == "text, watermark"
+    assert "My authored ink style" not in generation.compose_prompt(restored)
+    assert "Style: Watercolor washes" in generation.compose_prompt(restored)
+    assert updated["revision"] == document["revision"] + 1
+
+
+def test_corrupt_user_styles_do_not_block_background_configuration_or_replace_authored_files(library, monkeypatch, tmp_path):
+    from nodes import character_styles
+    path = tmp_path / "character_styles.user.json"
+    original = b'{"styles": [broken'
+    path.write_bytes(original)
+    monkeypatch.setattr(character_styles, "USER_CHARACTER_STYLES_PATH", str(path))
+    monkeypatch.setattr(generation, "_turbo_entry", lambda: None)
+    document = storage.create_background("Healthy room", generation.normalize_editor({"style": "My saved rendering"}))
+    before = files(library)
+    config = generation.configuration()
+    assert config["styles"] == [] and config["styles_error"]
+    assert "model_types" in config and "samplers" in config
+    assert storage.load_background(document["background_id"])["editor"]["style"] == "My saved rendering"
+    assert files(library) == before and path.read_bytes() == original
+
+
+@pytest.mark.parametrize("model_type", ["qi2", "moss"])
+def test_negative_prompt_reaches_each_encoder_without_entering_enhanced_scene(runtime, model_type):
+    editor = {"scene_description": "My empty room", "negative": "text, watermark, blur",
+              "generation": {"model_type": model_type}}
+    runtime.decoded_size[0] = generation.dimensions(editor)
+    _image, metadata = generation.generate_image(editor, "negative-prompt", threading.Event())
+    if model_type == "qi2":
+        assert next(values for name, values in runtime.calls if name == "TextEncodeQwenImage21")["negative_prompt"] == editor["negative"]
+    else:
+        assert [values["text"] for name, values in runtime.calls if name == "CLIPTextEncode"][-1] == editor["negative"]
+    assert metadata["negative"] == editor["negative"] and editor["negative"] not in metadata["prompt"]

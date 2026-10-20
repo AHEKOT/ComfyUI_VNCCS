@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { vnccsApi, watchConnection } from "./vnccs_transport.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { presetSelection } from "./character_presets.mjs?v=legacy-tags-1";
-import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, createTraitInput, injectStyles, showModal, showMessage, registerCleanup, generateRandomSeed, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, animateWizardRows, createControlCenterClient } from "./vnccs_common.js";
+import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, createTraitInput, injectStyles, showModal, showMessage, registerCleanup, createRequestGuard, generateRandomSeed, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, animateWizardRows, createControlCenterClient, installResolvedSeedTransport } from "./vnccs_common.js";
 
 const CREATOR_ZOOM = 0.67;
 const GENERATION_PANEL_WIDTH = (1280 / CREATOR_ZOOM - 24) * .35;
@@ -60,6 +60,7 @@ ${SAKURA_CREATOR_CONTROL_CSS}
 .vnccs-background-creator .bg-attributes>.bg-description { flex:1 1 180px; min-height:180px; }
 .vnccs-background-creator .bg-description textarea { flex:1; min-height:140px; resize:none; }
 .vnccs-background-creator .bg-description textarea:focus { background:rgba(255,255,255,0.04); box-shadow:none; }
+.vnccs-background-creator .bg-negative textarea { flex:none; height:64px; min-height:64px; max-height:64px; resize:none; }
 .vnccs-background-creator .bg-image-dialog { width:min(1400px,calc(100% - 32px)); max-width:min(1400px,calc(100% - 32px)); height:min(900px,calc(100% - 32px)); }
 .vnccs-background-creator .bg-image-viewport { position:relative; flex:1; min-height:0; overflow:hidden; touch-action:none; cursor:grab; }
 .vnccs-background-creator .bg-image-viewport.is-dragging { cursor:grabbing; }
@@ -84,7 +85,7 @@ export const DEFAULT_EDITOR = Object.freeze({
     description: "", scene_description: "", prompt: "", attributes: { scene_type: "Interior", time: "Day" },
     variants: ["Morning", "Evening", "Night"].map(name => ({ id: name.toLowerCase(), name, time: name, weather: "", additional_details: "" })),
     aspect: "16:9", style: "Hand-painted anime", aesthetics: "", negative: "",
-    generation: { model_type: "qi2", steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, resolution_mp: 2, turbo: false, prompt_enhance: true, cache_device: "gpu", cache_dtype: "int8", lora_stack: [], diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors" },
+    generation: { model_type: "qi2", steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, resolution_mp: 2, seed_mode: "fixed", turbo: false, turbo_previous_settings: null, prompt_enhance: true, cache_device: "gpu", cache_dtype: "int8", lora_stack: [], diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors" },
 });
 export const MOSS_GENERATION = Object.freeze({ model_type: "moss", steps: 25, cfg: 2.5, sampler: "er_sde", scheduler: "simple", turbo: false,
     diffusion_model_name: "moss_image_sft_int8_convrot.safetensors" });
@@ -106,7 +107,13 @@ export function legacySceneDescription(editor) {
 export function editorDefaults(value = {}) {
     const editor = { ...clone(DEFAULT_EDITOR), ...value, attributes: { ...DEFAULT_EDITOR.attributes, ...value.attributes },
         generation: { ...clone(DEFAULT_EDITOR.generation), ...(value.generation?.model_type === "moss" ? MOSS_GENERATION : {}), ...value.generation } };
-    if (editor.generation.model_type === "moss") editor.generation.turbo = false;
+    const settings = editor.generation;
+    if (!["fixed", "randomize"].includes(settings.seed_mode)) throw new Error("Unsupported background seed mode.");
+    if (settings.model_type === "moss") settings.turbo = false;
+    else if (isTurboModel(settings.diffusion_model_name)) {
+        settings.turbo = false;
+        if (!Object.hasOwn(value.generation || {}, "steps")) settings.steps = 8;
+    } else if (settings.turbo) { settings.steps = 6; settings.cfg = 1; }
     if (!["qi2", "moss"].includes(editor.generation.model_type)) throw new Error("Unsupported background model type.");
     if (!Object.hasOwn(value, "scene_description")) {
         const parsed = value.prompt && parsePrompt(value.prompt);
@@ -125,16 +132,18 @@ export function editorDefaults(value = {}) {
 export function composePrompt(editor) {
     const description = editor.scene_description ?? legacySceneDescription(editor);
     const body = [description, editor.aesthetics && !description.includes(editor.aesthetics) ? editor.aesthetics : ""].filter(Boolean).join("\n");
-    return `Style: ${promptLine(editor.style)}\nTime: Day\nInterior/Exterior: ${promptLine(editor.attributes.scene_type)}\nScene description: ${promptLine(body)}`;
+    const style = String(editor.style || "").split(/\r?\n/).filter(line => !/^\s*(?:Style )?Reference\s*:/i.test(line)).join("\n");
+    return `Style: ${promptLine(style)}\nTime: Day\nInterior/Exterior: ${promptLine(editor.attributes.scene_type)}\nScene description: ${promptLine(body)}`;
 }
 
-const isTurboModel = name => /qwen.*2[._]1.*turbo/i.test(name || "");
+const isTurboModel = name => String(name || "").replace(/\\/g, "/").split("/").at(-1) === "qwen_image_2.1_turbo_int8_convrot.safetensors";
 const modelPath = entry => String(entry.local_path || "").replace(/\\/g, "/").replace(/^models\/[^/]+\//, "");
 
 export function readState(raw) {
     if (typeof raw !== "string" || raw.length > 256 * 1024) throw new Error("Background Creator state is too large.");
     const value = JSON.parse(raw);
     if (!value || Array.isArray(value) || value.schema_version !== 2) throw new Error("Unsupported Background Creator workflow state.");
+    if (Object.hasOwn(value, "revision") && (!Number.isSafeInteger(value.revision) || value.revision < 1)) throw new Error("Invalid saved background revision.");
     if (value.background_name != null && (typeof value.background_name !== "string" || [...value.background_name].length > 96)) throw new Error("Invalid saved background name.");
     for (const key of ["background_id", "selected_image_id"]) {
         if (value[key] != null && (typeof value[key] !== "string" || (value[key] && !/^[a-f0-9]{32}$/.test(value[key])))) throw new Error("Invalid background asset reference.");
@@ -160,7 +169,6 @@ const selectValue = (select, value) => {
     }
     select.value = value ?? "";
 };
-const input = (label, path, type = "text", extra = "") => `<label class="bg-field"><span>${label}</span><input type="${type}" data-setting="${path}" ${extra}></label>`;
 const compactField = (label, control) => `<label class="vnccs-common-creator-gen-param-field"><span class="vnccs-common-creator-label">${label}</span>${control}</label>`;
 const validNumber = control => control.value.trim() !== "" && Number.isFinite(Number(control.value)) && control.validity?.valid !== false;
 const toggleCard = (label, path) => `<label class="vnccs-common-creator-model-card is-installed" data-setting-card="${path}"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">${label}</span><span class="vnccs-common-creator-model-card-status" data-toggle-status></span><span class="vnccs-common-creator-toggle vnccs-common-creator-model-card-toggle"><input type="checkbox" data-setting="${path}" aria-label="${label}"><span class="vnccs-common-creator-toggle-track"></span><span class="vnccs-common-creator-toggle-thumb"></span></span></span></label>`;
@@ -170,6 +178,7 @@ export class BackgroundCreatorWidget {
         this.node = node; this.api = api;
         this.state = null; this.document = null;
         this.epoch = 0; this.restoring = true; this.busy = false; this.disposed = false;
+        this.workflowBusy = true; this.beginWorkflowStatusRequest = createRequestGuard(node);
         this.events = new AbortController(); this.operations = Promise.resolve(); this.saveSerial = Promise.resolve(); this.dialogs = new Set();
         this.container = document.createElement("div");
         this.container.className = "vnccs-background-creator";
@@ -184,9 +193,10 @@ export class BackgroundCreatorWidget {
                 <div class="bg-variation-editor" data-variation-editor hidden><div class="bg-variation-editor-head"><label><span class="vnccs-common-creator-label">Variant name</span><input class="vnccs-common-creator-input" data-variation-name aria-label="Variant name" maxlength="96"></label><button type="button" class="vnccs-common-creator-model-card-download" data-close-variation>Close</button></div><div class="bg-variation-fields" data-variation-fields></div></div>
                 </section>
                 <section class="bg-panel bg-attributes"><div class="vnccs-common-creator-section-title">Scene attributes</div><button class="primary bg-wide" data-wizard>Background wizard</button>
-                    ${input("Style", "style", "text", 'placeholder="Anime, digital art, cel shaded"')}
+                    <label class="bg-field"><span>Style</span><select data-style aria-label="Style"><option value="">Custom</option></select><input type="text" data-setting="style" aria-label="Custom style description" maxlength="16000" placeholder="Describe the visual rendering"></label>
                     <div class="bg-field"><span>Interior/Exterior</span><div class="bg-segments" data-trait="scene_type"><button data-value="Interior">Interior</button><button data-value="Exterior">Exterior</button></div></div>
                     <label class="bg-field bg-description"><span>Scene description</span><textarea data-setting="scene_description" rows="12" placeholder="Describe the room or landscape, composition, objects and lighting."></textarea></label>
+                    <label class="bg-field bg-negative"><span>Negative Prompt</span><textarea data-setting="negative" rows="2" maxlength="8000" aria-label="Negative prompt" placeholder="Optional: unwanted details or artifacts."></textarea></label>
                 </section>
                 <section class="bg-panel bg-generation"><div class="vnccs-common-creator-section-title">Generation</div>
                     <div class="vnccs-common-creator-tab-row" style="--tabs:2" data-model-types role="group" aria-label="Generation model type"><button class="vnccs-common-creator-tab" data-model-type="qi2">Qwen Image 2.1</button><button class="vnccs-common-creator-tab" data-model-type="moss">Moss</button></div>
@@ -201,7 +211,7 @@ export class BackgroundCreatorWidget {
                         ${compactField("CFG", '<input class="vnccs-common-creator-gen-param-input" type="number" min="0" max="30" step="0.1" data-setting="generation.cfg">')}
                         ${compactField("Scheduler", '<select class="vnccs-common-creator-gen-param-select" data-setting="generation.scheduler"><option>simple</option></select>')}
                     </div>
-                    <div class="vnccs-common-creator-field"><span class="vnccs-common-creator-label">Seed</span><div class="vnccs-common-creator-seed-row"><input aria-label="Generation seed" class="vnccs-common-creator-gen-param-input" type="number" min="0" max="9007199254740991" data-setting="generation.seed"><button type="button" class="vnccs-common-creator-seed-dice-btn" data-random="generation.seed" aria-label="Randomize generation seed"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.4" fill="currentColor"/><circle cx="15.5" cy="8.5" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="8.5" cy="15.5" r="1.4" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.4" fill="currentColor"/></svg></button></div></div>
+                    <div class="vnccs-common-creator-field"><span class="vnccs-common-creator-label">Seed</span><div class="vnccs-common-creator-seed-row"><input aria-label="Generation seed" class="vnccs-common-creator-gen-param-input" type="number" min="0" max="9007199254740991" data-setting="generation.seed"><button type="button" class="vnccs-common-creator-seed-dice-btn" data-random="generation.seed" aria-label="Use random seed" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5" stroke="currentColor" stroke-width="2"/><circle cx="8.5" cy="8.5" r="1.4" fill="currentColor"/><circle cx="15.5" cy="8.5" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="8.5" cy="15.5" r="1.4" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1.4" fill="currentColor"/></svg></button></div></div>
                     <div class="vnccs-common-creator-qi2-cache" style="display:grid" data-qwen-only><div class="vnccs-common-creator-qi2-cache-title">Qwen Image 2.1 Cache</div>
                         ${compactField("Device", `<select class="vnccs-common-creator-gen-param-select" data-setting="generation.cache_device">${options(["gpu", "auto", "cpu", "off"])}</select>`)}
                         ${compactField("Dtype", `<select class="vnccs-common-creator-gen-param-select" data-setting="generation.cache_dtype">${options(["int8", "default", "int4"])}</select>`)}
@@ -218,7 +228,7 @@ export class BackgroundCreatorWidget {
         this.customSelects = createSakuraInteractions(this.container, node);
         this.ccState = { config: null, downloadStatus: {} };
         this.cc = createControlCenterClient("MIUProject/VNCCS_v3.0", config => config.models?.some(entry => String(entry.kind).toLowerCase() === "qi2"), this.ccState,
-            () => { if (!this.disposed && this.state) { this.renderModelPicker(); this.updateControls(); } }, node);
+            () => { if (!this.disposed && this.state) { this.renderModelPicker(); this.syncGenerationCards(); this.updateControls(); } }, node);
         this.decorateControls();
         this.container._node = node;
         for (const region of this.container.querySelectorAll(".bg-background")) enableMiddleMouseCanvasPan(region, node);
@@ -269,8 +279,20 @@ export class BackgroundCreatorWidget {
             }
             if (this.workflowRun) this.finishWorkflow(null, "Background generation stopped.");
         });
-        watchConnection(node, () => { if (!this.disposed && this.restoreFailed) return this.restore(); }, registerCleanup);
+        this.on(this.api, "status", event => {
+            const remaining = event.detail?.exec_info?.queue_remaining;
+            if (typeof remaining === "number" && Number.isFinite(remaining)) this.setWorkflowBusy(remaining > 0);
+            else if (event.detail == null) this.setWorkflowBusy(true);
+        });
+        for (const type of ["execution_start", "reconnecting"]) this.on(this.api, type, () => this.setWorkflowBusy(true));
+        watchConnection(node, async () => {
+            if (this.disposed) return;
+            const restore = this.restoreFailed ? this.restore() : null;
+            await this.refreshWorkflowBusy();
+            await restore;
+        }, registerCleanup);
         this.updateControls();
+        this.refreshWorkflowBusy();
     }
 
     on(target, type, callback, options = {}) { target.addEventListener(type, callback, { ...options, signal: this.events.signal }); }
@@ -328,6 +350,25 @@ export class BackgroundCreatorWidget {
         return result;
     }
     json(path, data, method = "POST") { return this.request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); }
+    setWorkflowBusy(busy) {
+        this.beginWorkflowStatusRequest(); this.workflowBusy = busy; this.updateControls();
+    }
+    async refreshWorkflowBusy() {
+        const current = this.beginWorkflowStatusRequest();
+        try {
+            const response = await this.api.fetchApi("/queue", { signal: this.events.signal });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const queue = await response.json();
+            if (!Array.isArray(queue.queue_running) || !Array.isArray(queue.queue_pending)) throw new Error("Invalid queue response");
+            if (!current() || this.disposed) return;
+            this.workflowBusy = Boolean(queue.queue_running.length || queue.queue_pending.length);
+        } catch (error) {
+            if (!current() || this.disposed) return;
+            this.workflowBusy = true;
+            console.warn("[VNCCS Background Creator] Could not refresh workflow status", error);
+        }
+        this.updateControls();
+    }
     updateControls() {
         const locked = this.busy || this.restoring || Boolean(this.document?._recovery || this.document?.archived);
         const hasSource = Boolean(this.document?.images.some(image => image.image_id === this.state?.selected_image_id));
@@ -338,13 +379,22 @@ export class BackgroundCreatorWidget {
             if (card.getAttribute("role") === "button") { card.setAttribute("aria-disabled", String(card.disabled)); card.tabIndex = card.disabled ? -1 : 0; }
         }
         for (const button of this.container.querySelectorAll("[data-download-model]")) button.disabled = locked || ["queued", "downloading"].includes(this.ccState.downloadStatus[`cc_models_${button.dataset.downloadModel}`]?.status);
-        for (const control of this.container.querySelectorAll("[data-library],[data-new],[data-enlarge]")) control.disabled = this.busy || this.restoring;
-        this.container.querySelector("[data-delete]").disabled = locked || !this.document;
+        for (const control of this.container.querySelectorAll("[data-library],[data-new]")) {
+            const canRecover = control.hasAttribute("data-library") && this.restoreFailed && Array.isArray(this.catalog);
+            control.disabled = this.busy || this.workflowBusy || this.restoring && !canRecover;
+        }
+        this.container.querySelector("[data-delete]").disabled = locked || this.workflowBusy || !this.document;
         this.container.querySelector("[data-enlarge]").disabled = this.busy || this.restoring || !hasSource;
         for (const control of this.container.querySelectorAll("[data-close-preview]")) control.disabled = false;
         const turbo = this.container.querySelector('[data-setting="generation.turbo"]');
-        turbo.disabled = locked || this.state?.editor.generation.model_type === "moss" || isTurboModel(this.state?.editor.generation.diffusion_model_name);
-        this.container.querySelector('[data-action="background"]').textContent = this.workflowRun ? "Workflow busy..." : this.busy && this.activeAction === "background" ? "Generating..." : "Generate background";
+        turbo.disabled = locked || this.state?.editor.generation.model_type === "moss" || isTurboModel(this.state?.editor.generation.diffusion_model_name)
+            || this.turboStatus() !== "installed";
+        const download = this.container.querySelector("[data-download-turbo]");
+        if (download) download.disabled = locked || ["queued", "downloading"].includes(this.turboStatus());
+        const generate = this.container.querySelector('[data-action="background"]');
+        for (const control of [generate, this.container.querySelector("[data-wizard]")]) control.disabled = locked || this.workflowBusy;
+        generate.textContent = this.workflowRun ? "Workflow busy..." : this.busy && this.activeAction === "background" ? "Generating..." : this.workflowBusy ? "Workflow busy..." : "Generate background";
+        generate.title = this.workflowBusy ? "Generation is unavailable while a workflow is queued or running." : "";
         this.customSelects.syncSelects();
         this.updateVariantScroll();
     }
@@ -370,11 +420,17 @@ export class BackgroundCreatorWidget {
                     const document = await this.request(`/backgrounds/${state.background_id}`);
                     if (epoch !== this.epoch || this.disposed) return;
                     if (!stored.editor) state.editor = editorDefaults(document.editor);
+                    const savedEditor = editorDefaults(document.editor), restoredEditor = clone(state.editor);
+                    delete savedEditor.selected_image_id; delete restoredEditor.selected_image_id;
+                    if (!stored.editor || !Object.hasOwn(stored, "revision") && JSON.stringify(restoredEditor) === JSON.stringify(savedEditor)
+                        && (!state.selected_image_id || state.selected_image_id === document.selected_image_id)) state.revision = document.revision;
                     await this.acceptDocument(document, false, epoch);
                 }
                 if (epoch !== this.epoch || this.disposed) return;
                 this.restoring = false; this.render();
-                this.message(this.document?._recovery ? "Recovered backup is read-only. The damaged original is preserved." : "Create or upload a background. Generation runs inside this workspace.", Boolean(this.document?._recovery));
+                const libraryErrors = [...(catalog.errors || []).map(item => `${item.name}: ${item.error}`),
+                    config.styles_error ? "Style library unavailable: " + config.styles_error + ". Saved style text is retained." : ""].filter(Boolean).join("\n");
+                this.message(libraryErrors || (this.document?._recovery ? "Recovered backup is read-only. The damaged original is preserved." : "Create or upload a background. Generation runs inside this workspace."), Boolean(libraryErrors || this.document?._recovery));
                 this.sync();
             } catch (error) {
                 if (epoch === this.epoch && !this.disposed) { this.restoreFailed = true; this.message(error.message + " Original workflow data is preserved.", true); }
@@ -463,19 +519,67 @@ export class BackgroundCreatorWidget {
         this.customSelects.restoreView(view);
     }
 
+    turboEntry() {
+        return this.ccState.config?.lora?.find(entry => String(entry.kind).toLowerCase() === "qi2"
+            && String(entry.type).toLowerCase() === "turbolora" && entry.name === "Qwen Image 2.1 Viggle Turbo") || this.config?.turbo_lora;
+    }
+    turboStatus() {
+        const entry = this.turboEntry(), transient = this.ccState.downloadStatus[`cc_lora_${entry?.name}`]?.status;
+        return ["queued", "downloading", "error"].includes(transient) ? transient : entry?.status || "missing";
+    }
+    renderTurboCard() {
+        const control = this.container.querySelector('[data-setting="generation.turbo"]'), card = control.closest("[data-setting-card]");
+        const entry = this.turboEntry(), status = this.turboStatus(), installed = status === "installed";
+        card.classList.toggle("is-installed", installed); card.classList.toggle("is-missing", !installed);
+        card.classList.toggle("is-selected", installed && control.checked);
+        control.closest(".vnccs-common-creator-toggle").hidden = !installed;
+        card.querySelector(".vnccs-common-creator-model-card-badge").className = "vnccs-common-creator-model-card-badge " + (installed ? "ok" : "missing");
+        card.querySelector("[data-toggle-status]").textContent = installed ? "Installed" : status === "queued" ? "Queued" : status === "downloading" ? "Downloading" : status === "error" ? "Error" : "Missing";
+        let download = card.querySelector("[data-download-turbo]");
+        if (entry && !installed && !download) {
+            download = document.createElement("button"); download.type = "button"; download.dataset.downloadTurbo = "";
+            download.className = "vnccs-common-creator-model-card-download"; download.textContent = "Download"; card.appendChild(download);
+        }
+        if (download) { download.hidden = installed || !entry; download.disabled = ["queued", "downloading"].includes(status); }
+    }
+    renderStyles() {
+        const select = this.container.querySelector("[data-style]"), styles = this.config?.styles || [];
+        const key = JSON.stringify([styles.map(style => [style.id, style.label]), this.state.editor.style_id]);
+        if (select.dataset.choices !== key) {
+            const custom = document.createElement("option"); custom.value = ""; custom.textContent = "Custom";
+            select.replaceChildren(custom);
+            for (const style of styles) {
+                const option = document.createElement("option"); option.value = style.id; option.textContent = style.label; select.appendChild(option);
+            }
+            if (this.state.editor.style_id && !styles.some(style => style.id === this.state.editor.style_id)) {
+                const saved = document.createElement("option"); saved.value = this.state.editor.style_id; saved.textContent = "Saved style (unavailable)"; select.appendChild(saved);
+            }
+            select.dataset.choices = key;
+        }
+        select.value = this.state.editor.style_id || "";
+        this.container.querySelector('[data-setting="style"]').hidden = Boolean(this.state.editor.style_id);
+    }
+    randomizeSeedIfNeeded() {
+        if (this.state?.editor.generation.seed_mode !== "randomize") return;
+        this.state.editor.generation.seed = generateRandomSeed(); this.markEdited(); this.render();
+    }
+    async downloadAsset(category, asset) {
+        const key = `cc_${category}_${asset.name}`;
+        this.ccState.downloadStatus[key] = { status: "queued" }; this.renderModelPicker(); this.syncGenerationCards(); this.updateControls();
+        try {
+            await this.request("/vnccs/control_center/download", { method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
+                body: JSON.stringify({ repo_id: "MIUProject/VNCCS_v3.0", category, name: asset.name }) });
+        } catch (error) { this.ccState.downloadStatus[key] = { status: "error" }; this.renderModelPicker(); this.syncGenerationCards(); throw error; }
+        this.cc.startPolling();
+    }
+
     async downloadModel(name) {
         const entry = this.modelEntries.find(item => item.name === name);
         if (!entry || entry.source === "local") return;
         const bundle = [["models", entry], ...["clip", "vae"].map(category => [category, this.ccState.config?.[category]?.find(item => String(item.kind).toLowerCase() === this.state.editor.generation.model_type)])];
         for (const [category, asset] of bundle) {
             if (!asset || asset.status === "installed" || this.disposed) continue;
-            const key = `cc_${category}_${asset.name}`;
-            this.ccState.downloadStatus[key] = { status: "queued" }; this.renderModelPicker(); this.updateControls();
-            try {
-                await this.request("/vnccs/control_center/download", { method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
-                    body: JSON.stringify({ repo_id: "MIUProject/VNCCS_v3.0", category, name: asset.name }) });
-            } catch (error) { this.ccState.downloadStatus[key] = { status: "error" }; this.renderModelPicker(); throw error; }
-            this.cc.startPolling();
+            await this.downloadAsset(category, asset);
         }
     }
 
@@ -489,7 +593,7 @@ export class BackgroundCreatorWidget {
             if (previousId !== document.background_id) this.activeVariationId = "";
             this.state.background_id = document.background_id; this.state.selected_image_id = document.selected_image_id;
             this.state.editor = editorDefaults(document.editor);
-
+            this.state.revision = document.revision;
         }
         if (this.state.background_id === document.background_id) this.state.background_name = document.name;
         if (epoch !== this.epoch || this.disposed) return;
@@ -515,7 +619,11 @@ export class BackgroundCreatorWidget {
         const unchanged = ["editor", "selected_image_id"].every(key => JSON.stringify(document[key]) === JSON.stringify(this.document[key]));
         this.document.generated_sets = document.generated_sets;
         // Only rebase pending edits when generation left the saved authored settings unchanged.
-        if (unchanged) this.document.revision = document.revision;
+        if (unchanged) {
+            if (this.state.revision === this.document.revision) this.state.revision = document.revision;
+            this.document.revision = document.revision;
+            this.sync();
+        }
         this.render();
         if (unchanged && this.unsaved) this.markEdited();
     }
@@ -645,6 +753,11 @@ export class BackgroundCreatorWidget {
         }
         for (const select of this.container.querySelectorAll("[data-lora]")) selectValue(select, editor.generation.lora_stack[Number(select.dataset.lora)]?.name || "");
         for (const number of this.container.querySelectorAll("[data-lora-strength]")) number.value = editor.generation.lora_stack[Number(number.dataset.loraStrength)]?.strength ?? 1;
+        this.renderStyles();
+        const random = editor.generation.seed_mode === "randomize", dice = this.container.querySelector("[data-random]");
+        dice.classList.toggle("is-active", random); dice.setAttribute("aria-pressed", String(random));
+        dice.setAttribute("aria-label", random ? "Use fixed seed" : "Use random seed");
+        this.container.querySelector('[data-setting="generation.seed"]').classList.toggle("is-random", random);
         this.syncResolution();
         this.syncPrompt(); this.renderModelPicker(); this.syncGenerationCards();
         this.resize(); this.decorateControls(); this.updateControls();
@@ -688,9 +801,11 @@ export class BackgroundCreatorWidget {
         const operation = this.saveSerial.catch(() => {}).then(async () => {
             if (!this.unsaved || !this.document || this.disposed || this.restoring) return;
             const id = this.document.background_id, epoch = this.epoch, editor = clone(this.state.editor), selectedImage = this.state.selected_image_id;
-            const saved = await this.json(`/backgrounds/${id}`, { editor, selected_image_id: selectedImage, revision: this.document.revision }, "PATCH");
+            if (!Number.isSafeInteger(this.state.revision)) throw new Error("The saved background version is unknown. Reload the background before saving; the workflow draft is retained.");
+            const saved = await this.json(`/backgrounds/${id}`, { editor, selected_image_id: selectedImage, revision: this.state.revision }, "PATCH");
             if (this.disposed || epoch !== this.epoch || this.document?.background_id !== id) return;
             this.document = saved;
+            this.state.revision = saved.revision; this.sync();
             this.unsaved = JSON.stringify(editor) !== JSON.stringify(this.state.editor) || selectedImage !== this.state.selected_image_id;
             if (this.unsaved) this.markEdited();
         });
@@ -711,6 +826,7 @@ export class BackgroundCreatorWidget {
                 if (current && this.state.selected_image_id !== preview.image_id) {
                     this.state.selected_image_id = preview.image_id;
                 }
+                if (current) this.state.revision = preview.revision ?? document.revision;
                 await this.acceptDocument(document, false, owner.epoch);
                 if (this.disposed || owner.epoch !== this.epoch) return;
                 this.unsaved = preview ? !current : this.unsaved;
@@ -767,6 +883,7 @@ export class BackgroundCreatorWidget {
             status.classList.toggle("ok", enabled); status.textContent = enabled ? "Enabled" : "Disabled";
         }
         for (const select of this.container.querySelectorAll("[data-lora]")) select.closest(".vnccs-common-creator-lora-item").classList.toggle("is-empty", !select.value);
+        this.renderTurboCard();
     }
 
     async dialog(title, fields, submitLabel = "Save") {
@@ -863,13 +980,19 @@ export class BackgroundCreatorWidget {
             if (button.hasAttribute("data-model-toggle")) { this.modelPickerOpen = !this.modelPickerOpen; this.renderModelPicker(); this.updateControls(); return; }
             if (button.dataset.modelChoice) {
                 const settings = this.state.editor.generation, next = button.dataset.modelChoice;
-                if (isTurboModel(next) || isTurboModel(settings.diffusion_model_name)) { settings.steps = isTurboModel(next) ? 8 : 25; settings.cfg = 1; settings.turbo = false; }
+                if (next !== settings.diffusion_model_name && (isTurboModel(next) || isTurboModel(settings.diffusion_model_name))) { settings.steps = isTurboModel(next) ? 8 : 25; settings.cfg = 1; settings.turbo = false; settings.turbo_previous_settings = null; }
                 settings.diffusion_model_name = next; this.modelPickerOpen = false; this.markEdited(); this.render(); return;
             }
+            if (button.hasAttribute("data-download-turbo")) { event.preventDefault?.(); const entry = this.turboEntry(); if (entry) await this.downloadAsset("lora", entry); return; }
             if (button.dataset.downloadModel) { await this.downloadModel(button.dataset.downloadModel); return; }
             if (button.hasAttribute("data-enlarge")) { this.openPreview(); return; }
             if (button.dataset.value) { this.state.editor.attributes[button.closest("[data-trait]").dataset.trait] = button.dataset.value; this.markEdited(); this.render(); return; }
-            if (button.dataset.random) { this.state.editor.generation.seed = generateRandomSeed(); this.markEdited(); this.render(); return; }
+            if (button.dataset.random) {
+                const settings = this.state.editor.generation;
+                settings.seed_mode = settings.seed_mode === "randomize" ? "fixed" : "randomize";
+                if (settings.seed_mode === "randomize") settings.seed = generateRandomSeed();
+                this.markEdited(); this.render(); return;
+            }
             if (button.hasAttribute("data-new")) {
                 const values = await this.dialog("New background", [{ key: "name", label: "Background name", value: "Background", required: true }], "Create");
                 if (!values || this.disposed || epoch !== this.epoch) return;
@@ -889,6 +1012,7 @@ export class BackgroundCreatorWidget {
                 Object.assign(this.state, { background_id: "", selected_image_id: "" }); this.render(); this.sync(); return;
             }
             if (button.hasAttribute("data-upload")) { this.container.querySelector("[data-file]").click(); return; }
+            if (button.hasAttribute("data-wizard")) { await this.runJob("wizard"); return; }
             if (button.dataset.action) await this.runJob(button.dataset.action);
         } catch (error) { if (epoch === this.epoch && !this.disposed) { this.busy = false; this.updateControls(); this.message(error.message, true); } }
     }
@@ -988,7 +1112,19 @@ export class BackgroundCreatorWidget {
             const keys = control.dataset.setting.split("."), last = keys.pop();
             const target = keys.reduce((value, key) => value[key] ||= {}, this.state.editor);
             target[last] = control.type === "checkbox" ? control.checked : ["number", "range"].includes(control.type) ? Number(control.value) : control.value;
-            if (last === "turbo") { this.state.editor.generation.steps = control.checked ? 6 : 25; this.state.editor.generation.cfg = 1; this.render(); }
+            if (last === "style") { this.state.editor.custom_style = control.value; delete this.state.editor.style_id; }
+            if (last === "turbo") {
+                const settings = this.state.editor.generation;
+                if (control.checked) {
+                    settings.turbo_previous_settings ??= { steps: settings.steps, cfg: settings.cfg };
+                    settings.steps = 6; settings.cfg = 1;
+                } else {
+                    settings.steps = settings.turbo_previous_settings?.steps ?? 25;
+                    settings.cfg = settings.turbo_previous_settings?.cfg ?? 1;
+                    settings.turbo_previous_settings = null;
+                }
+                this.render();
+            }
             if (last === "resolution_mp") this.syncResolution();
             if (control.type === "checkbox") this.syncGenerationCards();
             this.markEdited(); return;
@@ -1002,13 +1138,23 @@ export class BackgroundCreatorWidget {
 
     async change(event) {
         const control = event.target;
-        if (this.restoring || this.busy) return;
+        const canRecover = control.hasAttribute("data-library") && this.restoreFailed && Array.isArray(this.catalog);
+        if (this.busy || this.restoring && !canRecover) return;
         if (control.type === "number" && !validNumber(control)) {
             const value = control.dataset.setting ? control.dataset.setting.split(".").reduce((current, key) => current?.[key], this.state.editor)
                 : control.hasAttribute("data-lora-strength") ? this.state.editor.generation.lora_stack[Number(control.dataset.loraStrength)]?.strength ?? 1
                 : undefined;
             if (value !== undefined) { control.value = value; this.message("Enter a number within the field limits.", true); }
             return;
+        }
+        if (control.hasAttribute("data-style")) {
+            const style = this.config?.styles?.find(style => style.id === control.value);
+            const editor = this.state.editor;
+            if (style) {
+                if (!editor.style_id) editor.custom_style = editor.style;
+                editor.style_id = style.id; editor.style = style.prompt;
+            } else { editor.style = editor.custom_style ?? editor.style; delete editor.style_id; }
+            this.markEdited(); this.render(); return;
         }
         if (control.tagName === "SELECT" && (control.dataset.setting || control.hasAttribute("data-lora"))) { this.input(event); return; }
         let epoch = this.epoch;
@@ -1018,9 +1164,9 @@ export class BackgroundCreatorWidget {
                 this.restoring = true; this.updateControls();
                 try {
                     const document = await this.request(`/backgrounds/${id}`);
-                    if (epoch === this.epoch && !this.disposed) await this.acceptDocument(document, true, epoch);
+                    if (epoch === this.epoch && !this.disposed) { await this.acceptDocument(document, true, epoch); this.restoreFailed = false; }
                 } finally {
-                    if (epoch === this.epoch && !this.disposed) { this.restoring = false; this.render(); this.sync(); }
+                    if (epoch === this.epoch && !this.disposed) { this.restoring = this.restoreFailed; this.render(); this.sync(); }
                 }
             } else if (control.hasAttribute("data-file")) {
                 const file = control.files?.[0]; if (!file) return;
@@ -1035,20 +1181,25 @@ export class BackgroundCreatorWidget {
     }
 
     async runJob(action) {
-        if (!await this.ensureDocument() || this.disposed) return;
+        if (this.workflowBusy || this.busy || this.restoring || this.disposed) return;
+        if (!await this.ensureDocument() || this.disposed || this.workflowBusy) return;
         const epoch = this.epoch;
+        if (action === "background") this.randomizeSeedIfNeeded();
         this.busy = true; this.activeAction = action;
         if (action === "background") this.startPreviewGeneration();
         this.updateControls(); this.message("Preparing " + action + "…");
         try {
             await this.persist();
-            if (epoch !== this.epoch || this.disposed) return;
+            if (epoch !== this.epoch || this.disposed || this.workflowBusy) return;
             const id = this.state.background_id;
-            const payload = { action, editor: clone(this.state.editor), revision: this.document.revision, image_id: this.state.selected_image_id };
+            const payload = { action, editor: clone(this.state.editor), revision: this.state.revision, image_id: this.state.selected_image_id, _vnccs_seed_resolved: true };
             let result = await this.json(`/backgrounds/${id}/jobs`, payload);
-            this.jobId = result.job_id; this.updateControls();
+            if (this.disposed || epoch !== this.epoch) return;
+            const jobId = result.job_id;
+            this.jobId = jobId; this.updateControls();
             while (!this.disposed && epoch === this.epoch) {
-                result = await this.request(`/jobs/${this.jobId}`);
+                result = await this.request(`/jobs/${jobId}`);
+                if (this.disposed || epoch !== this.epoch) return;
                 this.message(result.message || "Working…");
                 if (["completed", "failed", "cancelled"].includes(result.status)) break;
                 await new Promise(resolve => { this.pollTimer = setTimeout(resolve, 500); this.pollResolve = resolve; });
@@ -1120,6 +1271,21 @@ function fit(node) {
 
 app.registerExtension({
     name: "VNCCS.BackgroundCreator",
+    setup() {
+        installResolvedSeedTransport(app, ["VNCCS_BackgroundCreator"], "background_data");
+        if (app._vnccsBackgroundQueuePatched || typeof app.queuePrompt !== "function") return;
+        app._vnccsBackgroundQueuePatched = true;
+        const queuePrompt = app.queuePrompt;
+        app.queuePrompt = function (...args) {
+            for (const node of app.graph?._nodes || []) {
+                if (node.type !== "VNCCS_BackgroundCreator" || [2, 4].includes(node.mode)) continue;
+                const widget = node.backgroundCreator;
+                if (widget?.restoring || widget?.busy) throw new Error("Wait for Background Creator to finish its current operation.");
+                widget?.randomizeSeedIfNeeded();
+            }
+            return queuePrompt.apply(this, args);
+        };
+    },
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "VNCCS_BackgroundCreator") return;
         const created = nodeType.prototype.onNodeCreated;

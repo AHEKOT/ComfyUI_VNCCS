@@ -189,10 +189,17 @@ def _directories():
 
 def _locate(background_id):
     _id(background_id)
+    unreadable = []
     for directory in _directories():
-        document, payload = _read_document(directory)
+        try:
+            document, payload = _read_document(directory)
+        except BackgroundStorageError as error:
+            unreadable.append(error)
+            continue
         if document["background_id"] == background_id:
             return directory, document, payload
+    if unreadable:
+        raise unreadable[0]
     raise FileNotFoundError("Background does not exist")
 
 
@@ -216,9 +223,16 @@ def _commit(directory, document, previous):
     return document
 
 
-def list_backgrounds():
+def list_backgrounds(errors=None):
     with _LOCK:
-        documents = [_read_document(directory)[0] for directory in _directories()]
+        documents = []
+        for directory in _directories():
+            try:
+                documents.append(_read_document(directory)[0])
+            except BackgroundStorageError as error:
+                if errors is None:
+                    raise
+                errors.append({"name": directory.name, "error": str(error)})
         return sorted((item for item in documents if not item["archived"]), key=lambda item: item["name"].casefold())
 
 
@@ -416,7 +430,7 @@ DEFAULT_EDITOR = {
     "generation": {
         "model_type": "qi2",
         "steps": 25, "cfg": 1.0, "sampler": "euler", "scheduler": "simple", "seed": 0,
-        "resolution_mp": 2.0, "turbo": False, "prompt_enhance": True,
+        "resolution_mp": 2.0, "seed_mode": "fixed", "turbo": False, "turbo_previous_settings": None, "prompt_enhance": True,
         "cache_device": "gpu", "cache_dtype": "int8", "lora_stack": [],
         "diffusion_model_name": ASSETS["diffusion_models"],
     },
@@ -479,10 +493,12 @@ def normalize_editor(data: Any) -> dict[str, Any]:
         editor["variants"] = normalize_variants(data["variants"])
     day = {"id": "day", "name": "Day", "time": "Day", "weather": "", "additional_details": ""}
     editor["variants"] = [card for card in editor["variants"] if card != day]
-    for key, limit in (("description", 8000), ("scene_description", 40000), ("prompt", 40000), ("style", 1000), ("aesthetics", 4000),
+    for key, limit in (("description", 8000), ("scene_description", 40000), ("prompt", 40000), ("style", 16000), ("custom_style", 16000), ("aesthetics", 4000),
                        ("negative", 8000)):
         if key in data:
             editor[key] = _text(data[key], key, limit)
+    if "style_id" in data:
+        editor["style_id"] = _text(data["style_id"], "Style ID", 100)
     attrs = data.get("attributes", {})
     generation = data.get("generation", {})
     if not isinstance(attrs, dict) or not isinstance(generation, dict):
@@ -493,7 +509,7 @@ def normalize_editor(data: Any) -> dict[str, Any]:
     if "scene_description" not in data:
         parsed = _parse_prompt(editor["prompt"])
         if parsed:
-            editor["style"] = _text(parsed[0], "style", 1000)
+            editor["style"] = _text(parsed[0], "style", 16000)
             editor["attributes"]["time"] = _text(parsed[1], "time", 2000)
             editor["attributes"]["scene_type"] = _text(parsed[2], "scene_type", 2000)
         editor["scene_description"] = _legacy_scene_description(editor)
@@ -511,6 +527,10 @@ def normalize_editor(data: Any) -> dict[str, Any]:
         if name.startswith(("/", "~")) or ":" in name or any(part in {"", ".", ".."} for part in name.split("/")):
             raise ValueError("Diffusion model must be a relative installed model name")
         settings["diffusion_model_name"] = name
+    from .vnccs_control_center import is_qi2_turbo_model
+    built_in_turbo = model_type == "qi2" and is_qi2_turbo_model(settings["diffusion_model_name"])
+    if built_in_turbo:
+        settings.update(steps=8, cfg=1.0)
     for key, low, high, integer in (("steps", 1, 150, True), ("cfg", 0, 30, False),
                                    ("seed", 0, 2**64 - 1, True), ("resolution_mp", 0.05, 16, False)):
         if key in generation:
@@ -520,8 +540,21 @@ def normalize_editor(data: Any) -> dict[str, Any]:
             if not isinstance(generation[key], bool):
                 raise ValueError(f"{key} must be a boolean")
             settings[key] = generation[key]
-    if model_type == "moss":
+    if generation.get("seed_mode", "fixed") not in {"fixed", "randomize"}:
+        raise ValueError("Seed mode must be fixed or randomize")
+    settings["seed_mode"] = generation.get("seed_mode", "fixed")
+    previous = generation.get("turbo_previous_settings")
+    if previous is not None:
+        if not isinstance(previous, dict):
+            raise ValueError("Previous Turbo settings must be an object")
+        settings["turbo_previous_settings"] = {
+            "steps": _number(previous.get("steps", 25), "Previous steps", 1, 150, integer=True),
+            "cfg": _number(previous.get("cfg", 1), "Previous CFG", 0, 30),
+        }
+    if model_type == "moss" or built_in_turbo:
         settings["turbo"] = False
+    elif settings["turbo"]:
+        settings.update(steps=6, cfg=1.0)
     for key in ("sampler", "scheduler"):
         if key in generation:
             settings[key] = _text(generation[key], key, 64)
@@ -596,16 +629,14 @@ def variant_output(document, editor, image_id):
 def dimensions(editor: dict[str, Any]) -> tuple[int, int]:
     editor = normalize_editor(editor)
     a, b = (int(value) for value in editor["aspect"].split(":"))
-    pixels = editor["generation"]["resolution_mp"] * 1_000_000
-    width, height = math.sqrt(pixels * a / b), math.sqrt(pixels * b / a)
-    scale = min(1, 4096 / max(width, height))
-    width, height = (max(64, min(4096, int(round(value * scale / 16)) * 16)) for value in (width, height))
-    while width * height > 16_000_000:
-        if width >= height:
-            width -= 16
-        else:
-            height -= 16
-    return width, height
+    divisor = math.gcd(a, b)
+    step = 16 if editor["generation"]["model_type"] == "moss" else 8
+    width_unit, height_unit = a // divisor * step, b // divisor * step
+    # Match Creator's MP scale while rounding both sides by one common factor.
+    pixels = round(editor["generation"]["resolution_mp"] * 1024) * 1024
+    units = max(math.ceil(64 / min(width_unit, height_unit)), round(math.sqrt(pixels / (width_unit * height_unit))))
+    units = min(units, 4096 // max(width_unit, height_unit), int(math.sqrt(16_000_000 / (width_unit * height_unit))))
+    return width_unit * units, height_unit * units
 
 
 def _parse_prompt(text):
@@ -628,10 +659,52 @@ def _prompt_description(editor):
     return re.sub(r"\s+", " ", description).strip()
 
 
+def _rendering_style(value):
+    # Catalog references can name characters; only rendering text belongs in backgrounds.
+    lines = [line for line in value.splitlines() if not re.match(r"\s*(?:Style )?Reference\s*:", line, re.I)]
+    return "\n".join(lines).strip()
+
+
+def style_choices():
+    from .character_styles import load_user_styles
+    catalog, _payload = _read_json(Path(__file__).parents[1] / "character_template" / "character_styles.json")
+    choices = []
+    for style in [*(item for group in catalog["groups"] for item in group["styles"]), *load_user_styles()]:
+        # Built-in descriptions exclude the Reference line and character-preservation boilerplate.
+        prompt = style.get("description") if not style["id"].startswith("user_") else None
+        prompt = prompt or style["prompt"]
+        choices.append({"id": style["id"], "label": style["label"], "prompt": _rendering_style(prompt)})
+    return choices
+
+
+def _turbo_entry():
+    from . import vnccs_control_center as center
+    config = center._apply_active_installed_paths(center._get_cc_config("MIUProject/VNCCS_v3.0"))
+    entries = [entry for entry in config.get("lora", [])
+               if center._entry_kind(entry) == "qi2" and center._entry_type(entry) == "turbolora"]
+    return center._find_entry(entries, "Qwen Image 2.1 Viggle Turbo")
+
+
+def _turbo_name():
+    from .vnccs_control_center import _rel_within_folder
+    entry = _turbo_entry()
+    if entry is None:
+        raise ValueError("QI2 Turbo LoRA is not configured in the Control Center catalog")
+    return _asset_name("loras", _rel_within_folder(entry["local_path"]))
+
+
+def _resolve_editor_seed(editor, resolved=False):
+    if editor["generation"]["seed_mode"] == "randomize" and not resolved:
+        from ..utils import generate_seed
+        editor = copy.deepcopy(editor)
+        editor["generation"]["seed"] = generate_seed(0)
+    return editor
+
+
 def compose_prompt(editor: dict[str, Any]) -> str:
     editor = normalize_editor(editor)
     line = lambda value: re.sub(r"\s+", " ", value).strip()
-    return (f"Style: {line(editor['style'])}\nTime: Day\n"
+    return (f"Style: {line(_rendering_style(editor['style']))}\nTime: Day\n"
             f"Interior/Exterior: {line(editor['attributes']['scene_type'])}\nScene description: {_prompt_description(editor)}")
 
 
@@ -654,6 +727,12 @@ def _asset_name(category: str, name: str) -> str:
 
 def configuration() -> dict[str, Any]:
     from .sampler_scheduler_picker import fetch_sampler_scheduler_lists
+    styles, styles_error = [], ""
+    try:
+        styles = style_choices()
+    except (OSError, ValueError) as error:
+        styles_error = str(error)
+        log_event("warning", component="Background Creator", message="Style library is unavailable; saved style text is retained", error=styles_error)
     model_types = {}
     for model_type, names in (("qi2", ASSETS), ("moss", MOSS_ASSETS)):
         assets = []
@@ -662,7 +741,16 @@ def configuration() -> dict[str, Any]:
             matches = [entry for entry in installed if entry.rsplit("/", 1)[-1].lower() == name.lower()]
             assets.append({"category": category, "name": name, "installed": name in installed or len(matches) == 1})
         model_types[model_type] = {"assets": assets, "installed": all(asset["installed"] for asset in assets)}
-    return {"editor": copy.deepcopy(DEFAULT_EDITOR), "model": "Qwen Image 2.1 INT8 ConvRot",
+    turbo = _turbo_entry()
+    if turbo is not None:
+        from .vnccs_control_center import _rel_within_folder
+        try:
+            name = _asset_name("loras", _rel_within_folder(turbo["local_path"]))
+            installed = name in _installed("loras")
+        except FileNotFoundError:
+            installed = False
+        turbo = {**turbo, "status": "installed" if installed else "missing"}
+    return {"styles": styles, "styles_error": styles_error, "turbo_lora": turbo, "editor": copy.deepcopy(DEFAULT_EDITOR), "model": "Qwen Image 2.1 INT8 ConvRot",
             "assets": model_types["qi2"]["assets"], "installed": model_types["qi2"]["installed"], "model_types": model_types,
             "loras": _installed("loras"), "diffusion_models": _installed("diffusion_models"), "aspects": list(ASPECTS),
             "samplers": fetch_sampler_scheduler_lists()[0] or ["euler"],
@@ -706,7 +794,7 @@ def _background_cache_key(editor):
              for category, name in assets.items()]
     files.extend(("loras", item["name"]) for item in settings["lora_stack"])
     if settings["turbo"]:
-        files.append(("loras", TURBO_LORA))
+        files.append(("loras", _turbo_name()))
     payload = {"prompt": compose_prompt(editor), "negative": editor["negative"], "dimensions": dimensions(editor),
                "generation": settings, "files": [_model_file_signature(_resolve_model_path(category, name)) for category, name in files],
                "enhancer": [SCENE_EXPANSION_SYSTEM, TEXT_GENERATION] if settings["prompt_enhance"] else None}
@@ -809,7 +897,7 @@ def wizard(description: str, editor: dict[str, Any], draw_id: str, cancel_event)
         _stage(draw_id, cancel_event, "loading", 0.05, "Loading the QI2 background wizard")
         clip = _load_clip()
         _stage(draw_id, cancel_event, "conditioning", 0.2, "Describing the background")
-        schema = json.dumps({"style": editor["style"], "time": "Day",
+        schema = json.dumps({"style": _rendering_style(editor["style"]), "time": "Day",
                              "scene_type": editor["attributes"]["scene_type"], "scene_description": description})
         generated = _generate_text(clip, description,
             SCENE_EXPANSION_SYSTEM +
@@ -856,8 +944,6 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event):
     moss = settings["model_type"] == "moss"
     if settings["turbo"] and (settings["steps"] != 6 or abs(settings["cfg"] - 1) > 1e-6):
         raise ValueError("QI2 Viggle Turbo requires six steps and CFG 1")
-    if settings["turbo"] and re.search(r"qwen.*2[._]1.*turbo", settings["diffusion_model_name"], re.I):
-        raise ValueError("The QI2 Turbo model already includes acceleration; disable the Viggle adapter")
     width, height = dimensions(editor)
     prompt = compose_prompt(editor)
     with _model_session(draw_id, cancel_event), torch.inference_mode():
@@ -873,7 +959,7 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event):
             _check_cancel(cancel_event)
         if settings["turbo"]:
             from .character_generator import apply_viggle_turbo_lora
-            model = apply_viggle_turbo_lora(model, _asset_name("loras", TURBO_LORA), 1.0)
+            model = apply_viggle_turbo_lora(model, _turbo_name(), 1.0)
         if not moss:
             model = _call_comfy_node("QwenImage21Cache", model=model, device=settings["cache_device"],
                                      dtype=settings["cache_dtype"])[0]
@@ -1018,10 +1104,13 @@ def _report_comfy_sampling_progress(draw_id, steps, cancel_event):
 
 
 def _preview_tensor(path):
+    import torch
+
     with Image.open(path) as image:
         if image.width * image.height > MAX_IMAGE_PIXELS:
             raise ValueError("Background preview is too large")
-        return _pil_to_tensor(image)
+        pixels = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
+        return torch.from_numpy(pixels).unsqueeze(0)
 
 
 def _decode_image(payload):
@@ -1099,6 +1188,8 @@ def parse_state(raw):
         raise ValueError("Background Creator state is not valid JSON") from exc
     if not isinstance(state, dict) or type(state.get("schema_version")) is not int or state["schema_version"] != 2:
         raise ValueError("Unsupported Background Creator state version")
+    if "revision" in state and (type(state["revision"]) is not int or state["revision"] < 1):
+        raise ValueError("Invalid Background Creator document revision")
     for key in ("background_id", "selected_image_id"):
         value = state.get(key, "")
         if not isinstance(value, str) or (value and not _ID.fullmatch(value)):
@@ -1121,14 +1212,16 @@ def _run_background(state, draw_id):
         document = load_background(background_id)
         if document.get("_recovery") or document.get("archived"):
             raise BackgroundStorageError("The selected background is read-only; its data is preserved")
-        editor = normalize_editor(state.get("editor", document["editor"]))
+        editor = _resolve_editor_seed(normalize_editor(state.get("editor", document["editor"])), state.get("_vnccs_seed_resolved") is True)
         selected = state.get("selected_image_id") or document["selected_image_id"]
         requested_image = selected
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         if selected and image is None:
             raise ValueError("Selected image does not belong to this background")
-        if ("variants" not in document["editor"] or editor != normalize_editor(document["editor"]) or selected != document["selected_image_id"]):
-            document = save_background(background_id, {**editor, "selected_image_id": selected}, document["revision"])
+        changed = editor != normalize_editor(document["editor"]) or selected != document["selected_image_id"]
+        if changed or "variants" not in document["editor"]:
+            revision = state.get("revision") if changed else document["revision"]
+            document = save_background(background_id, {**editor, "selected_image_id": selected}, revision)
         source, tensor = "generated", None
         if image and image["settings"].get("source") == "upload":
             source, tensor = "upload", _preview_tensor(image_path(background_id, selected))
@@ -1154,6 +1247,7 @@ def _run_background(state, draw_id):
         log_event("background_output", component="Background Creator", node_id=draw_id, background_id=background_id,
                   image_id=selected, source=source, inference_skipped=source != "generated")
         return {"ui": {"background_preview": [{"background_id": background_id, "image_id": selected, "source": source,
+                                                "revision": document["revision"],
                                                 "request_image_id": requested_image, "editor": state.get("editor", editor)}]},
                 "result": (tensor, variant_output(document, editor, selected))}
     finally:
@@ -1195,10 +1289,13 @@ class VNCCS_BackgroundCreator:
         if not state.get("background_id"):
             return float("nan")
         document = load_background(state["background_id"])
+        editor = normalize_editor(state.get("editor", document["editor"]))
+        if editor["generation"]["seed_mode"] == "randomize" and state.get("_vnccs_seed_resolved") is not True:
+            return float("nan")
         selected = state.get("selected_image_id") or document["selected_image_id"]
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         path = _path(document["name"], "background", f"{selected}.png") if selected else None
-        key = None if image and image["settings"].get("source") == "upload" else _background_cache_key(state.get("editor", document["editor"]))
+        key = None if image and image["settings"].get("source") == "upload" else _background_cache_key(editor)
         metadata = {name: document.get(name) for name in ("editor", "selected_image_id", "archived", "_recovery")}
         return json.dumps([metadata, selected, _model_file_signature(path or ""), key], sort_keys=True)
 
@@ -1243,6 +1340,8 @@ def start_job(background_id, payload, raw_image=None):
     if raw_image is not None:
         raise ValueError("Background generation jobs do not accept image uploads")
     editor = normalize_editor(payload.get("editor", {}))
+    if action == "background":
+        editor = _resolve_editor_seed(editor, payload.get("_vnccs_seed_resolved") is True)
     document = load_background(background_id)
     if document.get("_recovery"):
         raise BackgroundStorageError("Recovered background metadata is read-only")
@@ -1374,7 +1473,9 @@ def register_routes(routes):
 
     @routes.get(base + "/backgrounds")
     async def backgrounds(request):
-        return await perform(lambda: {"backgrounds": [public_document(item) for item in list_backgrounds()]})
+        errors = []
+        return await perform(lambda: {"backgrounds": [public_document(item) for item in list_backgrounds(errors)],
+                                      "errors": errors})
 
     @routes.post(base + "/backgrounds")
     @respond

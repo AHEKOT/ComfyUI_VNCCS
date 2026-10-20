@@ -8,6 +8,7 @@ const resolutionSource = common.slice(common.indexOf("const RESOLUTION_SCALE_BAS
 const traitSource = common.slice(common.indexOf("export function createTraitInput"), common.indexOf("// ── Debounce")).replace("export ", "");
 const messageSource = common.slice(common.indexOf("export function showMessage"), common.indexOf("export function createLoadingOverlay")).replace("export ", "");
 const cleanupSource = common.slice(common.indexOf("export function registerCleanup"), common.indexOf("// Each loader owns a guard")).replace("export ", "");
+const guardSource = common.slice(common.indexOf("export function createRequestGuard"), common.indexOf("// ── DOM Widget Width Sync")).replace("export ", "");
 const transport = fs.readFileSync(new URL("../web/vnccs_transport.js", import.meta.url), "utf8");
 const connectionSource = transport.slice(transport.indexOf("export function watchConnection")).replace("export ", "");
 const source = fs.readFileSync(new URL("../web/vnccs_background_creator.js", import.meta.url), "utf8");
@@ -17,10 +18,12 @@ const widgetSource = source.slice(0, source.indexOf("function hideState")).repla
 const entrySource = source.slice(source.indexOf("function hideState"));
 const BASE = "/vnccs/background-creator";
 const A = "a".repeat(32), B = "b".repeat(32), IMAGE = "d".repeat(32);
-const state = (overrides = {}) => ({ schema_version: 2, background_id: A, selected_image_id: IMAGE, editor: editorDefaults(), ...overrides });
+const state = (overrides = {}) => ({ schema_version: 2, background_id: A, selected_image_id: IMAGE, revision: 3, editor: editorDefaults(), ...overrides });
 const background = (id = A, overrides = {}) => ({ schema_version: 2, background_id: id, name: "Evening room", revision: 3,
     editor: editorDefaults(), selected_image_id: IMAGE, images: [{ image_id: IMAGE, width: 1600, height: 900, url: `${BASE}/backgrounds/${id}/images/${IMAGE}` }], ...overrides });
-const configuration = () => ({ installed: true, assets: [], loras: ["environment.safetensors"], samplers: ["euler"], schedulers: ["simple"] });
+const configuration = () => ({ installed: true, assets: [], turbo_lora: {
+    name: "Qwen Image 2.1 Viggle Turbo", kind: "QI2", type: "TurboLora", status: "installed",
+    local_path: "models/loras/QI2/Viggle/current.safetensors" }, loras: ["environment.safetensors"], samplers: ["euler"], schedulers: ["simple"] });
 const response = (value, status = 200) => ({ ok: status < 400, status, json: async () => clone(value) });
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
 const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
@@ -132,7 +135,7 @@ class Element {
     reportValidity() { return true; }
 }
 
-function harness(raw = JSON.stringify(state({ background_id: "", selected_image_id: "" }))) {
+function harness(raw = JSON.stringify(state({ background_id: "", selected_image_id: "" })), queue = { queue_running: [], queue_pending: [] }) {
     const calls = [], events = new Map(), timers = new Map(), drafts = new Map(), queued = [];
     let extension, timerId = 0;
     const window = new Element("window"), documents = new Map([[A, background()], [B, background(B)]]);
@@ -146,6 +149,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         async fetchApi(path, options = {}) {
             calls.push({ path, options });
             if (api.handle) { const result = await api.handle(path, options); if (result !== undefined) return result; }
+            if (path === "/queue") return response(queue);
             if (path === `${BASE}/config`) return response(configuration());
             if (path === `${BASE}/backgrounds`) return response({ backgrounds: [...documents.values()] });
             const match = new RegExp(`^${BASE}/backgrounds/([a-f0-9]{32})$`).exec(path);
@@ -171,7 +175,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         },
         SAKURA_THEME_CSS: "", SAKURA_INTERACTION_CSS: "", SAKURA_CREATOR_CONTROL_CSS: "", COMMON_CSS: "", injectStyles() {}, generateRandomSeed: () => 19,
         setHelpText() {}, registerCleanup() {}, enableMiddleMouseCanvasPan() {}, attachHelpTooltips() {},
-        syncDOMWidgetWidthSoon() {}, syncDOMWidgetWidth: node => { if (!node.backgroundCreatorDOM._bound) { Object.defineProperty(node.backgroundCreatorDOM, "width", { get: () => node.size[0] }); node.backgroundCreatorDOM._bound = true; } },
+        installResolvedSeedTransport() {}, syncDOMWidgetWidthSoon() {}, syncDOMWidgetWidth: node => { if (!node.backgroundCreatorDOM._bound) { Object.defineProperty(node.backgroundCreatorDOM, "width", { get: () => node.size[0] }); node.backgroundCreatorDOM._bound = true; } },
         animateWizardRows: (rows, apply) => apply(),
         Event: class { constructor(type, options = {}) { this.type = type; Object.assign(this, options); } }, requestAnimationFrame() {},
         URL, AbortController, FormData, Blob, console, api, vnccsApi: api, presetSelection, DEFAULT_EDITOR, MOSS_GENERATION, clone, readState, editorDefaults, composePrompt, parsePrompt, legacySceneDescription, isTurboModel, modelPath,
@@ -184,7 +188,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
     vm.runInContext(traitSource, context);
     vm.runInContext(resolutionSource, context);
     vm.runInContext(common.slice(common.indexOf('export function setHelpText'), common.indexOf('export function attachHelpTooltips')).replace('export ', ''), context);
-    vm.runInContext(messageSource + cleanupSource + connectionSource, context);
+    vm.runInContext(messageSource + cleanupSource + guardSource + connectionSource, context);
     vm.runInContext(widgetSource.replace(/^import .*\n/gm, "").replaceAll("export ", "").replace("class BackgroundCreatorWidget", "globalThis.BackgroundCreatorWidget = class BackgroundCreatorWidget").replaceAll("import.meta.url", '"https://localhost/widget.mjs"'), context);
     vm.runInContext(entrySource.replace(/^import .*\n/gm, ""), context);
     class Node {
@@ -537,7 +541,7 @@ test("Background uses the exact Creator declarations for every shared control", 
     assert.doesNotMatch(source, /\.bg-(?:mode|toggle|lora|seed)(?:[ >.{]|$)/);
     assert.doesNotMatch(source, /\.bg-generation (?:input|select)|input\[type=number\] \{ font-family/);
     assert.ok(source.includes("createSakuraInteractions(this.container, node)"));
-    assert.ok(source.includes('input("Style", "style", "text"'));
+    assert.ok(source.includes('<select data-style aria-label="Style">'));
     assert.ok(source.includes('class="bg-field bg-description"'));
     assert.ok(source.includes("showModal(this.container"));
     assert.ok(source.includes("animateWizardRows("));
@@ -576,7 +580,9 @@ test("Background mounts the Creator component structure and real shared dropdown
     assert.equal(dice.querySelector("svg").getAttribute("fill"), "none");
     assert.equal(dice.querySelector("rect").getAttribute("stroke"), "currentColor");
     assert.equal(dice.querySelectorAll("circle").length, 5);
-    for (const key of ["prompt", "aesthetics", "negative"]) assert.equal(h.control(`[data-setting="${key}"]`), null);
+    for (const key of ["prompt", "aesthetics"]) assert.equal(h.control(`[data-setting="${key}"]`), null);
+    assert.equal(h.control('.bg-attributes').contains(h.control('[data-setting="negative"]')), true);
+    assert.equal(h.control('[data-setting="negative"]').value, '');
     assert.equal(h.control(".bg-bottom"), null);
     const seed = h.control('[data-setting="generation.seed"]');
     await dice.click();
@@ -850,9 +856,10 @@ test("legacy prompt data stays recoverable while scene edits use the middle pane
     assert.match(prompt, /Time: Day/); assert.match(prompt, /Interior\/Exterior: Exterior/);
     assert.match(prompt, /My exact camera and brushwork instructions\./);
     for (const key of ['prompt','aesthetics','negative']) {
-        assert.equal(h.control(`[data-setting="${key}"]`), null);
         assert.equal(JSON.parse(h.data.value).editor[key], legacy[key]);
     }
+    for (const key of ['prompt', 'aesthetics']) assert.equal(h.control(`[data-setting="${key}"]`), null);
+    assert.equal(h.control('[data-setting="negative"]').value, legacy.negative);
     const reopened = harness(h.data.value); await reopened.ready();
     assert.equal(reopened.control('[data-setting="scene_description"]').value, field.value);
     assert.equal(composePrompt(reopened.widget.state.editor), prompt);
@@ -916,7 +923,9 @@ test("old workflows lose only the removed IMAGE socket and retain authored scene
     assert.equal(h.widget.state.selected_image_id, IMAGE);
     assert.equal(h.control("[data-connected]"), null);
     assert.equal(h.queued.length, 0);
-    assert.doesNotMatch(source, /prepareConnected|connectedImagePrompt|importToken|queuePrompt/);
+    assert.doesNotMatch(source, /prepareConnected|connectedImagePrompt|importToken|api\.queuePrompt/);
+    assert.ok(source.includes('installResolvedSeedTransport(app, ["VNCCS_BackgroundCreator"], "background_data")'));
+    assert.ok(source.includes('node.type !== "VNCCS_BackgroundCreator"'));
 });
 
 test("the middle scene fields retain their order and compose the structured prompt without a bottom panel", async () => {
@@ -924,7 +933,7 @@ test("the middle scene fields retain their order and compose the structured prom
     const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: "Anime, digital art, cel shaded", scene_description: description, attributes: { time: "Night", scene_type: "Interior" } }) })));
     await h.ready();
     assert.equal(composePrompt(h.widget.state.editor), `Style: Anime, digital art, cel shaded\nTime: Day\nInterior/Exterior: Interior\nScene description: ${description}`);
-    assert.deepEqual(h.control('.bg-attributes').querySelectorAll('.bg-field').map(field => field.children[0].textContent), ["Style", "Interior/Exterior", "Scene description"]);
+    assert.deepEqual(h.control('.bg-attributes').querySelectorAll('.bg-field').map(field => field.children[0].textContent), ["Style", "Interior/Exterior", "Scene description", "Negative Prompt"]);
     assert.equal(h.control('.bg-attributes').querySelector('[data-setting="aspect"]'), null);
     assert.equal(h.control('.bg-generation').contains(h.control('[data-setting="aspect"]')), true);
     const style = h.control('[data-setting="style"]'); style.value = 'Watercolor, paper texture'; await style.fire('input');
@@ -1423,4 +1432,320 @@ test('legacy workflow references stay selected while loading and empty selection
 test('saved display names are bounded without accepting invalid cached metadata', () => {
     for(const name of [[],{},15,'x'.repeat(97)])assert.throws(()=>readState(JSON.stringify(state({background_name:name}))),/saved background name/);
     assert.equal(readState(JSON.stringify(state({background_name:'🌄'.repeat(96)}))).background_name,'🌄'.repeat(96));
+});
+
+test('the wizard button starts a job and saves its returned scene through the normal editor path', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const editor = editorDefaults({scene_description: 'Detailed wizard scene'}), jobId = '1'.repeat(32);
+    h.api.handle = (path, options) => {
+        if (path.endsWith('/jobs') && options.method === 'POST') {
+            assert.equal(JSON.parse(options.body).action, 'wizard');
+            return response({job_id: jobId});
+        }
+        if (path === `${BASE}/jobs/${jobId}`) return response({status: 'completed', result: {editor}});
+        if (options.method === 'PATCH') return response(background(A, {revision: 4, editor}));
+    };
+    await h.control('[data-wizard]').click();
+    assert.equal(h.widget.state.editor.scene_description, 'Detailed wizard scene');
+    assert.equal(h.widget.unsaved, true);
+    await h.widget.persist();
+    assert.equal(h.widget.document.editor.scene_description, 'Detailed wizard scene');
+    assert.equal(JSON.parse(h.data.value).revision, 4);
+    h.node.onRemoved();
+});
+
+test('a stale job-start response cannot redirect a new job after workflow configuration', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const firstStart = deferred(), secondPoll = deferred();
+    const firstJob = '1'.repeat(32), secondJob = '2'.repeat(32);
+    h.api.handle = (path, options) => {
+        if (options.method === 'POST' && path === `${BASE}/backgrounds/${A}/jobs`) return firstStart.promise;
+        if (options.method === 'POST' && path === `${BASE}/backgrounds/${B}/jobs`) return response({job_id: secondJob});
+        if (path === `${BASE}/jobs/${secondJob}`) return secondPoll.promise;
+        if (path === `${BASE}/jobs/${firstJob}`) throw new Error('The stale job must not be polled');
+    };
+    const first = h.widget.runJob('background'); await settle();
+    h.data.value = JSON.stringify(state({background_id: B})); h.node.onConfigure(); await h.widget.operations;
+    const second = h.widget.runJob('background'); await settle();
+    assert.equal(h.widget.jobId, secondJob);
+    firstStart.resolve(response({job_id: firstJob})); await first;
+    assert.equal(h.widget.jobId, secondJob);
+    secondPoll.resolve(response({status: 'completed', result: {document: background(B)}})); await second;
+    assert.equal(h.widget.state.background_id, B);
+    assert.equal(h.widget.busy, false);
+    assert.equal(h.calls.some(call => call.path === `${BASE}/jobs/${firstJob}`), false);
+    h.node.onRemoved();
+});
+
+test('a stale status response cannot update another workflow or install a poll timer', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const poll = deferred(), jobId = '1'.repeat(32);
+    h.api.handle = (path, options) => path.endsWith('/jobs') && options.method === 'POST'
+        ? response({job_id: jobId}) : path === `${BASE}/jobs/${jobId}` ? poll.promise : undefined;
+    const pending = h.widget.runJob('background'); await settle();
+    h.data.value = JSON.stringify(state({background_id: B})); h.node.onConfigure(); await h.widget.operations;
+    const message = h.widget.status.textContent;
+    poll.resolve(response({status: 'running', message: 'Stale progress'})); await pending;
+    assert.equal(h.widget.state.background_id, B);
+    assert.equal(h.widget.status.textContent, message);
+    assert.equal([...h.timers.values()].some(timer => timer.delay === 500), false);
+    h.node.onRemoved();
+});
+
+test('restoring a stale revision keeps its draft and sends that revision when saving or starting a job', async () => {
+    const h = harness(JSON.stringify(state({revision: 2}))); await h.ready();
+    assert.equal(h.widget.state.revision, 2); assert.equal(h.widget.document.revision, 3);
+    h.api.handle = (path, options) => {
+        if (options.method === 'PATCH' || path.endsWith('/jobs') && options.method === 'POST') {
+            assert.equal(JSON.parse(options.body).revision, 2);
+            return response({error: 'Background changed in another editor'}, 409);
+        }
+    };
+    await assert.rejects(h.widget.runJob('background'), /changed/);
+    h.widget.state.editor.scene_description = 'Keep this draft'; h.widget.markEdited();
+    await assert.rejects(h.widget.persist(), /changed/);
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, 'Keep this draft');
+    assert.equal(h.widget.state.revision, 2); assert.equal(h.widget.document.revision, 3);
+    h.node.onRemoved();
+});
+
+test('legacy state gains a revision only when it matches the saved scene', async () => {
+    for (const changed of [false, true]) {
+        const saved = state(); delete saved.revision;
+        if (changed) saved.editor.scene_description = 'Unversioned workflow draft';
+        const h = harness(JSON.stringify(saved)); await h.ready();
+        assert.equal(h.widget.state.revision, changed ? undefined : 3);
+        if (changed) {
+            h.widget.markEdited();
+            await assert.rejects(h.widget.persist(), /version is unknown/);
+            assert.equal(h.calls.some(call => call.options.method === 'PATCH'), false);
+            assert.equal(JSON.parse(h.data.value).editor.scene_description, 'Unversioned workflow draft');
+        }
+        h.node.onRemoved();
+    }
+    for (const revision of [null, true, 0, -1, 1.5, '2']) assert.throws(() => readState(JSON.stringify(state({revision}))), /revision/);
+});
+
+test('RUN acknowledges only its committed revision even if another editor saves before the refresh', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.documents.set(A, background(A, {revision: 5, editor: editorDefaults({scene_description: 'Another editor'})}));
+    h.emitEvent('executing', '7');
+    h.node.onExecuted({background_preview: [{background_id: A, image_id: IMAGE, request_image_id: IMAGE,
+        source: 'upload', revision: 4, editor: clone(h.widget.state.editor)}]});
+    await h.widget.workflowCompletion;
+    assert.equal(h.widget.state.revision, 4); assert.equal(h.widget.document.revision, 5);
+    assert.equal(JSON.parse(h.data.value).revision, 4);
+    h.node.onRemoved();
+});
+
+test('catalog errors stay visible without blocking a healthy selected background', async () => {
+    const h = harness(JSON.stringify(state()));
+    h.api.handle = path => path === `${BASE}/backgrounds` ? response({backgrounds: [background()],
+        errors: [{name: 'Damaged neighbor', error: 'Cannot restore; original files are preserved'}]}) : undefined;
+    await h.ready();
+    assert.equal(h.widget.restoring, false); assert.match(h.widget.status.textContent, /Damaged neighbor/);
+    assert.equal(h.control('[data-action="background"]').disabled, false);
+    assert.equal(h.calls.some(call => call.options.method), false);
+    h.node.onRemoved();
+});
+
+test('a damaged selected background retains workflow bytes and allows selecting a healthy neighbor', async () => {
+    const raw = JSON.stringify(state()), h = harness(raw);
+    h.api.handle = path => path === `${BASE}/backgrounds`
+        ? response({backgrounds: [background(B)], errors: [{name: 'Damaged room', error: 'Original files are preserved'}]})
+        : path === `${BASE}/backgrounds/${A}` ? response({error: 'Cannot restore damaged room'}, 400) : undefined;
+    await h.ready();
+    assert.equal(h.data.value, raw); assert.equal(h.widget.restoring, true);
+    assert.equal(h.control('[data-library]').disabled, false);
+    assert.equal(h.control('[data-action="background"]').disabled, true);
+    h.control('[data-library]').value = B; await h.control('[data-library]').fire('change');
+    assert.equal(h.widget.state.background_id, B); assert.equal(h.widget.restoreFailed, false);
+    assert.equal(h.widget.restoring, false); assert.equal(h.control('[data-action="background"]').disabled, false);
+    assert.equal(h.calls.some(call => call.options.method), false);
+    h.node.onRemoved();
+});
+
+
+test('Turbo toggle restores authored Steps and CFG after save and reload', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    Object.assign(h.widget.state.editor.generation, { steps: 40, cfg: 2.5 });
+    const toggle = h.control('[data-setting="generation.turbo"]');
+    toggle.checked = true; await toggle.fire('input');
+    assert.deepEqual(clone(h.widget.state.editor.generation.turbo_previous_settings), { steps: 40, cfg: 2.5 });
+    const reopened = harness(h.data.value); await reopened.ready();
+    const restored = reopened.control('[data-setting="generation.turbo"]'); restored.checked = false; await restored.fire('input');
+    assert.equal(reopened.widget.state.editor.generation.steps, 40);
+    assert.equal(reopened.widget.state.editor.generation.cfg, 2.5);
+    h.node.onRemoved(); reopened.node.onRemoved();
+});
+
+test('selecting the current built-in Turbo preserves explicit sampling parameters', async () => {
+    const name = 'qwen_image_2.1_turbo_int8_convrot.safetensors';
+    const h = harness(JSON.stringify(state({ editor: editorDefaults({ generation: { diffusion_model_name: name, steps: 10, cfg: 1.5 } }) })));
+    await h.ready(); h.widget.config.diffusion_models = [name]; h.widget.render();
+    await h.control(`[data-model-choice="${name}"]`).click();
+    assert.equal(h.widget.state.editor.generation.steps, 10); assert.equal(h.widget.state.editor.generation.cfg, 1.5);
+    assert.equal(editorDefaults({ generation: { diffusion_model_name: name } }).generation.steps, 8);
+    assert.equal(editorDefaults({ generation: { turbo: true, steps: 7, cfg: 2 } }).generation.steps, 6);
+    h.node.onRemoved();
+});
+
+test('seed dice retains random mode and queue generates one displayed seed per run', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    let seed = 20; h.context.generateRandomSeed = () => ++seed;
+    const app = h.context.app, submissions = [];
+    h.node.type = 'VNCCS_BackgroundCreator'; app.graph = { _nodes: [h.node] };
+    app.queuePrompt = function () { assert.equal(this, app); submissions.push(JSON.parse(h.data.value).editor.generation.seed); };
+    // Register the same source setup used by ComfyUI.
+    const setup = entrySource.slice(entrySource.indexOf('setup() {'), entrySource.indexOf('beforeRegisterNodeDef'));
+    vm.runInContext('globalThis.seedExtension = {' + setup + '};', h.context); h.context.seedExtension.setup();
+    await h.control('[data-random]').click();
+    assert.equal(h.control('[data-random]').getAttribute('aria-pressed'), 'true');
+    app.queuePrompt(); app.queuePrompt();
+    assert.deepEqual(submissions, [22, 23]);
+    assert.equal(JSON.parse(h.data.value).editor.generation.seed_mode, 'randomize');
+    await h.control('[data-random]').click(); app.queuePrompt();
+    assert.equal(submissions[2], 23); assert.equal(h.widget.state.editor.generation.seed_mode, 'fixed');
+    h.node.mode = 2; app.queuePrompt(); assert.equal(submissions[3], 23);
+    h.node.onRemoved();
+});
+
+test('missing Turbo uses Control Center Download and only installed adapters can be enabled', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.widget.config.turbo_lora.status = 'missing'; h.widget.render();
+    assert.equal(h.control('[data-setting="generation.turbo"]').disabled, true);
+    const button = h.control('[data-download-turbo]'); assert.equal(button.hidden, false);
+    let payload;
+    h.api.handle = (path, options) => {
+        if (path === '/vnccs/control_center/download') { payload = JSON.parse(options.body); return response({ok: true}); }
+    };
+    await button.click();
+    assert.equal(payload.category, 'lora'); assert.equal(payload.name, 'Qwen Image 2.1 Viggle Turbo');
+    assert.equal(h.control('[data-download-turbo]').disabled, true);
+    h.widget.ccState.downloadStatus = {};
+    h.widget.config.turbo_lora.status = 'installed'; h.widget.syncGenerationCards(); h.widget.updateControls();
+    assert.equal(h.control('[data-setting="generation.turbo"]').disabled, false);
+    assert.equal(h.control('[data-download-turbo]').hidden, true);
+    h.node.onRemoved();
+});
+
+test('simple style dropdown uses rendering text, persists selection and preserves old custom text', async () => {
+    const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: 'My old brushwork' }) }))); await h.ready();
+    const styles = [{ id: 'watercolor', label: 'Watercolor', prompt: 'Watercolor washes and paper grain' }];
+    h.widget.config.styles = styles; h.widget.render();
+    assert.equal(h.control('[data-style]').value, ''); assert.equal(h.control('[data-setting="style"]').value, 'My old brushwork');
+    assert.equal(h.control('.vnccs-style-summary'), null);
+    h.control('[data-style]').value = 'watercolor'; await h.control('[data-style]').fire('change');
+    const saved = JSON.parse(h.data.value);
+    assert.equal(saved.editor.style_id, 'watercolor'); assert.equal(saved.editor.style, styles[0].prompt);
+    assert.equal(h.control('[data-setting="style"]').hidden, true);
+    assert.match(composePrompt(saved.editor), /Style: Watercolor washes and paper grain/);
+    const reopened = harness(h.data.value); await reopened.ready();
+    assert.equal(reopened.widget.state.editor.style_id, 'watercolor');
+    assert.equal(reopened.widget.state.editor.style, styles[0].prompt);
+    reopened.control('[data-style]').value = ''; await reopened.control('[data-style]').fire('change');
+    assert.equal(reopened.control('[data-setting="style"]').hidden, false);
+    assert.equal(reopened.widget.state.editor.style, 'My old brushwork');
+    assert.doesNotMatch(composePrompt(editorDefaults({style: 'Ink wash\nReference: Alice Example'})), /Alice Example/);
+    h.node.onRemoved(); reopened.node.onRemoved();
+});
+
+for (const custom of ['My authored ink style', '']) test(`custom style ${custom ? 'text' : 'emptiness'} survives presets, disk save and reopening`, async () => {
+    const h = harness(JSON.stringify(state({ editor: editorDefaults({ style: custom }) }))); await h.ready();
+    const styles = [{ id: 'watercolor', label: 'Watercolor', prompt: 'Watercolor washes' }, { id: 'ink', label: 'Ink', prompt: 'Ink lines' }];
+    h.widget.config.styles = styles; h.widget.render();
+    for (const style of styles) {
+        h.control('[data-style]').value = style.id; await h.control('[data-style]').fire('change');
+        assert.equal(h.widget.state.editor.custom_style, custom);
+    }
+    h.api.handle = (path, options) => {
+        if (options.method === 'PATCH') {
+            const saved = background(A, { editor: JSON.parse(options.body).editor, revision: 4 });
+            h.documents.set(A, saved); return response(saved);
+        }
+    };
+    await h.widget.persist();
+    const reopened = harness(JSON.stringify(state({ editor: h.documents.get(A).editor, revision: 4 })));
+    await reopened.ready();
+    reopened.control('[data-style]').value = ''; await reopened.control('[data-style]').fire('change');
+    assert.equal(reopened.widget.state.editor.style, custom);
+    assert.equal(reopened.control('[data-setting="style"]').value, custom);
+    const input = reopened.control('[data-setting="style"]'); input.value = 'Edited custom'; await input.fire('input');
+    assert.equal(JSON.parse(reopened.data.value).editor.custom_style, 'Edited custom');
+    h.node.onRemoved(); reopened.node.onRemoved();
+});
+
+for (const field of ['queue_running', 'queue_pending']) test(`background actions respect restored ${field} and live workflow status`, async () => {
+    const h = harness(JSON.stringify(state()), { queue_running: [], queue_pending: [], [field]: [[1, 'prompt']] });
+    assert.equal(h.control('[data-action="background"]').disabled, true);
+    await h.ready();
+    for (const selector of ['[data-action="background"]', '[data-wizard]', '[data-new]', '[data-delete]', '[data-library]']) assert.equal(h.control(selector).disabled, true);
+    await h.widget.runJob('background'); await h.widget.runJob('wizard');
+    assert.equal(h.calls.some(call => call.options.method), false);
+    h.emitEvent('status', { exec_info: { queue_remaining: 0 } });
+    assert.equal(h.control('[data-action="background"]').disabled, false);
+    h.emitEvent('execution_start', {}); h.emitEvent('executing', 'another-node');
+    assert.equal(h.control('[data-action="background"]').disabled, true);
+    h.emitEvent('status', { exec_info: { queue_remaining: 0 } });
+    h.widget.busy = true; h.widget.updateControls();
+    h.emitEvent('status', { exec_info: { queue_remaining: 0 } });
+    assert.equal(h.control('[data-action="background"]').disabled, true, 'Idle queue must not unlock a running background job');
+    h.node.onRemoved();
+});
+
+test('stale queue responses, reconnection and queue errors cannot unlock background generation', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const stale = deferred(); h.api.handle = path => path === '/queue' ? stale.promise : undefined;
+    const pending = h.widget.refreshWorkflowBusy(); h.emitEvent('execution_start', {});
+    stale.resolve(response({ queue_running: [], queue_pending: [] })); await pending;
+    assert.equal(h.control('[data-action="background"]').disabled, true);
+    h.context.console = { ...console, warn() {} };
+    h.api.handle = path => path === '/queue' ? response({}, 500) : undefined;
+    await h.widget.refreshWorkflowBusy(); assert.equal(h.control('[data-action="background"]').disabled, true);
+    h.api.handle = path => path === '/queue' ? response({ queue_running: [], queue_pending: [] }) : undefined;
+    h.emitEvent('reconnecting'); h.emitEvent('reconnected'); await settle();
+    assert.equal(h.control('[data-action="background"]').disabled, false);
+    const removed = deferred(); h.api.handle = path => path === '/queue' ? removed.promise : undefined;
+    const last = h.widget.refreshWorkflowBusy(); h.node.onRemoved();
+    removed.resolve(response({ queue_running: [[1, 'prompt']], queue_pending: [] })); await last;
+    assert.equal(h.widget.workflowBusy, false); assert.equal(h.events.size, 0);
+});
+
+test('a failed style library retains the saved scene and allows ordinary edits and generation', async () => {
+    const editor = editorDefaults({ style_id: 'user_kept', style: 'My saved rendering', scene_description: 'My room' });
+    const h = harness(JSON.stringify(state({ editor })));
+    h.api.handle = path => path === `${BASE}/config` ? response({ ...configuration(), styles: [], styles_error: 'Invalid user style library' }) : undefined;
+    await h.ready();
+    assert.equal(h.widget.restoring, false); assert.equal(h.widget.restoreFailed, false);
+    assert.equal(h.widget.state.editor.style, editor.style); assert.equal(h.widget.state.editor.style_id, editor.style_id);
+    assert.equal(h.control('[data-preview]').hidden, false); assert.equal(h.control('[data-action="background"]').disabled, false);
+    assert.match(h.widget.status.textContent, /Style library unavailable/);
+    assert.equal(h.calls.some(call => call.options.method), false);
+    const field = h.control('[data-setting="scene_description"]'); field.value = 'My edited room'; await field.fire('input');
+    assert.equal(JSON.parse(h.data.value).editor.scene_description, 'My edited room');
+    assert.equal(JSON.parse(h.data.value).editor.style, editor.style);
+    h.node.onRemoved();
+});
+
+test('negative prompt is a compact field below the description and persists independently', async () => {
+    const h = harness(JSON.stringify(state({ editor: editorDefaults({ negative: 'text, watermark' }) }))); await h.ready();
+    const field = h.control('[data-setting="negative"]'), panel = h.control('.bg-attributes');
+    assert.equal(panel.children.at(-1), field.parentElement);
+    assert.equal(field.getAttribute('rows'), '2'); assert.equal(field.getAttribute('maxlength'), '8000');
+    assert.equal(field.value, 'text, watermark'); assert.equal(h.control('[data-setting="aesthetics"]'), null);
+    const rule = source.match(/\.bg-negative textarea \{([^}]+)\}/)[1];
+    assert.match(rule, /flex:none/); assert.match(rule, /height:64px/); assert.match(rule, /max-height:64px/);
+    const prompt = composePrompt(h.widget.state.editor);
+    field.value = 'blur, extra text'; await field.fire('input');
+    assert.equal(composePrompt(h.widget.state.editor), prompt);
+    const info = { widgets_values: [0, 'stale'] }; h.node.onSerialize(info);
+    assert.equal(JSON.parse(info.widgets_values[1]).editor.negative, field.value);
+    h.api.handle = (path, options) => options.method === 'PATCH'
+        ? response(background(A, { editor: JSON.parse(options.body).editor, revision: 4 })) : undefined;
+    await h.widget.persist();
+    const reopened = harness(JSON.stringify(state({ editor: h.widget.document.editor, revision: 4 }))); await reopened.ready();
+    assert.equal(reopened.control('[data-setting="negative"]').value, 'blur, extra text');
+    reopened.control('[data-setting="negative"]').value = ''; await reopened.control('[data-setting="negative"]').fire('input');
+    assert.equal(JSON.parse(reopened.data.value).editor.negative, '');
+    h.node.onRemoved(); reopened.node.onRemoved();
 });

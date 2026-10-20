@@ -292,7 +292,7 @@ export function installResolvedSeedTransport(app, nodeTypes, inputName = "widget
                 if (!name || [2, 4].includes(node?.mode) || typeof entry.inputs?.[name] !== "string") continue;
                 try {
                     const state = JSON.parse(entry.inputs[name]);
-                    if ((state?.gen_settings || state)?.seed_mode !== "randomize") continue;
+                    if ((state?.gen_settings || state?.editor?.generation || state)?.seed_mode !== "randomize") continue;
                     // Queue inputs carry the UI seed; workflow state keeps its randomize preference.
                     output[id] = { ...entry, inputs: { ...entry.inputs,
                         [name]: JSON.stringify({ ...state, _vnccs_seed_resolved: true }) } };

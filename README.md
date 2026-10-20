@@ -338,9 +338,14 @@ Qwen Image 2.1 and MOSS-Image use the shared Creator model cards and retain sepa
 generation profiles in the selected background's JSON. Qwen defaults to INT8
 ConvRot diffusion and text encoder weights, BF16 VAE, Euler/simple, 25 steps,
 CFG 1, prompt enhancement and GPU INT8 cache. The optional Viggle Turbo adapter
-uses six steps. Five LoRA slots retain their positions; character adapters are
+uses six steps and CFG 1, resolves its file and installation status through Control
+Center, and restores the previous Steps/CFG when disabled. The built-in Qwen Turbo
+model defaults to eight steps without the Viggle adapter. The seed dice toggles
+fixed/random mode; random mode chooses a new displayed seed before each preview
+and queued RUN. Five LoRA slots retain their positions; character adapters are
 never added automatically. Resolution uses the shared Creator slider: 1–4 MP in
-0.1 MP steps, displayed to one decimal place.
+0.1 MP steps, displayed to one decimal place. Pixel area uses the Creator scale
+(MP × 1024²); dimensions retain the selected aspect ratio exactly.
 
 Moss uses MOSS-Image SFT INT8 ConvRot, Qwen3.5 9B W4A8 GPTQ (`moss_image` encoder),
 Flux2 small VAE, 25 steps, CFG 2.5, `er_sde`/`simple` and an empty Flux2 latent.
@@ -351,7 +356,11 @@ hidden for Moss. Install these files in ComfyUI's registered model folders:
 - `text_encoders/qwen3.5_9b_w4a8_gptq.safetensors`
 - `vae/flux2-vae_small.safetensors`
 
-The middle panel contains Style, Interior/Exterior and Scene description. The base
+The middle panel contains Style, Interior/Exterior and Scene description. Style
+uses a simple dropdown from the shared Qwen style library, including My styles,
+plus Custom for existing free-text settings. Only the visual rendering description
+is inserted into prompts. Catalog Reference fields and Reference lines in user
+style prompts are excluded; no style-reference block is appended. The base
 background always uses Day. Prompts retain four ordered fields:
 
 ```text
