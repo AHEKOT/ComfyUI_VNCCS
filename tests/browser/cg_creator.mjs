@@ -161,7 +161,7 @@ const capture = async name => {
 };
 const geometry = () => page.evaluate(() => {
     const result = {};
-    for (const [key, selector] of Object.entries({ widget: ".vnccs-cg-creator", workspace: ".cg-workspace", source: ".bg-model-source", sourcePreview: ".bg-preview", variants: ".bg-variation-cards", viewport: ".bg-viewport-panel", frame: ".bg-viewport", captureFrame: ".vnccs-i3s__camera-frame", gallery: ".bg-cg-panel", dock: ".bg-generation-dock", modelSettings: ".bg-qi2-model-panel", samplingSettings: ".bg-qi2-sampling-panel", toolbar: ".bg-camera-toolbar" })) {
+    for (const [key, selector] of Object.entries({ mount: ".vnccs-cg-widget", widget: ".vnccs-cg-creator", workspace: ".cg-workspace", source: ".bg-model-source", sourcePreview: ".bg-preview", variants: ".bg-variation-cards", viewport: ".bg-viewport-panel", frame: ".bg-viewport", captureFrame: ".vnccs-i3s__camera-frame", gallery: ".bg-cg-panel", dock: ".bg-generation-dock", modelSettings: ".bg-qi2-model-panel", samplingSettings: ".bg-qi2-sampling-panel", toolbar: ".bg-camera-toolbar" })) {
         const element = document.querySelector(selector), rect = element.getBoundingClientRect();
         result[key] = { x: rect.x, y: rect.y, width: rect.width, height: rect.height, overflow: element.scrollWidth - element.clientWidth, verticalOverflow: element.scrollHeight - element.clientHeight };
     }
@@ -221,12 +221,16 @@ try {
         assert.equal(await page.locator("[data-model-dimensions]").count(), 0);
         assert.equal(await page.locator(".vnccs-i3s__camera-frame>span").isVisible(), false, "The viewport has no resolution badge");
         assert.doesNotMatch(await page.locator("[data-cgs]").innerText(), /\d+\s*×\s*\d+/, "CG cards have no resolution labels");
+        assert.equal(await page.locator("[data-cg-id] > span").count(), 0, "CG cards reserve no row for FOV");
         assert.equal(await page.locator("[data-source-choice]").count(), 4, "Every source retains its card, including the selected original");
         assert.equal(await page.locator('.vnccs-common-creator-lora-stack,[data-qi2-setting*="lora_stack"],[data-qi2-setting="generation.turbo"]').count(), 0);
         assert.equal(await page.locator('[data-prompt],.vnccs-common-creator-qi2-cache,[data-qi2-setting="generation.cache_device"],[data-qi2-setting="generation.cache_dtype"]').count(), 0);
         assert.equal(await page.getByLabel("Prompt Enhancement", { exact: true }).count(), 0);
         assert.equal(await page.locator("[data-save-view]").isEnabled(), true);
         const bounds = await geometry(), scale = bounds.widget.width / LAYOUT_WIDTH;
+        assert.ok(Math.abs(bounds.mount.width - width) <= 1, "The ComfyUI mount follows the node width");
+        assert.ok(bounds.widget.x >= bounds.mount.x - 1 && bounds.widget.x + bounds.widget.width <= bounds.mount.x + bounds.mount.width + 1,
+            "The full widget stays inside the node at every restored width");
         const dockWrapper = await page.locator(".bg-qi2-contents").evaluate(element => ({ display: getComputedStyle(element).display,
             border: getComputedStyle(element).borderTopWidth, decoration: getComputedStyle(element, "::before").content }));
         assert.deepEqual(dockWrapper, { display: "contents", border: "0px", decoration: "none" }, "The settings wrapper adds no frame or separator");
@@ -244,7 +248,7 @@ try {
         assert.ok(Math.abs(bounds.source.width / scale - expectedSource) <= 8, "The source keeps the Background Creator reference width inside the scaled composition");
         referenceWidths.push({ requestedNode: width, node: bounds.widget.width, creator: expectedSource, cg: bounds.source.width, viewport: bounds.viewport.width });
         assert.ok(bounds.viewport.width > bounds.source.width && bounds.source.width > bounds.gallery.width, "The wide middle composition and side-panel proportions remain ordered");
-        assert.ok(Math.abs(bounds.gallery.width / scale - 480) <= 2, "The gallery keeps its fixed logical width");
+        assert.ok(Math.abs(bounds.gallery.width / scale - 960) <= 2, "The gallery is twice its original logical width");
         const thumbnailWidths = await page.locator("[data-source-choice] .bg-variation-preview").evaluateAll(elements => elements.map(element => element.getBoundingClientRect().width));
         const expectedThumbnailWidth = (bounds.variants.width - (6 + 15) * scale) / 2 - 4 * scale;
         assert.ok(thumbnailWidths.every(value => Math.abs(value - expectedThumbnailWidth) <= 1), JSON.stringify({ thumbnailWidths, expectedThumbnailWidth }));
@@ -657,7 +661,13 @@ try {
     await chooseSelect(page.locator("[data-aspect]"), "9:16");
     assert.ok(await page.evaluate(() => widget.viewer.getCaptureSettings().height > widget.viewer.getCaptureSettings().width), "Aspect selection immediately previews a portrait frame");
     await chooseSelect(page.locator("[data-aspect]"), "4:3");
-    await page.locator("[data-save-view]").click(); await page.waitForFunction(() => Boolean(widget.jobId));
+    await page.locator("[data-save-view]").click();
+    const nameDialog = page.getByRole("dialog"), sceneName = nameDialog.getByLabel("Scene name (required)");
+    await nameDialog.getByRole("button", { name: "Generate", exact: true }).click();
+    assert.equal(await nameDialog.isVisible(), true); assert.equal(job.values.action, "model", "An empty scene name never starts generation");
+    await sceneName.fill("Morning camera");
+    await nameDialog.getByRole("button", { name: "Generate", exact: true }).click();
+    await page.waitForFunction(() => Boolean(widget.jobId));
     await page.waitForFunction(() => document.querySelector("[data-pending-cg] .vnccs-common-creator-generation-scan")?.getAnimations().some(animation => animation.playState === "running" && animation.currentTime >= 600));
     await capture("after-generating");
     await page.emulateMedia({ reducedMotion: "reduce" });
@@ -666,7 +676,7 @@ try {
     assert.equal(await page.locator("[data-pending-cg]").isVisible(), true);
     await page.emulateMedia({ reducedMotion: "no-preference" });
     scenarios.push({ name: "reduced-motion-keeps-pending-result-visible" });
-    assert.equal(await page.getByRole("dialog").count(), 0, "Generate CG starts directly from the configured camera");
+    assert.equal(await page.getByRole("dialog").count(), 0, "The scene name dialog closes before capture starts");
     assert.equal(await page.locator("[data-fov]").isDisabled(), true);
     assert.equal(await page.locator(".bg-job-feedback,progress,[data-stop]").count(), 0);
     assert.equal(await page.locator(".bg-status,footer").count(), 0);
@@ -678,14 +688,17 @@ try {
     const queuedOutput = await page.evaluate(() => JSON.parse(widget.node.widgets[0].value));
     assert.ok(!JSON.stringify(queuedOutput).includes("blob:"), "Pending card is never serialized");
     await pendingCard.click();
+    assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), false);
     await page.waitForFunction(() => document.querySelector('.bg-viewport [data-large-preview]')?.naturalWidth > 0);
     assert.ok((await page.locator('.bg-viewport [data-large-preview]').getAttribute("src")).startsWith("blob:"));
     await page.locator('.bg-viewport [data-close-preview]').click();
     await page.locator('.bg-viewport [role="dialog"]').waitFor({ state: "detached" });
+    assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), true);
     assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), queuedCamera, "Pending preview does not change the generation camera");
     assert.equal(await page.locator(".vnccs-common-creator-generation-scan").count(), 1);
     scenarios.push({ name: "animated-transient-card-and-preview-during-generation" });
     assert.equal(job.values.action, "cg"); assert.deepEqual(job.values.source_variant, sourceVariant); assert.equal(job.values.settings.generation.sampler, "dpmpp_2m");
+    assert.equal(job.values.name, "Morning camera");
     assert.equal(job.values.settings.generation.cache_device, "default"); assert.equal(job.values.settings.generation.cache_dtype, "default");
     assert.equal(job.values.settings.prompt, "Change the camera angle from <image2> to <image1>.");
     assert.equal(job.values.settings.generation.prompt_enhance, false);
@@ -696,6 +709,7 @@ try {
     await capture("after-completed"); scenarios.push({ name: "named-variant-model-and-cg", model: mutations.find(item => item.action === "model"), cg: job.values });
     await page.route(`**${base}/backgrounds/${backgroundId}/models/${variantModelId}`, route => route.fulfill({ status: 404, json: { error: "Fixture model unavailable" } }), { times: 1 });
     await page.locator("[data-cgs] .bg-cg-card").click();
+    assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), false);
     await page.waitForFunction(() => document.querySelector('.bg-viewport [data-large-preview]')?.naturalWidth > 0 && !widget.busy);
     assert.equal(await page.locator('.bg-viewport [data-large-preview]').getAttribute("src"), document.cgs.at(-1).url);
     await page.locator('.bg-viewport [data-close-preview]').click();

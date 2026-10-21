@@ -7,9 +7,10 @@ import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, i
 const BACKGROUND_CREATOR_ZOOM = .67;
 const BACKGROUND_GENERATION_WIDTH = (1280 - 24 * BACKGROUND_CREATOR_ZOOM) * .35;
 const SOURCE_PANEL_WIDTH = (2102 - 48 * BACKGROUND_CREATOR_ZOOM) * .78125 - BACKGROUND_GENERATION_WIDTH;
-const LAYOUT_WIDTH = Math.ceil(SOURCE_PANEL_WIDTH + 2247 + 480 + 24 + 26);
+const LAYOUT_WIDTH = Math.ceil(SOURCE_PANEL_WIDTH + 2247 + 960 + 24 + 26);
 const CREATOR_MIN_HEIGHT = 950;
 const STYLE = `
+.vnccs-cg-widget { position:relative; width:100%; height:100%; min-width:0; min-height:0; box-sizing:border-box; overflow:hidden; }
 .vnccs-cg-creator { ${SAKURA_THEME_CSS} --warning:#ffaa00; --shadow-subtle:0 2px 8px rgba(0,0,0,0.3); --shadow-elevated:0 8px 32px rgba(0,0,0,0.5); }
 ${SAKURA_INTERACTION_CSS}
 ${SAKURA_CREATOR_CONTROL_CSS}
@@ -18,7 +19,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator.vnccs-i3s { position:relative; display:flex; flex-direction:column; min-height:0; box-sizing:border-box; overflow:hidden; transform-origin:top left; pointer-events:auto; font-family:var(--font); }
 .vnccs-cg-creator [hidden] { display:none !important; }
 /* One logical composition scales as a whole with the node. */
-.vnccs-cg-creator .cg-workspace { flex:1; min-height:0; display:grid; grid-template-columns:${SOURCE_PANEL_WIDTH}px 2247px 480px; gap:12px; }
+.vnccs-cg-creator .cg-workspace { flex:1; min-height:0; display:grid; grid-template-columns:${SOURCE_PANEL_WIDTH}px 2247px 960px; gap:12px; }
 .vnccs-cg-creator .bg-panel { min-width:0; min-height:0; overflow-x:hidden; overscroll-behavior:contain; }
 .vnccs-cg-creator .bg-panel>* { flex:0 0 auto; min-width:0; }
 .vnccs-cg-creator .bg-model-source { overflow:hidden; gap:10px; }
@@ -851,7 +852,7 @@ class CGCreatorWidget {
         this.events = new AbortController(); this.operations = Promise.resolve(); this.saveSerial = Promise.resolve(); this.dialogs = new Set();
         this.history = null;
         this.container = document.createElement("div"); this.container.className = "vnccs-i3s vnccs-cg-creator vnccs-common-creator-container vnccs-common-ui-host";
-        this.frame = this.container;
+        this.frame = document.createElement("div"); this.frame.className = "vnccs-cg-widget"; this.frame.appendChild(this.container);
         this.container.innerHTML = `<section class="cg-workspace">
                 <aside class="bg-panel bg-model-source vnccs-common-creator-col">
                     <div class="bg-source-heading"><div class="vnccs-common-creator-section-title">Background select</div><button type="button" class="vnccs-common-creator-sprite-nav-btn" data-refresh aria-label="Refresh backgrounds" title="Refresh backgrounds"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></svg></button></div>
@@ -889,7 +890,7 @@ class CGCreatorWidget {
         this.on(this.container, "keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.target.closest("input,textarea")) { event.preventDefault(); if (this.canEditCamera()) this.history[event.shiftKey ? "redo" : "undo"](); } });
         this.on(this.container.querySelector("[data-source-choices]"), "scroll", () => this.updateSourceScroll(), { passive: true });
         this.on(window, "beforeunload", event => { if (this.unsaved && this.draftFailed) { event.preventDefault(); event.returnValue = ""; } });
-        this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(this.container); this.updateControls();
+        this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(this.frame); this.updateControls();
     }
 
     on(target, type, callback, options = {}) { target.addEventListener(type, callback, { ...options, signal: this.events.signal }); }
@@ -900,7 +901,7 @@ class CGCreatorWidget {
         return result;
     }
     json(path, data, method = "POST") { return this.request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); }
-    canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.loadingModel && Boolean(this.viewer && this.scene && this.scene.model_id === this.state?.model_id); }
+    canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.scene && this.scene.model_id === this.state?.model_id); }
     beginGesture() { if (this.canEditCamera()) this.history.begin("Camera", this.viewer.getCameraState()); }
     commitGesture() { if (this.canEditCamera()) { this.sync(); this.history.commit(this.viewer.getCameraState()); } }
     updateControls() {
@@ -916,6 +917,7 @@ class CGCreatorWidget {
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
         this.host.inert = !this.canEditCamera();
+        this.container.querySelector(".bg-camera-toolbar").hidden = Boolean(this.previewSource) || !this.state?.model_id || this.scene?.model_id !== this.state.model_id;
         this.container.querySelector("[data-model-status]").textContent = this.busy && this.activeAction === "model" ? "Creating model…" : this.state?.model_id ? "Model ready" : "Model not created";
     }
 
@@ -1036,7 +1038,7 @@ class CGCreatorWidget {
             const card = document.createElement("button"); card.className = "bg-cg-card vnccs-common-creator-model-card"; card.dataset.cgId = cg.cg_id; card.classList.toggle("is-selected", cg.cg_id === this.state.selected_cg_id);
             const title = document.createElement("strong"); title.textContent = cg.name; const image = document.createElement("img"); image.src = this.api.apiURL(cg.url); image.alt = cg.name;
             const remove = document.createElement("button"); remove.type = "button"; remove.className = "vnccs-style-delete"; remove.dataset.deleteCg = cg.cg_id; remove.textContent = "×"; remove.title = `Delete ${cg.name}`; remove.setAttribute("aria-label", remove.title);
-            const meta = document.createElement("span"); meta.textContent = `FOV ${Math.round(cg.camera.fov)}°`; card.append(title, image, meta); entry.append(card, remove); gallery.appendChild(entry);
+            card.append(title, image); entry.append(card, remove); gallery.appendChild(entry);
         }
         this.container.querySelector("[data-cg-count]").textContent = String(cgs.length + (this.pendingCG ? 1 : 0)); this.container.querySelector("[data-cg-empty]").hidden = Boolean(cgs.length || this.pendingCG);
         this.qi2.render(this.config); this.container.querySelector("[data-aspect]").value = this.state.settings.aspect;
@@ -1132,7 +1134,7 @@ class CGCreatorWidget {
                     control.value = field.value ?? ""; control.name = field.key;
                     if (!field.options && !field.multiline) control.type = field.type || "text";
                     if (field.required) control.required = true; if (field.multiline) control.rows = 5;
-                    for (const key of ["min", "max", "step"]) if (field[key] != null) control[key] = field[key];
+                    for (const key of ["min", "max", "step", "pattern"]) if (field[key] != null) control[key] = field[key];
                     if (field.maxLength) control.maxLength = field.maxLength;
                     if (field.oninput) for (const type of ["input", "change"]) control.addEventListener(type, () => field.oninput(control.value));
                     label.append(text, control);
@@ -1203,13 +1205,16 @@ class CGCreatorWidget {
                 return;
             }
             if (button.hasAttribute("data-save-view")) {
+                const values = await this.dialog("Generate CG", [{ key: "name", label: "Scene name (required)", required: true, maxLength: 96, pattern: ".*\\S.*" }], "Generate");
+                if (!values || epoch !== this.epoch || !this.canEditCamera()) return;
+                const name = values.name.trim();
                 const size = clone(this.state.frame), camera = clone(this.viewer.getCameraState());
                 this.commitGesture(); this.sync(); this.busy = true; this.updateControls();
-                this.pendingCG = { ...size, camera, name: `View ${this.document.cgs.length + 1}` }; this.render();
+                this.pendingCG = { ...size, camera, name }; this.render();
                 const raw = await this.viewer.capturePreview({ ...size, cameraState: camera });
                 if (epoch !== this.epoch || this.disposed) return;
                 this.pendingCG.url = URL.createObjectURL(raw); this.render();
-                await this.runJob("cg", { name: `View ${this.document.cgs.length + 1}`, camera, model_id: this.state.model_id }, raw); return;
+                await this.runJob("cg", { name, camera, model_id: this.state.model_id }, raw); return;
             }
             if (button.dataset.action) await this.runJob(button.dataset.action);
         } catch (error) { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); this.busy = false; this.render(); this.message(error.message, true); } }
@@ -1294,7 +1299,7 @@ class CGCreatorWidget {
         const dispose = this.attachPreviewNavigation(viewport, image);
         this.dialogs.add(close);
         const remove = modal.overlay.remove;
-        modal.overlay.remove = () => { if (this.cgPreviewClose === close) { this.cgPreviewClose = null; this.previewSource = null; } this.dialogs.delete(close); dispose(); remove.apply(modal.overlay); };
+        modal.overlay.remove = () => { if (this.cgPreviewClose === close) { this.cgPreviewClose = null; this.previewSource = null; } this.dialogs.delete(close); dispose(); remove.apply(modal.overlay); if (!this.disposed) this.updateControls(); };
         image.src = this.api.apiURL(source.url); image.dataset.sourceURL = source.url;
         this.render();
     }
@@ -1365,7 +1370,7 @@ class CGCreatorWidget {
         this.pendingCG = null;
     }
     resize() {
-        const width = this.node.size?.[0] || LAYOUT_WIDTH;
+        const width = this.frame.clientWidth || this.node.size?.[0] || LAYOUT_WIDTH;
         const scale = width / LAYOUT_WIDTH;
         const height = `${Math.max(300, (this.node.size?.[1] || CREATOR_MIN_HEIGHT) - 90) / scale}px`;
         if (height !== this.container.style.height || scale !== this.layoutScale) this.customSelects._closeDropdown?.(false);
@@ -1395,7 +1400,7 @@ class CGCreatorWidget {
         this.clearPendingCG();
         this.disposed = true; ++this.epoch; this.canvasNavigation?.(); this.events.abort(); clearTimeout(this.saveTimer); clearTimeout(this.wheelTimer); clearTimeout(this.pollTimer); this.pollResolve?.();
         const sourceImage = this.container.querySelector("[data-model-source]"); sourceImage.onload = sourceImage.onerror = null;
-        for (const finish of [...this.dialogs]) finish(null); this.observer.disconnect(); this.customSelects.dispose(); this.qi2.dispose(); this.viewer?.dispose(); this.container.remove();
+        for (const finish of [...this.dialogs]) finish(null); this.observer.disconnect(); this.customSelects.dispose(); this.qi2.dispose(); this.viewer?.dispose(); this.frame.remove();
     }
 }
 
@@ -1426,7 +1431,7 @@ app.registerExtension({
             if (this.cgCreator) return result;
             const state = hideState(this);
             this.cgCreator = new CGCreatorWidget(this, api);
-            this.cgCreatorDOM = this.addDOMWidget("cg_ui", "ui", this.cgCreator.container, { serialize: false, hideOnZoom: false, getMinHeight: () => 300 });
+            this.cgCreatorDOM = this.addDOMWidget("cg_ui", "ui", this.cgCreator.frame, { serialize: false, hideOnZoom: false, getMinHeight: () => 300 });
             if (state) {
                 const beforeQueued = state.beforeQueued;
                 state.beforeQueued = (...args) => {

@@ -137,6 +137,19 @@ def assert_main_fields_preserved(before, after):
     assert {key: after[key] for key in MAIN_FIELDS} == {key: before[key] for key in MAIN_FIELDS}
 
 
+@pytest.mark.parametrize("name", [None, "", "   "])
+def test_cg_creation_requires_an_explicit_scene_name(workspace, name):
+    document = with_model(workspace)
+    payload = job_payload(document, name=name)
+    if name is None:
+        payload.pop("name")
+    with pytest.raises(ValueError, match="name"):
+        service.start_job(document["background_id"], payload, png())
+    workspace.worker.submit.assert_not_called()
+    workspace.generated.assert_not_called()
+    assert library.load_background(document["background_id"]) == document
+
+
 @pytest.mark.parametrize("payload", [None, [], {"action": "background"}, {"action": "wizard"},
     {"action": "upload"}, {"action": "create"}, {"action": "export"}, {"action": "unknown"}])
 def test_only_model_and_cg_actions_are_accepted(workspace, payload):

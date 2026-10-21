@@ -1612,7 +1612,7 @@ def start_job(background_id, payload, raw_image=None):
               "model_settings": model_settings(payload.get("model_settings", {})),
               "settings": normalize_settings(payload.get("settings", {}))}
     if action == "cg":
-        values.update(name=_name(payload.get("name", "View")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
+        values.update(name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
         scene = model_scene(background_id, values["model_id"])
         if (scene["source_image_id"] != image_id
                 or _variant_key(scene.get("source_variant")) != _variant_key(source_variant)):
