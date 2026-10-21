@@ -59,8 +59,10 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-dialog-fields { display:flex; flex-direction:column; gap:12px; }
 .vnccs-cg-creator .vnccs-common-modal { max-height:calc(100% - 32px); overflow:auto; }
 .vnccs-cg-creator .bg-image-dialog { width:min(1400px,calc(100% - 32px)); max-width:min(1400px,calc(100% - 32px)); height:min(900px,calc(100% - 32px)); }
-.vnccs-cg-creator .bg-viewport .bg-image-dialog { width:100%; max-width:100%; height:100%; max-height:100%; border-radius:0; }
-.vnccs-cg-creator .bg-image-viewport { position:relative; flex:1; min-height:0; overflow:hidden; touch-action:none; cursor:grab; }
+.vnccs-cg-creator .bg-viewport .bg-image-dialog { position:relative; width:100%; max-width:100%; height:100%; max-height:100%; padding:0; border:0; border-radius:0; gap:0; }
+.vnccs-cg-creator .bg-image-dialog .vnccs-common-modal-title { display:none; }
+.vnccs-cg-creator .bg-image-dialog .vnccs-common-modal-btn-row { position:absolute; right:12px; bottom:12px; z-index:1; }
+.vnccs-cg-creator .bg-image-viewport { position:absolute; inset:0; min-height:0; overflow:hidden; touch-action:none; cursor:grab; }
 .vnccs-cg-creator .bg-image-viewport.is-dragging { cursor:grabbing; }
 .vnccs-cg-creator .bg-image-viewport:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 .vnccs-cg-creator .bg-image-dialog img { position:absolute; left:0; top:0; display:block; max-width:none; max-height:none; transform-origin:0 0; pointer-events:none; user-select:none; }
@@ -917,7 +919,7 @@ class CGCreatorWidget {
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
         this.host.inert = !this.canEditCamera();
-        this.container.querySelector(".bg-camera-toolbar").hidden = Boolean(this.previewSource) || !this.state?.model_id || this.scene?.model_id !== this.state.model_id;
+        this.container.querySelector(".bg-camera-toolbar").style.visibility = this.previewSource || !this.state?.model_id || this.scene?.model_id !== this.state.model_id ? "hidden" : "";
         this.container.querySelector("[data-model-status]").textContent = this.busy && this.activeAction === "model" ? "Creating model…" : this.state?.model_id ? "Model ready" : "Model not created";
     }
 
@@ -1022,7 +1024,7 @@ class CGCreatorWidget {
         this.container.querySelector("[data-model-status]").textContent = this.state.model_id ? "Model ready" : "Model not created";
         const visible = Boolean(this.state.model_id && this.scene?.model_id === this.state.model_id); this.host.hidden = !visible; this.container.querySelector("[data-viewer-empty]").hidden = visible;
         const gallery = this.container.querySelector("[data-cgs]"); gallery.replaceChildren();
-        const cgs = imageCGs(this.document, this.state);
+        const cgs = imageCGs(this.document, this.state).reverse();
         if (this.pendingCG) {
             const pending = this.pendingCG, card = document.createElement("button"); card.className = "bg-cg-card vnccs-common-creator-model-card"; card.dataset.pendingCg = ""; card.setAttribute("aria-label", `Preview ${pending.name} while generating`);
             const title = document.createElement("strong"); title.textContent = pending.name;
@@ -1295,6 +1297,7 @@ class CGCreatorWidget {
             return viewport;
         }, [{ text: "Close", action: close }]);
         modal.modal.classList.add("bg-image-dialog"); modal.buttons[0].dataset.closePreview = "";
+        for (const element of [modal.overlay, modal.modal]) for (const animation of element.getAnimations?.() || []) animation.cancel();
         this.cgPreviewClose = close; this.previewSource = source;
         const dispose = this.attachPreviewNavigation(viewport, image);
         this.dialogs.add(close);

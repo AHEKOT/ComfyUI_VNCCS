@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 import { FactoryCommandHistory } from "./fixtures/factory_history.mjs";
-import { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
+import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
 
 const BASE = "/vnccs/cg-creator";
 const A = "a".repeat(32), B = "b".repeat(32), MODEL = "c".repeat(32), IMAGE = "d".repeat(32), CG = "e".repeat(32);
@@ -102,6 +102,7 @@ class Element {
     click() { return this.fire("click"); }
     showModal() { this.open = true; }
     close() { this.open = false; }
+    getAnimations() { return this.animations || []; }
     reportValidity() { return (!this.required || this.value !== "") && (!this.pattern || new RegExp("^(?:" + this.pattern + ")$", "u").test(this.value)); }
 }
 
@@ -158,6 +159,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         CGQi2Controls: class { constructor(host, options) { this.options = options; this.host = host; this.els = {}; } render(config) { this.config = config; } setDisabled(value) { this.disabled = value; } dispose() { this.disposed = true; } },
         showModal: (container, title, createContent, actions) => {
             const overlay = new Element("div"), modal = new Element("div"), content = createContent(), buttons = [];
+            for (const element of [overlay, modal]) element.animations = [{ cancel() { this.cancelled = true; } }];
             modal.setAttribute("role", "dialog"); modal.appendChild(content); overlay.appendChild(modal); container.appendChild(overlay);
             for (const action of actions) { const button = new Element("button"); button.textContent = action.text; button.onclick = () => { if (action.action?.() !== true) overlay.remove(); }; modal.appendChild(button); buttons.push(button); }
             return { overlay, modal, content, buttons };
@@ -507,22 +509,41 @@ test("image selection binds its latest model and only its own CG gallery", async
     assert.equal(h.widget.state.model_id, MODEL); assert.equal(h.widget.viewer.camera.fov, 73); assert.equal(h.widget.state.selected_image_id, IMAGE);
 });
 
+test("image preview fills the model surface without modal padding, borders or control rows", () => {
+    const dialog = source.match(/\.vnccs-cg-creator \.bg-viewport \.bg-image-dialog \{([^}]+)\}/)[1];
+    assert.match(dialog, /position:relative;/); assert.match(dialog, /width:100%;/); assert.match(dialog, /height:100%;/);
+    assert.match(dialog, /padding:0;/); assert.match(dialog, /border:0;/);
+    const image = source.match(/\.vnccs-cg-creator \.bg-image-viewport \{([^}]+)\}/)[1];
+    assert.match(image, /position:absolute;/); assert.match(image, /inset:0;/);
+    const controls = source.match(/\.bg-image-dialog \.vnccs-common-modal-btn-row \{([^}]+)\}/)[1];
+    assert.match(controls, /position:absolute;/);
+    assert.match(source, /\.bg-image-dialog \.vnccs-common-modal-title \{ display:none; \}/);
+});
+
 test("CG preview opens inside the model viewport and cleans up on close, configure and removal", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const viewer = h.widget.viewer, viewport = h.control(".bg-viewport");
+    const layout = { size: [...h.node.size], height: h.widget.container.style.height };
     assert.equal(h.control(".bg-camera-toolbar").hidden, false);
     await h.control("[data-cg-id]").click();
-    assert.equal(h.control(".bg-camera-toolbar").hidden, true);
+    assert.equal(h.control(".bg-camera-toolbar").hidden, false, "The toolbar keeps its layout row during image inspection");
+    assert.equal(h.control(".bg-camera-toolbar").style.visibility, "hidden");
+    assert.deepEqual([...h.node.size], layout.size); assert.equal(h.widget.container.style.height, layout.height);
     assert.equal(h.widget.host.inert, true); assert.equal(h.control("[data-fov]").disabled, true);
     h.widget.fov.value = "90"; await h.widget.fov.fire("input");
     assert.equal(viewer.getCameraState().fov, camera.fov, "Image inspection cannot edit the model camera");
     const image = h.control("[data-large-preview]"), navigation = h.control("[data-preview-viewport]");
     assert.equal(viewport.contains(h.control('[role="dialog"]')), true);
+    const modal = h.control('[role="dialog"]');
+    assert.equal(modal.getAnimations()[0].cancelled, true, "The preview never translates or scales into the model window");
+    assert.equal(modal.parentElement.getAnimations()[0].cancelled, true);
     assert.equal(image.src, background().cgs[0].url); assert.equal(image.alt, "Full-size Window view");
     assert.equal(h.widget.state.selected_cg_id, CG); assert.equal(h.widget.viewer, viewer);
     const saved = h.data.value;
     h.widget.cgPreviewClose();
     assert.equal(h.control(".bg-camera-toolbar").hidden, false); assert.equal(h.widget.host.inert, false);
+    assert.equal(h.control(".bg-camera-toolbar").style.visibility, "");
+    assert.deepEqual([...h.node.size], layout.size); assert.equal(h.widget.container.style.height, layout.height);
     assert.equal(h.control('[role="dialog"]'), null); assert.equal(h.widget.cgPreviewClose, null);
     assert.equal(image.onload, null); assert.equal(navigation.onpointermove, null); assert.equal(navigation.onwheel, null); assert.equal(h.widget.dialogs.size, 0);
     assert.equal(h.data.value, saved, "Closing the image preserves the selected CG and its camera");
@@ -538,7 +559,8 @@ test("background preview fills the model viewport and shares preview replacement
     const h = harness(JSON.stringify(state())); await h.ready();
     const saved = h.data.value, viewer = h.widget.viewer;
     await h.control("[data-enlarge]").click();
-    assert.equal(h.control(".bg-camera-toolbar").hidden, true, "Camera controls are available only in model view");
+    assert.equal(h.control(".bg-camera-toolbar").hidden, false, "Hiding camera controls must preserve their row");
+    assert.equal(h.control(".bg-camera-toolbar").style.visibility, "hidden", "Camera controls are visible only in model view");
     assert.equal(h.control(".bg-viewport").contains(h.control('[role="dialog"]')), true);
     assert.equal(h.control("[data-large-preview]").src, background().images[0].url);
     await h.control("[data-enlarge]").click();
@@ -561,8 +583,8 @@ test("CG deletion waits for disk acknowledgement and preserves the camera and ot
             assert.deepEqual(JSON.parse(options.body), { revision: 3 }); return pending.promise;
         }
     };
-    await h.control("[data-cg-id]").click();
-    const operation = h.control("[data-delete-cg]").click(); await settle();
+    await h.control(`[data-cg-id="${CG}"]`).click();
+    const operation = h.control(`[data-delete-cg="${CG}"]`).click(); await settle();
     assert.equal(h.widget.busy, true); assert.equal(h.control("[data-delete-cg]").disabled, true);
     assert.equal(h.control("[data-cgs]").children.length, 2, "Deletion is not optimistic");
     const saved = background(A, { revision: 4, cgs: [other] }); h.documents.set(A, saved);
@@ -697,6 +719,7 @@ test("a name submitted after configure or removal cannot start CG generation", a
 
 test("Generate CG captures its camera and frame then selects the finished CG", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
+    const completion = deferred(), polled = deferred(), gallery = h.control("[data-cgs]");
     const savedCamera = { ...camera, fov: 58 }, cgId = "0".repeat(32), size = frameDimensions("4:3", 2), completed = background(A, { revision: 5 });
     completed.cgs.push({ cg_id: cgId, name: "Desk", model_id: MODEL, source_image_id: IMAGE, camera: savedCamera, ...size, url: "/finished-cg.png" });
     h.widget.viewer.camera = savedCamera;
@@ -704,17 +727,27 @@ test("Generate CG captures its camera and frame then selects the finished CG", a
     h.api.handle = (path, options) => {
         if (options.method === "PATCH") return response(background(A, { revision: 4, cg_settings: h.widget.state.settings }));
         if (path === `${BASE}/backgrounds/${A}/jobs`) { assert.ok(options.body.get("image") instanceof Blob); payload = JSON.parse(options.body.get("data")); return response({ job_id: B }); }
-        if (path === `${BASE}/jobs/${B}`) return response({ status: "completed", progress: 100, result: { document: completed } });
+        if (path === `${BASE}/jobs/${B}`) { polled.resolve(); return completion.promise; }
     };
-    await generateCG(h, "  Desk  ");
+    const generating = generateCG(h, "  Desk  "); await polled.promise;
+    assert.equal(gallery.children[0].dataset.pendingCg, "", "The new scene starts at the top while generating");
+    gallery.scrollTop = 72;
+    h.documents.set(A, completed);
+    completion.resolve(response({ status: "completed", progress: 100, result: { document: completed } })); await generating;
     assert.equal(payload.name, "Desk");
     assert.equal(payload.action, "cg"); assert.equal(payload.model_id, MODEL); assert.deepEqual(payload.camera, savedCamera);
     assert.equal(h.widget.viewer.captureOptions.width, size.width); assert.equal(h.widget.viewer.captureOptions.height, size.height);
     assert.deepEqual(clone(h.widget.state.frame), size); assert.equal(h.widget.state.selected_cg_id, cgId);
     assert.equal(h.widget.viewer.settings.width, size.width); assert.equal(h.widget.viewer.settings.height, size.height);
-    const cards = h.control("[data-cgs]").querySelectorAll("[data-cg-id]"); assert.equal(cards.length, 2);
-    assert.equal(cards.at(-1).querySelector("img").src, "/finished-cg.png"); assert.equal(cards.at(-1).classList.contains("is-selected"), true);
+    const cards = gallery.querySelectorAll("[data-cg-id]"); assert.equal(cards.length, 2);
+    assert.deepEqual(cards.map(card => card.dataset.cgId), [cgId, CG], "The completed scene stays at the top");
+    assert.equal(cards[0].querySelector("img").src, "/finished-cg.png"); assert.equal(cards[0].classList.contains("is-selected"), true);
+    assert.equal(gallery.scrollTop, 72, "Completion preserves gallery scroll position");
+    assert.deepEqual(h.widget.document.cgs.map(cg => cg.cg_id), [CG, cgId], "Display order never mutates saved history");
     assert.equal(JSON.parse(h.data.value).selected_cg_id, cgId); assert.deepEqual(h.queued, []);
+    await h.control("[data-refresh]").click(); h.node.onConfigure(); await h.ready();
+    assert.deepEqual(gallery.querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [cgId, CG], "Newest-first order survives refresh and workflow reload");
+    assert.equal(h.widget.state.selected_cg_id, cgId);
 });
 
 test("random CG seed resolves once before transport and matches serialized UI state", async () => {

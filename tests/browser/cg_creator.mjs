@@ -167,6 +167,9 @@ const geometry = () => page.evaluate(() => {
     }
     return result;
 });
+const assertBounds = (actual, expected, message) => {
+    for (const key of ["x", "y", "width", "height"]) assert.ok(Math.abs(actual[key] - expected[key]) <= 1, `${message}: ${key}`);
+};
 const verifyQwenModelSwitch = async (width = LAYOUT_WIDTH) => {
     await page.evaluate(width => setup({ width }), width); await settle();
     const height = await page.locator(".vnccs-cg-creator").evaluate(element => element.clientHeight), samples = [];
@@ -557,7 +560,8 @@ try {
     for (const key of ["position", "target", "up"]) synchronized.saved[key].forEach((value, i) => assert.ok(Math.abs(value - synchronized.current[key][i]) < 1e-9, `${key} stays synchronized during camera movement`));
     assert.equal(synchronized.saved.fov, synchronized.current.fov);
     await page.mouse.up(); scenarios.push({ name: "continuous-camera", live });
-    await page.locator("[data-cgs] .bg-cg-card").nth(1).click();
+    const modelFrameBeforePreview = await page.locator(".bg-viewport").boundingBox(), modelCanvasBeforePreview = await page.locator("[data-viewer] canvas").boundingBox();
+    await page.locator(`[data-cg-id="${initial.cgs[1].cg_id}"]`).click();
     await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.evaluate(() => widget.viewer.getCameraState().fov), 48);
     const cgPreview = page.locator('.bg-viewport [role="dialog"]'), cgImage = cgPreview.locator("[data-large-preview]");
@@ -565,6 +569,12 @@ try {
     await (await cgPreview.elementHandle()).waitForElementState("stable");
     assert.equal(await cgImage.getAttribute("src"), initial.cgs[1].url, "CG preview loads the original saved image");
     const cgBounds = await cgPreview.boundingBox(), frameBounds = await page.locator(".bg-viewport").boundingBox();
+    assertBounds(frameBounds, modelFrameBeforePreview, "Opening a CG preview preserves the model window position and size");
+    assertBounds(await cgPreview.locator("[data-preview-viewport]").boundingBox(), modelCanvasBeforePreview,
+        "The image navigation surface exactly replaces the previous model canvas");
+    assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), false);
+    assert.equal(await cgPreview.locator(".vnccs-common-modal-title").isVisible(), false);
+    assert.equal(await cgPreview.evaluate(element => element.getAnimations().length), 0, "Image preview never moves or scales into place");
     assert.ok(Math.abs(cgBounds.x - frameBounds.x - 1) < 1 && Math.abs(cgBounds.width - frameBounds.width + 2) < 1 && Math.abs(cgBounds.height - frameBounds.height + 2) < 1, "CG preview fills the model window without covering other panels");
     await capture("after-cg-preview");
     const previewCamera = await page.evaluate(() => widget.viewer.getCameraState());
@@ -577,8 +587,10 @@ try {
     assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), previewCamera, "Image navigation never moves the model camera");
     await page.mouse.up();
     await page.keyboard.press("Escape"); await cgPreview.waitFor({ state: "detached" }); assert.equal(await cgPreview.count(), 0);
+    assertBounds(await page.locator(".bg-viewport").boundingBox(), modelFrameBeforePreview, "Closing a preview preserves the model window");
+    assertBounds(await page.locator("[data-viewer] canvas").boundingBox(), modelCanvasBeforePreview, "Closing a preview preserves the model canvas");
     assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), previewCamera);
-    await page.locator("[data-cgs] .bg-cg-card").nth(1).click(); await cgPreview.waitFor();
+    await page.locator(`[data-cg-id="${initial.cgs[1].cg_id}"]`).click(); await cgPreview.waitFor();
     await cgPreview.locator("[data-close-preview]").click(); await cgPreview.waitFor({ state: "detached" }); assert.equal(await cgPreview.count(), 0);
     scenarios.push({ name: "full-size-cg-preview-in-model-window", geometry: cgBounds });
     const saved = await page.evaluate(() => { const value = { widgets_values: [widget.node.widgets[0].serializeValue()] }; widget.node.onSerialize(value); return value.widgets_values[0]; });
@@ -637,12 +649,15 @@ try {
     assert.deepEqual(await page.evaluate(() => widget.state.selected_variant), sourceVariant);
     assert.match(await page.locator("[data-model-source]").getAttribute("src"), new RegExp(`/sets/${setId}/1`));
     assert.equal(await page.locator("[data-save-view]").isDisabled(), true);
+    const backgroundFrameBeforePreview = await page.locator(".bg-viewport").boundingBox();
     await page.locator("[data-enlarge]").click(); await page.getByRole("dialog").waitFor();
     await page.waitForFunction(() => document.querySelector("[data-large-preview]")?.naturalWidth > 0);
     assert.match(await page.locator("[data-large-preview]").getAttribute("src"), new RegExp(`/sets/${setId}/1`));
     const backgroundPreview = page.locator('.bg-viewport [role="dialog"]');
     await (await backgroundPreview.elementHandle()).waitForElementState("stable");
     const backgroundBounds = await backgroundPreview.boundingBox(), modelBounds = await page.locator(".bg-viewport").boundingBox();
+    assertBounds(modelBounds, backgroundFrameBeforePreview, "Opening a background preview preserves the model window");
+    assertBounds(await backgroundPreview.locator("[data-preview-viewport]").boundingBox(), backgroundBounds, "Background preview has no modal gutters");
     assert.ok(Math.abs(backgroundBounds.x - modelBounds.x - 1) < 1 && Math.abs(backgroundBounds.width - modelBounds.width + 2) < 1 && Math.abs(backgroundBounds.height - modelBounds.height + 2) < 1, "Background preview fills the model window");
     await capture("after-preview");
     const preview = page.locator("[data-preview-viewport]"), previewBox = await preview.boundingBox();
