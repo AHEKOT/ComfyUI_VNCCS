@@ -41,7 +41,9 @@ function setup(selectedType = "unet") {
         setClothesCoreLora() {},
         startClothesPreviewGeneration: () => 1,
         revealClothesPreview: async () => true,
-        stopClothesPreviewGeneration() {},
+        stopClothesPreviewGeneration() {
+            context.btnGen.disabled = !!node._vnccsClothesSelectionPending;
+        },
         saveCostumeToBackend: async () => {},
         getConnectedControlCenterState: () => ({ repo_id: "VNCCS", node_state: "{}", selected_type: selectedType }),
         queueConnectedPreview: async () => { queued.push(JSON.parse(dataWidget.value)); return { cached: false }; },

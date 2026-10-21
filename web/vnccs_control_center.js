@@ -887,6 +887,7 @@ ${SAKURA_INTERACTION_CSS}
 .vnccs-cc-model-card-status[hidden],
 .vnccs-cc-lora-card-status[hidden],
 .vnccs-cc-turbo-strip-status[hidden],
+.vnccs-cc-download-slot[hidden],
 .vnccs-cc-download-btn[hidden] { display: none; }
 .vnccs-cc-lora-card-name {
     font-size: 10.5px;
@@ -2990,8 +2991,9 @@ class VNCCSControlCenterWidget {
         label.className = `${statusClass} ${statusClass}--${active ? "active" : installed ? "ok"
             : ["queued", "downloading", "success"].includes(status) ? "progress" : "missing"}`;
         if (label.textContent !== text) label.textContent = text;
-        label.hidden = downloadable;
-        label.tabIndex = downloadable ? -1 : 0;
+        slot.hidden = installed && mode === "turbo";
+        label.hidden = downloadable || slot.hidden;
+        label.tabIndex = label.hidden ? -1 : 0;
         label.title = label.ariaLabel = fullText;
         setHelpText(label, fullText);
         if (button) {
@@ -3002,7 +3004,6 @@ class VNCCSControlCenterWidget {
             button.hidden = !downloadable;
             button.disabled = !downloadable;
         }
-        if (focused?.hidden) (downloadable ? button : label).focus({ preventScroll: true });
         const updated = this._badge(status);
         if (badge) {
             badge.className = updated.className;
@@ -3031,6 +3032,7 @@ class VNCCSControlCenterWidget {
                 }
             }
         }
+        if (focused?.hidden) (slot.hidden ? card : downloadable ? button : label).focus({ preventScroll: true });
         const signature = `${status}:${active}`;
         if (animate && view.signature && view.signature !== signature) {
             this._playMotion(slot, [{ opacity: 0.25 }, { opacity: 1 }], 200);
@@ -4164,7 +4166,6 @@ class VNCCSControlCenterWidget {
             row.appendChild(toggle);
         }
 
-        row.appendChild(row._downloadView.slot);
         this._updateDownloadCard(row, false);
         return row;
     }

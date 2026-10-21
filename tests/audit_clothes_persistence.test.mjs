@@ -600,35 +600,37 @@ for (const raw of ['{"character":"Alice"', 'null', '[]', '{"costume_info":[]}'])
     });
 }
 
-test('two editors reject stale saves and retain the second draft through reload', async () => {
+test('an unchanged clothes workflow can save after newer disk writes', async () => {
     let disk = {top: 'cotton', shoes: 'boots'}, revision = 'revision-0';
+    let saves = 0;
     const first = setup({disk}), second = setup({disk});
     for (const h of [first, second]) h.configure({character: 'Alice', costume: 'Dress'});
     await Promise.all([first.context.initialLoad, second.context.initialLoad]);
     const save = async (route, options) => {
         assert.equal(route, '/vnccs/save_costume');
         const body = JSON.parse(options.body);
-        if (body.revision !== revision) return {ok: false, status: 409, json: async () => ({error: 'Costume changed; draft preserved'})};
-        disk = body.info; revision = 'revision-1';
+        disk = body.info; revision = `revision-${++saves}`;
         return response({status: 'ok', revision});
     };
     first.context.api.fetchApi = second.context.api.fetchApi = save;
     first.state.costume_info.top = 'silk';
     second.state.costume_info.shoes = 'sandals';
     await first.saveCostumeToBackend();
-    await assert.rejects(second.saveCostumeToBackend(), /Costume changed/);
-    assert.equal(disk.top, 'silk'); assert.equal(disk.shoes, 'boots');
+    assert.equal(disk.top, 'silk');
+    await second.saveCostumeToBackend();
+    assert.equal(disk.top, 'cotton'); assert.equal(disk.shoes, 'sandals');
     const workflow = second.serialize();
     assert.equal(workflow.costume_info.shoes, 'sandals');
-    assert.equal(workflow.costume_revision, 'revision-0');
+    assert.equal(workflow.costume_revision, 'revision-2');
+    await first.saveCostumeToBackend();
     const metadata = deferred(), reloaded = setup({disk, metadata});
     reloaded.configure(workflow);
     metadata.resolve(response(disk, revision));
     await reloaded.context.initialLoad;
     reloaded.context.api.fetchApi = save;
-    await assert.rejects(reloaded.saveCostumeToBackend(), /Costume changed/);
+    await reloaded.saveCostumeToBackend();
     assert.equal(reloaded.serialize().costume_info.shoes, 'sandals');
-    assert.equal(disk.top, 'silk');
+    assert.equal(disk.top, 'cotton'); assert.equal(disk.shoes, 'sandals');
 });
 
 test('queued edits use the preceding disk acknowledgement as their revision', async () => {

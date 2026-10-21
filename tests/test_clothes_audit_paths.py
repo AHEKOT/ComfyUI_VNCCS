@@ -322,7 +322,7 @@ def test_create_only_costume_requests_are_atomic_and_regular_edits_still_work(cl
     assert utils.load_costume_info("Alice", "Dress") == {"top": "edited wool"}
 
 
-def test_stale_costume_edits_preserve_newer_fields_and_cannot_recreate_deleted_costumes(clothes_paths, monkeypatch):
+def test_costume_saves_ignore_workflow_revision_but_do_not_recreate_deleted_costumes(clothes_paths, monkeypatch):
     monkeypatch.setattr(clothes_paths.web, "json_response", lambda data, status=200, **kwargs:
         types.SimpleNamespace(data=data, status=status, **kwargs), raising=False)
     original = {"top": "cotton", "shoes": "boots"}
@@ -333,11 +333,12 @@ def test_stale_costume_edits_preserve_newer_fields_and_cannot_recreate_deleted_c
         return await clothes_paths.vnccs_save_costume(costume_request({"character": "Alice", "costume": "Dress", "info": info, "revision": version}))
     first = asyncio.run(save({**original, "top": "silk"}))
     assert first.status == 200 and first.data["revision"] != revision
-    assert asyncio.run(save({**original, "shoes": "sandals"})).status == 409
-    assert utils.load_costume_info("Alice", "Dress") == {**original, "top": "silk"}
-    assert asyncio.run(save(original, None)).status == 428
+    assert asyncio.run(save({**original, "shoes": "sandals"})).status == 200
+    assert utils.load_costume_info("Alice", "Dress") == {**original, "shoes": "sandals"}
+    assert asyncio.run(save(original, None)).status == 200
+    assert utils.load_costume_info("Alice", "Dress") == original
     utils.delete_costume("Alice", "Dress")
-    assert asyncio.run(save(original, first.data["revision"])).status == 409
+    assert asyncio.run(save(original, first.data["revision"])).status == 404
     assert "Dress" not in utils.load_config("Alice")["costumes"]
     assert not (Path(utils.character_dir("Alice")) / "Sprites" / "Dress").exists()
 

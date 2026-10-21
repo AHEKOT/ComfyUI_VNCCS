@@ -9,7 +9,9 @@ const sheets = readdirSync(web, { recursive: true })
     .filter(name => /\.(?:js|mjs)$/.test(name))
     .map(name => {
         const source = readFileSync(new URL(name, web), "utf8").replaceAll("${SAKURA_THEME_CSS}", theme.trimEnd());
-        const css = Array.from(source.matchAll(/(?:const\s+\w*(?:STYLE|CSS)\w*|\w+\.textContent)\s*=\s*`([\s\S]*?)`/g), match => match[1])
+        // Exported component literals are not independently injected widget sheets.
+        if (!source.includes("injectStyles(") && !/createElement\(["']style["']\)/.test(source)) return { name, source, css: "", selectors: [] };
+        const css = Array.from(source.matchAll(/(?:const\s+\w*(?:STYLE|CSS)\w*|\w+\.textContent)\s*=\s*`([\s\S]*?)`/g), match => match[1].replace(/\$\{[^}]*\}/g, ""))
             .filter(text => /(?:display|position|font-size|background)\s*:/.test(text)).join("\n");
         const selectors = Array.from(css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{/g), match => match[1].trim());
         return { name, source, css, selectors };
@@ -142,4 +144,17 @@ test("active-state exclusions retain the priority of Save styles", () => {
     const controlCenter = sheets.find(item => item.name === "vnccs_control_center.js");
     assert.ok(controlCenter.selectors.some(selector => selector.startsWith(".vnccs-cc-btn:hover:where(")));
     assert.ok(controlCenter.selectors.includes(".vnccs-cc-btn--save:hover"));
+});
+
+
+test("the shared style component owns library appearance without node grid or palette overrides", () => {
+    const source = readFileSync(new URL("character_styles.mjs", web), "utf8");
+    const css = source.match(/export const STYLE_PICKER_CSS = `([\s\S]*?)`;/)[1];
+    assert.match(css, /\.vnccs-style-summary/);
+    assert.match(css, /background: linear-gradient\(145deg, #292034, #17131f\)/);
+    assert.doesNotMatch(css, /\.vnccs-creator-top-row|--bg-primary:|\.vnccs-clothes-top-row/);
+    const creator = readFileSync(new URL("vnccs_character_creator_v2.js", web), "utf8");
+    const background = readFileSync(new URL("vnccs_background_creator.js", web), "utf8");
+    assert.ok(creator.includes("${STYLE_PICKER_CSS}"));
+    assert.ok(background.includes('STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-background-creator")'));
 });

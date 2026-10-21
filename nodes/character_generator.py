@@ -412,14 +412,18 @@ def _safe_cache_dir(cache_dir):
     if not cache_dir:
         return ""
     cache_abs = os.path.abspath(normalize_filesystem_path(cache_dir))
-    if not _is_under(base_output_dir(), cache_abs):
-        return ""
     if "cache" not in normalize_filesystem_path(cache_abs).split(os.sep):
         return ""
-    try:
-        return safe_join_under(base_output_dir(), os.path.relpath(cache_abs, base_output_dir()))
-    except ValueError:
-        return ""
+    roots = [base_output_dir()]
+    if folder_paths is not None:
+        roots.append(os.path.join(folder_paths.get_output_directory(), "VNCCS", "Backgrounds"))
+    for root in roots:
+        if _is_under(root, cache_abs):
+            try:
+                return safe_join_under(root, os.path.relpath(cache_abs, root))
+            except ValueError:
+                return ""
+    return ""
 
 
 def _safe_existing_character_image_path(path, character_name=""):
@@ -1137,6 +1141,7 @@ class VNCCS_CharacterGenerator:
         processing_index=None,
         processing_indices=None,
         preview_aspect=None,
+        labels=None,
     ):
         log_stage(stage, status, node_id=str(self._unwrap_scalar(unique_id)) if unique_id is not None else None,
                   current=current, total=total, message=message)
@@ -1148,6 +1153,8 @@ class VNCCS_CharacterGenerator:
             "status": status,
             "message": message,
         }
+        if getattr(self, "_progress_background", None):
+            payload["background_id"] = self._progress_background
         if current is not None:
             payload["current"] = int(current)
         if total is not None:
@@ -1158,6 +1165,8 @@ class VNCCS_CharacterGenerator:
             payload["processing_indices"] = list(processing_indices)
         if preview_aspect is not None:
             payload["preview_aspect"] = float(preview_aspect)
+        if labels is not None:
+            payload["labels"] = list(labels)
         if lora_info is not None:
             payload["lora_info"] = lora_info
         if images is not None:
@@ -2893,6 +2902,172 @@ class VNCCS_CharacterGenerator:
             return final_images, final_images, pose_images, upscaled
         except Exception as exc:
             _forget_generator_context(unique_id, getattr(self, "_progress_scope", None))
+            self._emit(unique_id, "error", "error", message=str(exc))
+            raise
+
+
+class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
+    INPUT_IS_LIST = True
+    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE")
+    RETURN_NAMES = ("backgrounds", "source_upscaled", "variations")
+    OUTPUT_IS_LIST = (True, False, True)
+    DESCRIPTION = "Upscale the source background, generate every Prompt list variant with the Control Center model, then optionally upscale the variants. Save complete sets beside the background JSON."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "pipe": ("VNCCS_PIPE",), "background": ("IMAGE",),
+            "prompt": ("STRING", {"forceInput": True}),
+            "widget_data": ("STRING", {"default": json.dumps(DEFAULT_WIDGET_DATA), "multiline": True, "dynamicPrompts": False}),
+        }, "hidden": {"unique_id": "UNIQUE_ID"}}
+
+    def _background_tasks(self, prompt, payload=None):
+        from .background_creator import MAX_JSON_BYTES, _id, normalize_variants, variant_prompt
+        values = prompt if isinstance(prompt, list) else [prompt]
+        if len(values) > 64 or any(not isinstance(value, str) for value in values):
+            raise ValueError("Connect the Background Creator Prompt LIST with one entry per variant")
+        if not values:
+            payload = payload or {}
+            return (_id(payload.get("background_id")), payload.get("background_source_image_id")), []
+        if sum(len(value.encode("utf-8")) for value in values) > MAX_JSON_BYTES:
+            raise ValueError("Background variant prompts are too large")
+        entries = [json.loads(value) for value in values]
+        if any(not isinstance(entry, dict) for entry in entries):
+            raise ValueError("Background Prompt entries must contain variant parameters")
+        cards = normalize_variants(entries)
+        identity = (_id(entries[0].get("background_id")), _id(entries[0].get("source_image_id")))
+        if any((entry.get("background_id"), entry.get("source_image_id")) != identity for entry in entries):
+            raise ValueError("Every variant must belong to the same background and source image")
+        return identity, [{**card, "prompt": variant_prompt(card)} for card in cards]
+
+    def _background_variant(self, source, pipe, values, prompt, settings, unique_id):
+        sampler = self._sampler_settings(values, settings["pose_sampler"])
+        target = settings["pose_generation"]["target_size"]
+        model = values["model"]
+        if self._is_h3_pipe(values):
+            require_h3_still_support()
+            if values.get("audio_vae") is None:
+                raise RuntimeError("MiniMax H3 requires the audio VAE from Control Center")
+            width, height = self._resolution_scale_dimensions(source, target, multiple=32)
+            positive, latent = _call_comfy_node(
+                "MiniMaxH3ReferenceToVideo", clip=values["clip"], vae=values["vae"], audio_vae=values["audio_vae"],
+                prompt=prompt, width=width, height=height, length=H3_FRAME_COUNT,
+                ref_image_size="match", ref_images={"ref_image_1": source}, _vnccs_node_id=unique_id,
+            )
+            noise = _call_comfy_node("RandomNoise", noise_seed=sampler["seed"])[0]
+            guider = _call_comfy_node("BasicGuider", model=model, conditioning=positive)[0]
+            algorithm = _call_comfy_node("KSamplerSelect", sampler_name=sampler["sampler_name"])[0]
+            sigmas = _call_comfy_node("BasicScheduler", model=model, scheduler=sampler["scheduler"],
+                                      steps=sampler["steps"], denoise=sampler["denoise"])[0]
+            samples = _call_comfy_node("SamplerCustomAdvanced", noise=noise, guider=guider,
+                                       sampler=algorithm, sigmas=sigmas, latent_image=latent)[0]
+            return self._h3_decode(samples, values["vae"]).detach().cpu()
+        positive, negative, latent = self._encoder_call(values, prompt, image1=source, qwen_settings={"target_size": target})
+        self._validate_conditioning_for_model(values, positive, negative, "Background generation")
+        if self._is_qi2_pipe(values):
+            model, turbo = self._qi2_prepare_model(model, pipe, values)
+            samples = self._qi2_sample(model, positive, negative, latent, sampler, turbo=turbo)
+            return self._qi2_decode(samples, values["vae"]).detach().cpu()
+        samples = _call_comfy_node("KSampler", model=model, positive=positive, negative=negative,
+                                   latent_image=latent, _vnccs_node_id=unique_id, **sampler)[0]
+        return _call_comfy_node("VAEDecodeTiled", samples=samples, vae=values["vae"],
+                                _vnccs_node_id=unique_id, **self._vae_decode_settings(settings["vae_decode"]))[0].detach().cpu()
+
+    @logged_operation("BackgroundGenerator", "generate")
+    @serialized_generator
+    def process(self, pipe, background, prompt, widget_data="{}", unique_id=None):
+        from . import background_creator as backgrounds
+        payload, settings = self._widget_data(widget_data), self._settings(widget_data)
+        unique_id = self._unwrap_scalar(unique_id)
+        self._progress_background = None
+        self._begin_progress(payload, unique_id)
+        try:
+            pipe, background = self._unwrap_scalar(pipe), self._unwrap_scalar(background)
+            if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
+                raise ValueError("Background Generator requires one source IMAGE, not an image batch")
+            (background_id, image_id), cards = self._background_tasks(prompt, payload)
+            self._progress_background = background_id
+            document = backgrounds.load_background(background_id)
+            if document.get("_recovery") or document.get("archived"):
+                raise ValueError("The selected background is read-only; its data is retained")
+            if not cards and not self._regenerate_from(payload):
+                # Creator may have replaced the source after workflow serialization.
+                image_id = document["selected_image_id"]
+            payload = {**payload, "background_source_image_id": image_id}
+            backgrounds.image_path(background_id, image_id)
+            values = self._extract_pipe(pipe)
+            if not (self._is_qi2_pipe(values) or self._is_klein_pipe(values) or self._is_h3_pipe(values)):
+                raise ValueError("Select a QI2, Klein9b or MiniMax H3 editing model in Control Center")
+            cache_dir = scoped_cache_dir(str(backgrounds._path(document["name"], "cache", "generator", _safe_cache_part(unique_id))), self._progress_scope)
+            _remember_generator_context(unique_id, "VNCCS_BackgroundGenerator", cache_dir, pipe, self._progress_scope)
+            order = ("source_upscaler", "background_generation", "upscaler")
+            start, selected = self._regenerate_from(payload), self._regenerate_index(payload)
+            self._should_regenerate_stage(order, start, order[0])
+            if start or not cards:
+                fields = ("id", "name", "time", "weather", "additional_details")
+                current = backgrounds.normalize_editor(document["editor"])["variants"]
+                if [[card[key] for key in fields] for card in current] != [[card[key] for key in fields] for card in cards]:
+                    raise ValueError("Background variants changed. Run Background Generator normally before regenerating")
+            if selected is not None and (selected > len(cards) or (start == "source_upscaler" and selected != 0)):
+                raise ValueError("Selected background variant is unavailable")
+            if start and selected == 0:
+                start, selected = "source_upscaler", None
+            if not start:
+                _rotate_preview_cache(cache_dir)
+                _save_run_inputs(cache_dir, background=background, prompt=prompt, widget_payload=payload)
+            labels = ["Original", *(card["name"] for card in cards)]
+            source = None if self._should_regenerate_stage(order, start, order[0]) else _load_cached_tensor(cache_dir, order[0])
+            if source is None:
+                if start and start != order[0]:
+                    raise ValueError("Source cache is unavailable. Run Background Generator normally first")
+                self._emit(unique_id, order[0], "running", message="Upscaling original background", current=0, total=1, labels=["Original"])
+                source = self._run_source_upscaler(background, {**settings["upscaler"], "mode": "seedvr"}, values["seed"],
+                                                   unique_id, cache_dir, stage=order[0])
+                self._save_stage(cache_dir, order[0], source)
+            self._emit(unique_id, order[0], "done", source, "Original background ready", 1, 1,
+                       cache_dir=cache_dir, labels=["Original"], preview_aspect=self._image_aspect(source))
+            results = {order[1]: [source], order[2]: [source]}
+            for stage in order[1:]:
+                self._emit(unique_id, stage, "running", source, "Preparing background variants", 1, len(labels),
+                           cache_dir=cache_dir, replace_images=True, labels=labels, preview_aspect=self._image_aspect(source))
+                regenerate = self._should_regenerate_stage(order, start, stage)
+                for index, card in enumerate(cards, start=1):
+                    cache_key = f"{stage}_{index:04d}"
+                    rerun = regenerate and (selected is None or index == selected)
+                    image = None if rerun else _load_cached_tensor(cache_dir, cache_key)
+                    if image is None and not rerun:
+                        raise ValueError("Variant cache is unavailable. Run Background Generator normally first")
+                    if image is None:
+                        self._emit(unique_id, stage, "running", message=f"Processing {card['name']}", current=index,
+                                   total=len(labels), processing_index=index, labels=labels)
+                        if stage == order[1]:
+                            log_event("prompts", component="BackgroundGenerator", node_id=unique_id,
+                                      context=f"Variant {index}/{len(cards)}: {card['name']}", model=values.get("model_kind"),
+                                      variant_id=card["id"], positive=card["prompt"], negative="", truncate=False,
+                                      display_text=f"Positive prompt:\n{card['prompt']}\n\nNegative prompt:\n")
+                            image = self._background_variant(source, pipe, values, card["prompt"], settings, unique_id)
+                        elif _upscaler_mode(settings["upscaler"]) == "off":
+                            image = results[order[1]][index]
+                        else:
+                            image = self._run_source_upscaler(results[order[1]][index], settings["upscaler"], values["seed"],
+                                                              stage=stage)
+                        _save_cached_tensor(cache_dir, cache_key, image)
+                    results[stage].append(image)
+                    self._emit(unique_id, stage, "running", image, f"{card['name']} ready", index + 1, len(labels),
+                               cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels)
+                self._emit(unique_id, stage, "done", message="Background variants ready", current=len(labels), total=len(labels), labels=labels)
+            final = results[order[2]]
+            paths = backgrounds.publish_background_set(background_id, image_id, cards,
+                [self._tensor_item_to_pil(image[0]) for image in final],
+                {"upscaler": settings["upscaler"], "generation": settings["pose_generation"],
+                 "sampler": self._sampler_settings(values, settings["pose_sampler"]),
+                 "model": values.get("model_entry") or {"kind": values["model_kind"]}}, document["revision"],
+                regenerate_indices=None if not start else ([selected] if selected is not None else list(range(0 if start == order[0] else 1, len(final)))))
+            for index, (image, path) in enumerate(zip(final, paths)):
+                self._emit(unique_id, order[2], "done", image, "Background set saved", len(labels), len(labels),
+                           cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels, preview_paths=[str(path)])
+            return (final, source, results[order[1]])
+        except Exception as exc:
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
 
@@ -4889,6 +5064,8 @@ if server is not None:
             widget_payload = deepcopy(data.get("widget_data")) if isinstance(data.get("widget_data"), dict) else {}
             cached_payload = cached_inputs.get("widget_payload")
             identity_keys = ("character_name", "emotion_pairs") if generator_type == "VNCCS_EmotionsGenerator" else ("character_name",)
+            if generator_type == "VNCCS_BackgroundGenerator":
+                identity_keys = ("background_id", "background_source_image_id", "background_variants")
             identity_changed = isinstance(cached_payload, dict) and any(
                 key in cached_payload and widget_payload.get(key) != cached_payload[key]
                 for key in identity_keys
@@ -4910,6 +5087,7 @@ if server is not None:
             pipe = ctx["pipe"]
 
             generator_cls = {
+                "VNCCS_BackgroundGenerator": VNCCS_BackgroundGenerator,
                 "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
                 "VNCCS_CharacterCloneGenerator": VNCCS_CharacterCloneGenerator,
                 "VNCCS_ClothesGenerator": VNCCS_ClothesGenerator,
@@ -4929,7 +5107,12 @@ if server is not None:
             restore_pipe_seed = _temporarily_shift_pipe_seed(pipe, seed_shift)
             try:
                 with torch.inference_mode():
-                    if generator_type == "VNCCS_EmotionsGenerator":
+                    if generator_type == "VNCCS_BackgroundGenerator":
+                        generator_cls().process(
+                            pipe, cached_inputs.get("background"), cached_inputs.get("prompt", []),
+                            widget_data=widget_data, unique_id=unique_id,
+                        )
+                    elif generator_type == "VNCCS_EmotionsGenerator":
                         generator_cls().process(
                             cached_inputs.get("images"),
                             pipe,
@@ -4969,6 +5152,7 @@ if server is not None:
             return web.json_response({"error": str(exc)}, status=500)
 
 NODE_CLASS_MAPPINGS = {
+    "VNCCS_BackgroundGenerator": VNCCS_BackgroundGenerator,
     "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
     "VNCCS_CharacterCloneGenerator": VNCCS_CharacterCloneGenerator,
     "VNCCS_ClothesGenerator": VNCCS_ClothesGenerator,
@@ -4976,6 +5160,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "VNCCS_BackgroundGenerator": "VNCCS Background Generator",
     "VNCCS_CharacterGenerator": "VNCCS Character Generator",
     "VNCCS_CharacterCloneGenerator": "VNCCS Character Clone Generator",
     "VNCCS_ClothesGenerator": "VNCCS Clothes Generator",

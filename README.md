@@ -37,6 +37,10 @@ Manual install:
 2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git vnccs`
 3. `cd vnccs`
 4. `pip install -r requirements.txt`
+5. `python install.py`
+
+Run both commands with the Python interpreter that starts ComfyUI. ComfyUI-Manager
+runs `install.py` as its installation hook.
 
 Post install steps:
 Launch ComfyUI and open Comfy Manager

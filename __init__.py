@@ -195,3 +195,17 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": str(e)}, status=500)
 
 _vnccs_register_endpoint()
+
+
+def _vnccs_register_background_creator():
+    try:
+        from server import PromptServer
+    except ImportError:
+        return
+    if getattr(PromptServer.instance, "app", None) is None:
+        return
+    from .nodes.background_creator import register_routes
+    register_routes(PromptServer.instance.routes)
+
+
+_vnccs_register_background_creator()

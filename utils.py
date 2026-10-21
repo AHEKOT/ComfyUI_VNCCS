@@ -249,7 +249,7 @@ def _link_or_copy(source, target):
 
 
 @contextmanager
-def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
+def staged_image_batch(target_dir, *, version_existing=True, lock_root=None, commit=None, before_publish=None):
     """Publish a complete image directory and restore the old one on failure."""
     parent = os.path.dirname(os.path.abspath(target_dir))
     os.makedirs(parent, exist_ok=True)
@@ -265,7 +265,7 @@ def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
             version_dir = None
             if version_existing and old_images:
                 number = 1
-                while f"V{number}" in existing:
+                while os.path.lexists(os.path.join(target_dir, f"V{number}")):
                     number += 1
                 version_dir = os.path.join(stage, f"V{number}")
                 os.makedirs(version_dir)
@@ -285,10 +285,19 @@ def staged_image_batch(target_dir, *, version_existing=True, lock_root=None):
             if os.path.exists(target_dir):
                 backup = tempfile.mkdtemp(prefix=".vnccs-rollback-", dir=parent)
                 os.rmdir(backup)
+            if before_publish is not None:
+                before_publish(stage, backup)
+            if backup:
                 os.replace(target_dir, backup)
+            published = False
             try:
                 os.replace(stage, target_dir)
+                published = True
+                if commit is not None:
+                    commit()
             except BaseException:
+                if published:
+                    shutil.rmtree(target_dir)
                 if backup:
                     os.replace(backup, target_dir)
                     backup = None

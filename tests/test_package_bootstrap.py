@@ -15,7 +15,7 @@ def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert set(module.NODE_CLASS_MAPPINGS) == {
-        "CharacterCloner", "CharacterCreatorV2", "ClothesDesigner", "EmotionGeneratorV2",
+        "CharacterCloner", "CharacterCreatorV2", "ClothesDesigner", "EmotionGeneratorV2", "VNCCS_BackgroundCreator",
         "VNCCS_ControlCenter", "VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator",
         "VNCCS_ClothesGenerator", "VNCCS_EmotionsGenerator", "VNCCSStylePreviewTest",
         "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
@@ -45,7 +45,7 @@ def test_registered_nodes_match_workflows_and_preserved_tools():
                 registered.update(ast.literal_eval(key) for key in statement.value.keys)
     assert registered == (used - {"VNCCS_PoseStudio", "PreviewImage"}) | {
         "VNCCSStylePreviewTest", "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
-        "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
+        "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker", "VNCCS_BackgroundCreator", "VNCCS_BackgroundGenerator",
     }
 
 

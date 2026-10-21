@@ -120,6 +120,29 @@ def test_successful_publication_versions_current_and_preserves_archives(tmp_path
     assert list(tmp_path.iterdir()) == [target]
 
 
+def test_publication_preserves_lowercase_archives_on_case_insensitive_filesystems(tmp_path, monkeypatch):
+    target = tmp_path / "Neutral"
+    (target / "v1").mkdir(parents=True)
+    (target / "v1" / "first.png").write_bytes(b"first")
+    (target / "old.png").write_bytes(b"old")
+    lexists = utils.os.path.lexists
+
+    def case_insensitive_lexists(path):
+        candidate = Path(path)
+        if candidate.parent == target:
+            return any(entry.name.casefold() == candidate.name.casefold() for entry in target.iterdir())
+        return lexists(path)
+
+    monkeypatch.setattr(utils.os.path, "lexists", case_insensitive_lexists)
+    with utils.staged_image_batch(str(target)) as stage:
+        Path(stage, "new.png").write_bytes(b"new")
+    assert (target / "v1" / "first.png").read_bytes() == b"first"
+    assert (target / "V2" / "old.png").read_bytes() == b"old"
+    assert (target / "new.png").read_bytes() == b"new"
+    assert not (target / "old.png").exists()
+    assert list(tmp_path.iterdir()) == [target]
+
+
 def test_archive_current_image_batch_retires_only_active_images(tmp_path):
     target = tmp_path / "Original" / "Neutral"
     (target / "V1").mkdir(parents=True)
@@ -214,3 +237,21 @@ def test_wizard_worker_keeps_event_loop_responsive_and_scopes_events(monkeypatch
     asyncio.run(run())
     assert [data["status"] for _, data in events] == ["queued", "running", "done"]
     assert all(name == "vnccs.wizard.stage" and data["node_id"] == "17" and data["request_id"] == "request" for name, data in events)
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_metadata_commit_failure_restores_the_image_directory(tmp_path, existing):
+    target = tmp_path / "Images"
+    if existing:
+        (target / "V1").mkdir(parents=True)
+        (target / "V1" / "older.png").write_bytes(b"older")
+        (target / "current.png").write_bytes(b"current")
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    def fail():
+        assert (target / "new.png").read_bytes() == b"new"
+        raise OSError("JSON commit failed")
+    with pytest.raises(OSError, match="JSON commit failed"):
+        with utils.staged_image_batch(str(target), commit=fail) as stage:
+            Path(stage, "new.png").write_bytes(b"new")
+    assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == (["Images"] if existing else [])
