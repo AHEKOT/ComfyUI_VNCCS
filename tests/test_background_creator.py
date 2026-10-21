@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import math
+import subprocess
 import sys
 import threading
 import types
@@ -149,7 +150,7 @@ def test_legacy_image_is_preserved_when_creating_the_working_preview(library):
     assert updated["selected_image_id"] != first_id
     retained = storage.image_path(document["background_id"], first_id)
     assert retained.read_bytes() == original
-    assert retained == library / document["name"] / "Sources" / "V1.png"
+    assert retained == first_path
     with Image.open(storage.image_path(document["background_id"], updated["selected_image_id"])) as image:
         assert image.mode == "RGB"
         assert image.size == (20, 10)
@@ -168,7 +169,92 @@ def test_repeated_preview_generation_replaces_one_image_and_refreshes_its_url(li
         url = storage.public_document(document)["images"][0]["url"]
         assert url != old_url and url.endswith(f"?v={document['images'][0]['preview_revision']}")
         old_url = url
-    assert len(list((library / document["name"]).glob("*.png"))) == 1
+    backup = json.loads(document_path(document).with_suffix(".json.backup").read_bytes())
+    referenced = {entry["file"] for item in (document, backup) for entry in item["images"]}
+    directory = library / document["name"]
+    assert {path.relative_to(directory).as_posix() for path in directory.rglob("*.png")} == referenced
+    assert len(referenced) == 2
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("phase", ["png", "backup", "primary"])
+def test_process_crash_preserves_matching_source_pixels_metadata_and_backup(library, existing, phase):
+    document = with_image() if existing else storage.create_background("Crash-safe preview", {})
+    primary = document_path(document)
+    previous = primary.read_bytes()
+    old_image = storage.image_path(document["background_id"], document["selected_image_id"]) if existing else None
+    old_pixels = old_image.read_bytes() if old_image else None
+    script = """
+import os
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from conftest import _preload_node
+from PIL import Image
+storage = _preload_node('background_creator')
+storage.root = lambda: Path(sys.argv[2])
+atomic = storage._atomic
+phase = sys.argv[4]
+def write(path, payload):
+    atomic(path, payload)
+    if ((phase == 'png' and path.suffix == '.png')
+            or (phase == 'backup' and path.name.endswith('.json.backup'))
+            or (phase == 'primary' and path.suffix == '.json')):
+        os._exit(77)
+storage._atomic = write
+storage.add_image(sys.argv[3], Image.new('RGB', (8, 8), 'blue'), {'cache_key': 'blue'})
+"""
+    child = subprocess.run([sys.executable, "-B", "-c", script, str(Path(__file__).parent),
+                            str(library), document["background_id"], phase], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 77, child.stderr
+    saved = storage.load_background(document["background_id"])
+    assert "_recovery" not in saved
+    if phase == "primary":
+        assert saved["images"][-1]["settings"] == {"cache_key": "blue"}
+        with Image.open(storage.image_path(saved["background_id"], saved["selected_image_id"])) as image:
+            assert image.getpixel((0, 0)) == (0, 0, 255)
+    else:
+        assert primary.read_bytes() == previous
+    if old_image:
+        assert old_image.read_bytes() == old_pixels
+    backup = json.loads(primary.with_suffix(".json.backup").read_bytes())
+    for item in (saved, backup):
+        storage._validate(item, document["name"])
+        for entry in item["images"]:
+            with Image.open(primary.parent / entry["file"]) as image:
+                image.verify()
+    retried = storage.add_image(saved["background_id"], Image.new("RGB", (8, 8), "green"), {"cache_key": "green"})
+    assert retried["images"][-1]["settings"] == {"cache_key": "green"}
+
+
+def test_retired_sources_are_pruned_only_after_primary_and_backup_release_them(library):
+    document = with_image()
+    old_path = storage.image_path(document["background_id"], document["selected_image_id"])
+    old_pixels = old_path.read_bytes()
+    updated = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "blue"), {})
+    assert old_path.read_bytes() == old_pixels
+    current_path = storage.image_path(updated["background_id"], updated["selected_image_id"])
+    assert current_path != old_path
+    storage.save_background(updated["background_id"], {"description": "A saved edit"})
+    assert not old_path.exists()
+    assert current_path.is_file()
+
+
+def test_retired_source_cleanup_failure_does_not_roll_back_a_committed_image(library, monkeypatch):
+    document = with_image()
+    retired = storage.image_path(document["background_id"], document["selected_image_id"])
+    document = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "blue"), {})
+    unlink = Path.unlink
+    def remove(path, *args, **kwargs):
+        if path == retired:
+            raise PermissionError("Retired source is locked")
+        return unlink(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", remove)
+    saved = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "green"), {"cache_key": "green"})
+    assert saved == storage.load_background(saved["background_id"])
+    with Image.open(storage.image_path(saved["background_id"], saved["selected_image_id"])) as image:
+        assert image.getpixel((0, 0)) == (0, 128, 0)
+    assert retired.is_file()
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -458,7 +544,10 @@ def test_text_to_image_pipeline_uses_creator_assets_cache_and_true_empty_latent(
     assert calls["TextGenerate"]["sampling_mode"] == generation.TEXT_GENERATION["sampling_mode"]
     assert calls["TextGenerate"]["sampling_mode"]["temperature"] == 0.7
     assert calls["TextEncodeQwenImage21"]["images"] == {}
-    assert calls["TextEncodeQwenImage21"]["prompt"] == generation.compose_prompt({"scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}) + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
+    suffix = generation.BACKGROUND_PROMPT_SUFFIX.format(aspect=aspect)
+    assert calls["TextEncodeQwenImage21"]["prompt"] == generation.compose_prompt({"scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}) + " " + suffix
+    assert f"Composition aspect ratio: {aspect}." in metadata["prompt"]
+    assert "{aspect}" not in metadata["prompt"]
     assert calls["KSampler"]["latent_image"] == {"samples": "empty"}
     assert calls["KSampler"]["steps"] == 25 and calls["KSampler"]["cfg"] == 1
     assert calls["KSampler"]["scheduler"] == "simple" and calls["KSampler"]["denoise"] == 1
@@ -484,8 +573,9 @@ def test_fresh_clip_per_request_and_no_automatic_character_loras(runtime):
 
 
 @pytest.mark.parametrize("enhance", [True, False])
-def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(runtime, enhance):
-    editor = {"style": "Anime, digital art, cel shaded", "scene_description": "badroom",
+@pytest.mark.parametrize("aspect", ["16:9", "9:16", "1:1"])
+def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(runtime, enhance, aspect):
+    editor = {"aspect": aspect, "style": "Anime, digital art, cel shaded", "scene_description": "badroom",
               "attributes": {"time": "Night", "scene_type": "Interior"},
               "negative": "nsfw, worst quality, bad anatomy, watermark, jpeg artifact",
               "generation": {"model_type": "moss", "prompt_enhance": enhance, "turbo": True}}
@@ -497,7 +587,8 @@ def test_moss_t2i_uses_attached_workflow_assets_flux2_latent_and_our_enhancer(ru
     assert calls["VAELoader"]["vae_name"] == "flux2-vae_small.safetensors"
     encodes = [value for name, value in runtime.calls if name == "CLIPTextEncode"]
     expected = generation.compose_prompt({**editor, "scene_description": "Enhanced empty background with warm light", **SCENE_COMPOSITION}) if enhance else generation.compose_prompt(editor)
-    expected += f" {generation.BACKGROUND_PROMPT_SUFFIX}"
+    expected += " " + generation.BACKGROUND_PROMPT_SUFFIX.format(aspect=aspect)
+    assert f"Composition aspect ratio: {aspect}." in metadata["prompt"]
     assert [item["text"] for item in encodes] == [expected, editor["negative"]]
     assert calls["EmptyFlux2LatentImage"] == {"width": image.width, "height": image.height, "batch_size": 1}
     sampler = calls["KSampler"]
@@ -1114,6 +1205,7 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     run_background(workspace.document)
     document = storage.load_background(workspace.document["background_id"])
     original_image = storage.image_path(document["background_id"], document["selected_image_id"])
+    original_pixels = original_image.read_bytes()
     original_id = document["selected_image_id"]
     original_revision = document["images"][0]["preview_revision"]
     editor = copy.deepcopy(document["editor"])
@@ -1133,7 +1225,10 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     updated = storage.load_background(document["background_id"])
     assert len(updated["images"]) == 1 and updated["selected_image_id"] == original_id
     assert updated["images"][0]["preview_revision"] > original_revision
-    assert storage.image_path(document["background_id"], original_id) == original_image
+    assert storage.image_path(document["background_id"], original_id) != original_image
+    assert original_image.read_bytes() == original_pixels
+    backup = json.loads(document_path(updated).with_suffix(".json.backup").read_bytes())
+    assert document_path(updated).parent / backup["images"][0]["file"] == original_image
 
 
 def test_inactive_profiles_do_not_invalidate_background_cache(workspace):
@@ -1272,7 +1367,7 @@ def test_selected_diffusion_model_rekeys_cache_and_preserves_five_lora_slots(run
     generation.generate_image({"prompt": "An exact room prompt.", "generation": settings}, "custom", threading.Event())
     assert [call["unet_name"] for name, call in runtime.calls if name == "UNETLoader"] == ["custom/rooms.safetensors"]
     assert [call["lora_name"] for name, call in runtime.calls if name == "LoraLoader"] == ["room.safetensors"]
-    assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"].splitlines()[-1] == f"Scene description: An exact room prompt. {generation.BACKGROUND_PROMPT_SUFFIX}"
+    assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"].splitlines()[-1] == "Scene description: An exact room prompt. " + generation.BACKGROUND_PROMPT_SUFFIX.format(aspect="16:9")
     generation.generate_image({"generation": {"prompt_enhance": False}}, "default", threading.Event())
     assert len([name for name, _ in runtime.calls if name == "UNETLoader"]) == 2
 
@@ -1325,7 +1420,7 @@ def test_prompt_enhancement_expands_all_scene_fields_and_keeps_scene_settings(ru
     prompt = next(values["text"] if model_type == "moss" else values["prompt"] for name, values in runtime.calls
                   if name == ("CLIPTextEncode" if model_type == "moss" else "TextEncodeQwenImage21"))
     expected = generation.compose_prompt({**editor, "scene_description": "An enhanced futuristic circular room.", **expanded})
-    assert prompt == metadata["prompt"] == expected + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
+    assert prompt == metadata["prompt"] == expected + " " + generation.BACKGROUND_PROMPT_SUFFIX.format(aspect="16:9")
     request = dict(runtime.calls)["TextGenerate"]
     assert request["prompt"] == generation.compose_prompt(editor)
     assert request["system_prompt"] == generation.BACKGROUND_ENHANCEMENT_SYSTEM_PATH.read_text(encoding="utf-8").strip()
@@ -1417,7 +1512,7 @@ def test_sparse_scene_prompts_request_detail_and_preserve_field_contract(runtime
         assert generation.compose_prompt(result) == expected
     else:
         _, metadata = generation.generate_image(editor, "sparse-enhancement", threading.Event())
-        assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"] == expected + f" {generation.BACKGROUND_PROMPT_SUFFIX}"
+        assert dict(runtime.calls)["TextEncodeQwenImage21"]["prompt"] == expected + " " + generation.BACKGROUND_PROMPT_SUFFIX.format(aspect="16:9")
         assert metadata["editor"]["scene_description"] == "badroom"
     request = dict(runtime.calls)["TextGenerate"]
     assert "badroom" in request["prompt"]
@@ -1582,13 +1677,13 @@ def test_complete_prompts_are_logged_at_info_before_encoding(runtime, monkeypatc
     raw_result += "\n" + "\n".join(f"{key.title()}: {value}" for key, value in SCENE_COMPOSITION.items())
     expected = generation.compose_prompt({**editor, "scene_description": enhanced if enhance else description,
         **(SCENE_COMPOSITION if enhance else {})})
-    expected += " Wide landscape composition, 16:9. Background only, no people or characters, no text or logos, no watermark, no border, no collage."
+    expected += " Composition aspect ratio: 16:9. Background only, no people or characters, no text or logos, no watermark, no border, no collage."
     def call(name, **kwargs):
         if name == "TextGenerate":
             logged = [record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "text_generation_input"]
             assert len(logged) == 1
             assert logged[0].vnccs["prompt"] == kwargs["prompt"] == generation.compose_prompt(editor)
-            assert generation.BACKGROUND_PROMPT_SUFFIX not in kwargs["prompt"]
+            assert generation.BACKGROUND_PROMPT_SUFFIX.format(aspect="16:9") not in kwargs["prompt"]
             assert logged[0].vnccs["system_prompt"] == kwargs["system_prompt"]
             runtime.calls.append((name, kwargs))
             return ("<think>Private reasoning</think>\n" + raw_result,)
@@ -1613,7 +1708,7 @@ def test_complete_prompts_are_logged_at_info_before_encoding(runtime, monkeypatc
         assert outputs[0].vnccs["output"] == raw_result
         assert raw_result in outputs[0].getMessage() and "Private reasoning" not in outputs[0].getMessage()
     assert metadata["prompt"] == expected
-    assert metadata["prompt"].count(generation.BACKGROUND_PROMPT_SUFFIX) == 1
+    assert metadata["prompt"].count(generation.BACKGROUND_PROMPT_SUFFIX.format(aspect="16:9")) == 1
 
 
 def test_wizard_logs_its_system_prompt_brief_and_complete_result(runtime, monkeypatch, caplog):
@@ -2051,7 +2146,7 @@ def test_backup_references_the_retained_source_and_archived_output_files(library
     document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), "blue"), {}, document["revision"])
     backup = json.loads(path.with_suffix(".json.backup").read_bytes())
     retained = next(entry for entry in backup["images"] if entry["image_id"] == old_id)
-    assert retained["file"] == "Sources/V1.png"
+    assert retained["file"] == "source.png"
     with Image.open(path.parent / retained["file"]) as image:
         assert image.getpixel((0, 0)) == (255, 0, 0)
 
@@ -2188,6 +2283,19 @@ def test_background_cover_rejects_unknown_or_unsafe_styles(workspace, background
     with pytest.raises(ValueError):
         generation.generate_style_preview({"style_id": style_id, "editor": {}})
     workspace.generated.assert_not_called()
+
+
+@pytest.mark.parametrize("model_type", ["qi2", "moss"])
+def test_style_cover_encodes_its_square_aspect_instead_of_the_background_aspect(runtime, background_style_storage, model_type):
+    editor = {"aspect": "9:16", "scene_description": "A courtyard", "generation": {"model_type": model_type}}
+    runtime.decoded_size[0] = generation.dimensions({**editor, "aspect": "1:1"})
+    result = generation.generate_style_preview({"style_id": "bg_ghibli_pastoral_fantasy_anime", "editor": editor})
+    encoded = next(values["text"] if model_type == "moss" else values["prompt"] for name, values in runtime.calls
+                   if name == ("CLIPTextEncode" if model_type == "moss" else "TextEncodeQwenImage21"))
+    assert "Composition aspect ratio: 1:1." in encoded
+    assert "9:16" not in encoded and "16:9" not in encoded and "{aspect}" not in encoded
+    assert result["saved"] is True
+    assert editor["aspect"] == "9:16"
 
 
 def test_background_custom_cover_and_empty_scene_use_environment_fallback(workspace, background_style_storage):

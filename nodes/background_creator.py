@@ -263,6 +263,15 @@ def _commit(directory, document, previous):
         else:
             _atomic(backup, old_backup)
         raise
+    if old_backup is not None:
+        try:
+            retired = _validate(json.loads(old_backup), directory.name)
+            retained = {image["file"] for item in (document, json.loads(previous)) for image in item["images"]}
+            for image in retired["images"]:
+                if image["file"] not in retained:
+                    _contained(directory, image["file"]).unlink(missing_ok=True)
+        except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+            log_event("warning", component="Background Creator", message="Background saved; could not clean retired source files", error=str(error))
     return document
 
 
@@ -347,49 +356,37 @@ def add_image(background_id, image, settings, expected_revision=None):
     with _LOCK:
         directory, document, previous = _editable(background_id, expected_revision)
         selected = next((item for item in document["images"] if item["image_id"] == document["selected_image_id"]), None)
-        current = next((item for item in document["images"] if item["file"] == "source.png"), None)
+        current = document["images"][-1] if document["images"] else None
         sources = {item["source_image_id"] for item in document.get("generated_sets", [])}
         replace = selected is current and current is not None and "preview_revision" in current and current["image_id"] not in sources
         if not replace and len(document["images"]) >= MAX_IMAGES:
             raise ValueError("Background image limit reached")
+        if current:
+            source = _contained(directory, current["file"])
+            if (not source.is_file() and not replace) or source.exists() and source.stat().st_size > MAX_IMAGE_BYTES:
+                raise BackgroundStorageError("Background source is missing or too large; existing data is retained")
         target = _contained(directory, "source.png")
-        if target.exists() and current is None:
-            raise FileExistsError("Background source already exists without its metadata")
-        if current and ((not target.is_file() and not replace) or target.exists() and target.stat().st_size > MAX_IMAGE_BYTES):
-            raise BackgroundStorageError("Background source is missing or too large; existing data is retained")
-        original = target.read_bytes() if target.is_file() else None
-        archived = None
+        if current or target.exists():
+            number = 1
+            while _contained(directory, "Sources", f"V{number}.png").exists():
+                number += 1
+            target = _contained(directory, "Sources", f"V{number}.png")
         try:
-            if current and not replace:
-                number = 1
-                while _contained(directory, "Sources", f"V{number}.png").exists():
-                    number += 1
-                archived = _contained(directory, "Sources", f"V{number}.png")
-                _atomic(archived, original)
-                current["file"] = archived.relative_to(directory).as_posix()
+            # Publish a new file before switching JSON; a process crash cannot replace old pixels.
             _atomic(target, payload)
             image_id = current["image_id"] if replace else uuid.uuid4().hex
-            entry = {"image_id": image_id, "file": "source.png", "width": image.width, "height": image.height,
+            entry = {"image_id": image_id, "file": target.relative_to(directory).as_posix(), "width": image.width, "height": image.height,
                      "settings": settings, "preview_revision": document["revision"] + 1}
             if replace:
                 current.update(entry)
             else:
                 document["images"].append(entry)
             document["selected_image_id"] = image_id
-            saved_backup = json.loads(previous)
-            for old in saved_backup["images"]:
-                if current and old["image_id"] == current["image_id"]:
-                    old.update(current)
-            return _commit(directory, document, _json_bytes(saved_backup))
+            return _commit(directory, document, previous)
         except BaseException:
-            if original is None:
-                target.unlink(missing_ok=True)
-            else:
-                _atomic(target, original)
-            if archived:
-                archived.unlink(missing_ok=True)
-                if not any(archived.parent.iterdir()):
-                    archived.parent.rmdir()
+            target.unlink(missing_ok=True)
+            if target.parent != directory and target.parent.exists() and not any(target.parent.iterdir()):
+                target.parent.rmdir()
             raise
 
 
@@ -572,7 +569,7 @@ SCENE_EXPANSION_SYSTEM = (
     "response format. Return only the requested output, without questions, analysis, markdown or commentary. "
 )
 BACKGROUND_PROMPT_SUFFIX = (
-    "Wide landscape composition, 16:9. Background only, no people or characters, no text or logos, "
+    "Composition aspect ratio: {aspect}. Background only, no people or characters, no text or logos, "
     "no watermark, no border, no collage."
 )
 
@@ -979,7 +976,7 @@ def _background_cache_key(editor):
     files.extend(("loras", item["name"]) for item in settings["lora_stack"])
     if settings["turbo"]:
         files.append(("loras", _turbo_name()))
-    payload = {"prompt": compose_prompt(editor), "suffix": BACKGROUND_PROMPT_SUFFIX,
+    payload = {"prompt": compose_prompt(editor), "suffix": BACKGROUND_PROMPT_SUFFIX.format(aspect=editor["aspect"]),
                "negative": editor["negative"], "dimensions": dimensions(editor),
                "generation": settings, "files": [_model_file_signature(_resolve_model_path(category, name)) for category, name in files],
                "enhancer": [_background_enhancement_system_prompt(), TEXT_GENERATION] if settings["prompt_enhance"] else None}
@@ -1170,7 +1167,7 @@ def generate_image(editor: dict[str, Any], draw_id: str, cancel_event):
                 scene = {key: parsed[key] for key in ("scene_description", *COMPOSITION_FIELDS) if key in parsed} if parsed else {
                     "scene_description": re.sub(r"^Scene description:\s*", "", enhanced)}
                 prompt = compose_prompt({**editor, **scene})
-        prompt += f" {BACKGROUND_PROMPT_SUFFIX}"
+        prompt += " " + BACKGROUND_PROMPT_SUFFIX.format(aspect=editor["aspect"])
         log_event("prompts", component="Background Creator", node_id=draw_id,
                   context=f"{'Moss' if moss else 'Qwen Image 2.1'} background",
                   model=settings["diffusion_model_name"], positive=prompt, negative=editor["negative"], truncate=False,

@@ -1642,6 +1642,124 @@ test('a stale status response cannot update another workflow or install a poll t
     h.node.onRemoved();
 });
 
+test('Wizard leaves every variant field attached to the editor that is saved', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const jobId = 'wizard-fields', editor = editorDefaults({scene_description: 'Wizard scene'});
+    h.api.handle = (path, options) => {
+        if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: jobId});
+        if (path === `${BASE}/jobs/${jobId}`) return response({status: 'completed', result: {editor}});
+        if (options.method === 'PATCH') {
+            const saved = background(A, {...JSON.parse(options.body), revision: 4});
+            h.documents.set(A, saved); return response(saved);
+        }
+    };
+    await h.widget.runJob('wizard', 'A room');
+    const expected = {time: 'Dawn', weather: 'Light rain', additional_details: 'Keep the curtains'};
+    for (const [key, value] of Object.entries(expected)) {
+        const input = h.control('[data-variation="morning"]').querySelector(`[data-variation-field="${key}"]`);
+        input.value = value; await input.fire('input');
+        assert.equal(JSON.parse(h.data.value).editor.variants[0][key], value);
+    }
+    await h.widget.persist();
+    for (const [key, value] of Object.entries(expected)) assert.equal(h.documents.get(A).editor.variants[0][key], value);
+    h.node.onRemoved();
+});
+
+test('deleting a neighbor reloads the latest saved background before another edit', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.api.handle = (path, options) => {
+        if (options.method === 'PATCH') {
+            const id = path.split('/').at(-1), saved = {...h.documents.get(id), ...JSON.parse(options.body)};
+            saved.revision++; h.documents.set(id, saved); return response(saved);
+        }
+        if (options.method === 'DELETE') { h.documents.delete(A); return response({ok: true}); }
+    };
+    const library = h.control('[data-library]');
+    library.value = B; await h.widget.change({target: library});
+    h.widget.state.editor.scene_description = 'Keep the saved description of B';
+    h.widget.state.editor.variants[0].weather = 'Snow';
+    h.widget.markEdited(); await h.widget.persist();
+    const saved = clone(h.documents.get(B));
+    library.value = A; await h.widget.change({target: library});
+    h.widget.openDeleteDialog();
+    await h.control('.vnccs-common-modal').querySelectorAll('button').find(button => button.textContent === 'CONFIRM DELETE').click();
+    assert.equal(h.widget.state.background_id, B);
+    assert.deepEqual(clone(h.widget.state.editor), saved.editor);
+    h.widget.state.editor.negative = 'No text'; h.widget.markEdited(); await h.widget.persist();
+    assert.deepEqual(h.documents.get(B).editor, {...saved.editor, negative: 'No text'});
+    h.node.onRemoved();
+});
+
+test('temporary network and server errors retain the job and eventually adopt its result', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const jobId = 'recoverable-job', saved = background(A, {revision: 4});
+    saved.images[0].url += '?v=4';
+    let polls = 0;
+    h.api.handle = (path, options) => {
+        if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: jobId});
+        if (path === `${BASE}/jobs/${jobId}`) {
+            if (++polls === 1) throw new TypeError('Failed to fetch');
+            if (polls === 2) return response({error: 'Temporarily unavailable'}, 503);
+            return response({status: 'completed', result: {document: saved}});
+        }
+    };
+    const pending = h.widget.runJob('background'); await settle();
+    for (let attempt = 0; attempt < 2; attempt++) {
+        for (let turn = 0; turn < 8 && ![...h.timers.values()].some(timer => timer.delay === 500); turn++) await settle();
+        assert.ok([...h.timers.values()].some(timer => timer.delay === 500));
+        assert.equal(h.widget.jobId, jobId); assert.equal(h.widget.busy, true);
+        assert.equal(h.control('[data-action="background"]').disabled, true);
+        assert.match(h.widget.status.textContent, /Retrying/);
+        h.fireTimers(500);
+    }
+    assert.equal(await pending, true);
+    assert.equal(polls, 3); assert.equal(h.widget.jobId, ''); assert.equal(h.widget.busy, false);
+    assert.equal(h.control('[data-preview]').src, saved.images[0].url);
+    assert.equal(h.calls.filter(call => call.options.method === 'POST' && call.path.endsWith('/jobs')).length, 1);
+    h.node.onRemoved();
+});
+
+test('a job remains cancellable while status polling retries', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const jobId = 'cancel-retry'; let cancelled = false;
+    h.api.handle = (path, options) => {
+        if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: jobId});
+        if (path === `${BASE}/jobs/${jobId}/cancel`) { cancelled = true; return response({}); }
+        if (path === `${BASE}/jobs/${jobId}`) {
+            if (!cancelled) throw new TypeError('Failed to fetch');
+            return response({status: 'cancelled'});
+        }
+    };
+    const pending = h.widget.runJob('background'); await settle();
+    h.emitEvent('execution_interrupted', {}); await settle();
+    assert.equal(cancelled, true); h.fireTimers(500);
+    await assert.rejects(pending, /Generation stopped/);
+    assert.equal(h.widget.jobId, ''); assert.equal(h.widget.busy, false);
+    h.node.onRemoved();
+});
+
+test('a missing job is terminal while node removal releases a pending retry', async () => {
+    for (const removed of [false, true]) {
+        const h = harness(JSON.stringify(state())); await h.ready();
+        h.api.handle = (path, options) => {
+            if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: 'missing-job'});
+            if (path.endsWith('/jobs/missing-job')) {
+                if (removed) throw new TypeError('Failed to fetch');
+                return response({error: 'Background job was not found'}, 404);
+            }
+        };
+        const pending = h.widget.runJob('background');
+        if (removed) {
+            await settle(); assert.equal(h.widget.busy, true); h.node.onRemoved();
+            assert.equal(await pending, false);
+        } else {
+            await assert.rejects(pending, /Background job was not found/);
+            assert.equal(h.widget.busy, false); h.node.onRemoved();
+        }
+        assert.equal([...h.timers.values()].some(timer => timer.delay === 500), false);
+    }
+});
+
 test('restoring a stale revision keeps workflow settings and allows saving and generation', async () => {
     const h = harness(JSON.stringify(state({revision: 2, editor: editorDefaults({scene_description: 'Workflow draft'})}))); await h.ready();
     assert.equal(h.widget.state.revision, 3); assert.equal(h.widget.document.revision, 3);

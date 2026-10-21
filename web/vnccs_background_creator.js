@@ -394,7 +394,10 @@ export class BackgroundCreatorWidget {
     async request(path, options = {}) {
         const response = await this.api.fetchApi(path.startsWith("/vnccs/") ? path : BASE + path, { ...options, signal: this.events.signal });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || `Request failed: HTTP ${response.status}`);
+        if (!response.ok) {
+            const error = new Error(result.error || `Request failed: HTTP ${response.status}`);
+            error.status = response.status; throw error;
+        }
         return result;
     }
     json(path, data, method = "POST") { return this.request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); }
@@ -1021,7 +1024,7 @@ export class BackgroundCreatorWidget {
                 if (!current()) return false;
                 this.catalog = this.catalog.filter(item => item.background_id !== id); this.document = null; this.unsaved = false;
                 const next = this.catalog[0];
-                if (next) await this.acceptDocument(next, true, epoch);
+                if (next) await this.acceptDocument(await this.request(`/backgrounds/${next.background_id}`), true, epoch);
                 else {
                     const editor = { ...clone(DEFAULT_EDITOR), custom_style: "", aspect: this.state.editor.aspect, generation: clone(this.state.editor.generation) };
                     Object.assign(this.state, { background_id: "", background_name: "", selected_image_id: "", editor }); delete this.state.revision;
@@ -1366,10 +1369,16 @@ export class BackgroundCreatorWidget {
             const jobId = result.job_id;
             this.jobId = jobId; this.updateControls();
             while (!this.disposed && epoch === this.epoch && ownsRequest()) {
-                result = await this.request(`/jobs/${jobId}`);
+                try {
+                    result = await this.request(`/jobs/${jobId}`);
+                } catch (error) {
+                    if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
+                    if (error.status && error.status < 500) throw error;
+                    result = null;
+                }
                 if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
-                this.message(result.message || "Working…");
-                if (["completed", "failed", "cancelled"].includes(result.status)) break;
+                this.message(result?.message || (result ? "Working…" : "Could not read job status. Retrying; the background job is still tracked."));
+                if (result && ["completed", "failed", "cancelled"].includes(result.status)) break;
                 await new Promise(resolve => { this.pollTimer = setTimeout(resolve, 500); this.pollResolve = resolve; });
             }
             if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
@@ -1377,6 +1386,7 @@ export class BackgroundCreatorWidget {
             if (result.result.editor) {
                 this.busy = false;
                 animateWizardRows([...this.container.querySelectorAll(".bg-attributes .bg-field")], () => {
+                    delete this.container.querySelector("[data-variation-cards]").dataset.cards;
                     this.state.editor = editorDefaults(result.result.editor); this.markEdited(); this.render();
                 });
             }
