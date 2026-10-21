@@ -351,6 +351,31 @@ test("cached and uploaded RUN results keep their selected background", async () 
     }
 });
 
+test('a workflow saved before its first image restores and retains the disk selection after RUN', async () => {
+    const raw = JSON.stringify(state({selected_image_id: ''})), h = harness(raw);
+    await h.ready();
+    h.api.handle = (path, options) => {
+        if (options.method === 'PATCH') {
+            const payload = JSON.parse(options.body);
+            assert.equal(payload.selected_image_id, IMAGE);
+            const saved = background(A, {...payload, revision: 4});
+            h.documents.set(A, saved); return response(saved);
+        }
+    };
+    for (let session = 0; session < 2; session++) {
+        assert.equal(h.widget.state.selected_image_id, IMAGE);
+        assert.equal(h.control('[data-preview]').hidden, false);
+        h.node.onExecuted({background_preview: [{background_id: A, image_id: IMAGE, request_image_id: IMAGE,
+            source: 'upload', revision: 3, editor: clone(h.widget.state.editor)}]});
+        await h.widget.workflowCompletion;
+        assert.equal(h.widget.unsaved, false);
+        h.widget.state.editor.scene_description = 'Keep the uploaded image'; h.widget.markEdited();
+        await h.widget.persist();
+        h.data.value = raw; h.node.onConfigure(); await h.widget.operations;
+    }
+    h.node.onRemoved();
+});
+
 test("late RUN completion cannot replace edits made after the queued request", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const queued = clone(h.widget.state.editor), document = background(A, { revision: 4 }); h.documents.set(A, document);
@@ -1601,6 +1626,51 @@ test('the wizard collects a separate brief before starting and saves returned fi
     assert.equal(h.widget.document.editor.scene_description, 'Detailed wizard scene');
     for (const [key, value] of Object.entries(SCENE_COMPOSITION)) assert.equal(h.widget.document.editor[key], value);
     assert.equal(JSON.parse(h.data.value).revision, 4);
+    h.node.onRemoved();
+});
+
+for (const lateStart of [false, true]) test(`closing Wizard cancels its ${lateStart ? 'late starting' : 'running'} job before unlocking controls`, async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const start = deferred(), poll = deferred(), cancellation = deferred(), jobId = 'wizard-cancel';
+    let cancelled = false;
+    h.api.handle = (path, options) => {
+        if (path.endsWith('/jobs') && options.method === 'POST') return lateStart ? start.promise : response({job_id: jobId});
+        if (path === `${BASE}/jobs/${jobId}/cancel`) { cancelled = true; return cancellation.promise; }
+        if (path === `${BASE}/jobs/${jobId}`) return cancelled ? response({status: 'cancelled'}) : poll.promise;
+    };
+    await h.control('[data-wizard]').click();
+    const overlay = h.control('[data-background-wizard]');
+    overlay.querySelector('.bg-wizard-input').value = 'A room';
+    const pending = overlay.querySelectorAll('button').at(-1).click(); await settle();
+    await overlay.querySelectorAll('button')[0].click();
+    if (lateStart) start.resolve(response({job_id: jobId}));
+    await settle();
+    assert.equal(cancelled, true); assert.equal(h.widget.busy, true);
+    cancellation.resolve(response({status: 'running'}));
+    poll.resolve(response({status: 'running'})); await settle();
+    h.fireTimers(500); await pending;
+    assert.equal(h.widget.busy, false); assert.equal(h.widget.jobId, '');
+    assert.equal(h.control('[data-background-wizard]'), null);
+    assert.equal(h.widget.state.editor.scene_description, '');
+    assert.equal(h.calls.filter(call => call.path.endsWith('/cancel')).length, 1);
+    h.node.onRemoved();
+});
+
+test('Wizard cancellation retries a failed request and retains the job until it stops', async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    let attempts = 0;
+    h.api.handle = (path, options) => {
+        if (path.endsWith('/jobs') && options.method === 'POST') return response({job_id: 'retry-wizard'});
+        if (path.endsWith('/cancel')) { if (++attempts === 1) throw new TypeError('Failed to fetch'); return response({}); }
+        if (path.endsWith('/jobs/retry-wizard')) return response({status: attempts > 1 ? 'cancelled' : 'running'});
+    };
+    await h.control('[data-wizard]').click();
+    const overlay = h.control('[data-background-wizard]'); overlay.querySelector('.bg-wizard-input').value = 'A room';
+    const pending = overlay.querySelectorAll('button').at(-1).click(); await settle();
+    overlay.remove(); await settle();
+    assert.equal(h.widget.busy, true); assert.equal(h.widget.jobId, 'retry-wizard');
+    h.fireTimers(500); await pending;
+    assert.equal(attempts, 2); assert.equal(h.widget.busy, false); assert.equal(h.widget.jobId, '');
     h.node.onRemoved();
 });
 

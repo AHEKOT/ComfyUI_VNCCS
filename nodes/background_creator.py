@@ -189,6 +189,10 @@ def _validate(document, directory_name):
 
 
 def _read_document(directory):
+    try:
+        _recover_set_publication(directory)
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise BackgroundStorageError("Cannot recover background publication; original files are preserved") from error
     filename = f"{directory.name}_config.json"
     path = _contained(directory, filename)
     try:
@@ -403,6 +407,62 @@ def image_path(background_id, image_id):
         return path
 
 
+def _recover_set_publication(directory):
+    transaction = _contained(directory, ".vnccs-background-publication")
+    if not transaction.exists():
+        return
+    marker = _contained(transaction, "transaction.json")
+    if marker.exists():
+        record, _ = _read_json(marker)
+        if (not isinstance(record, dict) or type(record.get("had_backup")) is not bool
+                or any(not isinstance(record.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", record[key])
+                       for key in ("before", "after"))):
+            raise BackgroundStorageError("Background publication journal is damaged; original files are preserved")
+        paths = []
+        for key, prefix in (("stage", "sprites"), ("rollback", "rollback")):
+            name = record.get(key)
+            if key == "rollback" and name is None:
+                paths.append(None)
+                continue
+            if not isinstance(name, str) or not re.fullmatch(rf"\.vnccs-{prefix}-[a-z0-9_]+", name):
+                raise BackgroundStorageError("Invalid background publication recovery path")
+            path = _contained(directory, name)
+            for child in path.rglob("*") if path.exists() else []:
+                _contained(directory, child.relative_to(directory).as_posix())
+            paths.append(path)
+        stage, rollback = paths
+        primary = _contained(directory, f"{directory.name}_config.json")
+        current, payload = _read_json(primary)
+        _validate(current, directory.name)
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest == record["before"]:
+            saved_backup = None
+            if record["had_backup"]:
+                old, saved_backup = _read_json(_contained(transaction, "backup.json"))
+                _validate(old, directory.name)
+            target = _contained(directory, "Images")
+            for child in target.rglob("*") if target.exists() else []:
+                _contained(directory, child.relative_to(directory).as_posix())
+            if rollback is not None and rollback.exists():
+                if target.exists():
+                    shutil.rmtree(target)
+                os.replace(rollback, target)
+            elif rollback is None and not stage.exists() and target.exists():
+                shutil.rmtree(target)
+            backup = primary.with_name(primary.name + ".backup")
+            if saved_backup is not None:
+                _atomic(backup, saved_backup)
+            else:
+                backup.unlink(missing_ok=True)
+        elif digest != record["after"]:
+            raise BackgroundStorageError("Background metadata does not match its publication journal; files are preserved")
+        for path in paths:
+            if path is not None and path.exists():
+                shutil.rmtree(path)
+        marker.unlink()
+    shutil.rmtree(transaction)
+
+
 def publish_background_set(background_id, source_image_id, cards, images, settings, expected_revision, *, regenerate_indices=None):
     """Publish current images with the same V* archives and staged writes as sprites."""
     cards = normalize_variants(cards)
@@ -447,27 +507,46 @@ def publish_background_set(background_id, source_image_id, cards, images, settin
                     "variants": cards, "settings": settings, "images": []}
             sets.append(item)
         indices = set(range(len(images)) if regenerate_indices is None else regenerate_indices)
-        with staged_image_batch(str(target), version_existing=regenerate_indices is None, lock_root=str(directory),
+        def prepare_publication(stage, rollback):
+            transaction = _contained(directory, ".vnccs-background-publication")
+            transaction.mkdir()
+            backup = _contained(directory, f"{directory.name}_config.json.backup")
+            if backup.exists():
+                _old, payload = _read_json(backup)
+                _atomic(_contained(transaction, "backup.json"), payload)
+            published = {**document, "revision": document["revision"] + 1}
+            _validate(published, directory.name)
+            _atomic(_contained(transaction, "transaction.json"), _json_bytes({
+                "stage": Path(stage).name, "rollback": Path(rollback).name if rollback else None,
+                "before": hashlib.sha256(previous).hexdigest(),
+                "after": hashlib.sha256(_json_bytes(published)).hexdigest(), "had_backup": backup.exists(),
+            }))
+
+        try:
+            with staged_image_batch(str(target), version_existing=regenerate_indices is None, lock_root=str(directory),
+                                before_publish=prepare_publication,
                                 commit=lambda: _commit(directory, document, _json_bytes(saved_backup))) as stage:
-            for index, (name, image) in enumerate(zip(["Original", *(card["name"] for card in cards)], images)):
-                filename = f"{index:02d}_{_name(name)}.png"
-                if index in indices:
-                    path = _contained(Path(stage), filename)
-                    _atomic(path, _image_bytes(image))
-                    with Image.open(path) as verification:
-                        verification.verify()
-                    entry = {"name": name, "file": f"Images/{filename}", "width": image.width, "height": image.height,
-                             "revision": document["revision"] + 1, "settings": settings}
-                    if regenerate_indices is None:
-                        item["images"].append(entry)
-                    else:
-                        item["images"][index] = entry
-            item["settings"] = settings
-            if regenerate_indices is not None:
-                for group in saved_backup.get("generated_sets", []):
-                    if group["set_id"] == item["set_id"]:
-                        group.update(copy.deepcopy(item))
-            document["generator_settings"] = settings
+                for index, (name, image) in enumerate(zip(["Original", *(card["name"] for card in cards)], images)):
+                    filename = f"{index:02d}_{_name(name)}.png"
+                    if index in indices:
+                        path = _contained(Path(stage), filename)
+                        _atomic(path, _image_bytes(image))
+                        with Image.open(path) as verification:
+                            verification.verify()
+                        entry = {"name": name, "file": f"Images/{filename}", "width": image.width, "height": image.height,
+                                 "revision": document["revision"] + 1, "settings": settings}
+                        if regenerate_indices is None:
+                            item["images"].append(entry)
+                        else:
+                            item["images"][index] = entry
+                item["settings"] = settings
+                if regenerate_indices is not None:
+                    for group in saved_backup.get("generated_sets", []):
+                        if group["set_id"] == item["set_id"]:
+                            group.update(copy.deepcopy(item))
+                document["generator_settings"] = settings
+        finally:
+            _recover_set_publication(directory)
     try:
         from server import PromptServer
         PromptServer.instance.send_sync("vnccs.background.set", {"background_id": background_id,
@@ -1401,8 +1480,8 @@ def _run_background(state, draw_id):
         if document.get("_recovery") or document.get("archived"):
             raise BackgroundStorageError("The selected background is read-only; its data is preserved")
         editor = _resolve_editor_seed(normalize_editor(state.get("editor", document["editor"])), state.get("_vnccs_seed_resolved") is True)
-        selected = state.get("selected_image_id") or document["selected_image_id"]
-        requested_image = selected
+        requested_image = state.get("selected_image_id", "")
+        selected = requested_image or document["selected_image_id"]
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         if selected and image is None:
             raise ValueError("Selected image does not belong to this background")

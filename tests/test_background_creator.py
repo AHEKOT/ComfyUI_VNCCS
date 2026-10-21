@@ -227,6 +227,85 @@ storage.add_image(sys.argv[3], Image.new('RGB', (8, 8), 'blue'), {'cache_key': '
     assert retried["images"][-1]["settings"] == {"cache_key": "green"}
 
 
+@pytest.mark.parametrize("mode,phase", [(mode, phase) for mode in ("first", "next", "regenerate")
+                                      for phase in ("retire", "images", "backup", "primary")
+                                      if mode != "first" or phase != "retire"])
+def test_process_crash_recovers_background_set_pixels_and_both_metadata_files(library, mode, phase):
+    document = with_image("Crash-safe set")
+    cards = generation.normalize_editor({})["variants"]
+    images = [Image.new("RGB", (16, 8), "red") for _ in range(len(cards) + 1)]
+    if mode != "first":
+        storage.publish_background_set(document["background_id"], document["selected_image_id"], cards,
+                                       images, {"seed": 1}, document["revision"])
+        document = storage.load_background(document["background_id"])
+    before = files(library)
+    script = """
+import os
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from conftest import _preload_node
+from PIL import Image
+storage = _preload_node('background_creator')
+storage.root = lambda: Path(sys.argv[2])
+document = storage.load_background(sys.argv[3])
+directory = storage.root() / document['name']
+primary = directory / (document['name'] + '_config.json')
+phase, mode = sys.argv[4:6]
+replace = storage.os.replace
+def publish(source, target):
+    replace(source, target)
+    if ((phase == 'images' and Path(target) == directory / 'Images')
+            or (phase == 'retire' and Path(source) == directory / 'Images')
+            or (phase == 'backup' and Path(target) == primary.with_name(primary.name + '.backup'))
+            or (phase == 'primary' and Path(target) == primary)):
+        os._exit(77)
+storage.os.replace = publish
+cards = storage.normalize_editor({})['variants']
+storage.publish_background_set(document['background_id'], document['selected_image_id'], cards,
+    [Image.new('RGB', (16, 8), 'blue') for _ in range(len(cards) + 1)], {'seed': 2}, document['revision'],
+    regenerate_indices=[1] if mode == 'regenerate' else None)
+"""
+    child = subprocess.run([sys.executable, "-B", "-c", script, str(Path(__file__).parent), str(library),
+                            document["background_id"], phase, mode], capture_output=True, text=True, timeout=30)
+    assert child.returncode == 77, child.stderr
+    saved = storage.load_background(document["background_id"])
+    if phase != "primary":
+        assert saved == document
+        assert files(library) == before
+    else:
+        assert saved["generator_settings"] == {"seed": 2}
+        group = saved["generated_sets"][-1]
+        with Image.open(storage.background_set_image_path(saved["background_id"], group["set_id"], 1)) as image:
+            assert image.getpixel((0, 0)) == (0, 0, 255)
+    backup = json.loads(document_path(saved).with_suffix(".json.backup").read_bytes())
+    for item in (saved, backup):
+        storage._validate(item, saved["name"])
+        for group in item.get("generated_sets", []):
+            for entry in group["images"]:
+                with Image.open(document_path(saved).parent / entry["file"]) as image:
+                    assert image.getpixel((0, 0)) == ((0, 0, 255) if entry["settings"].get("seed") == 2 else (255, 0, 0))
+    assert not list(library.rglob(".vnccs-*"))
+    storage.publish_background_set(saved["background_id"], saved["selected_image_id"], cards,
+                                   images, {"seed": 3}, saved["revision"])
+
+
+@pytest.mark.parametrize("damaged", ["rollback", "before"])
+def test_invalid_publication_recovery_preserves_every_file(library, damaged):
+    document = with_image("Damaged publication")
+    directory = document_path(document).parent
+    transaction = directory / ".vnccs-background-publication"
+    transaction.mkdir()
+    record = {"stage": ".vnccs-sprites-test", "rollback": None, "had_backup": False,
+              "before": storage.hashlib.sha256(document_path(document).read_bytes()).hexdigest(), "after": "f" * 64}
+    record[damaged] = "../outside" if damaged == "rollback" else "0" * 64
+    (transaction / "transaction.json").write_text(json.dumps(record))
+    before = files(library)
+    with pytest.raises(storage.BackgroundStorageError, match="original files are preserved"):
+        storage.load_background(document["background_id"])
+    assert files(library) == before
+
+
 def test_retired_sources_are_pruned_only_after_primary_and_backup_release_them(library):
     document = with_image()
     old_path = storage.image_path(document["background_id"], document["selected_image_id"])
@@ -1136,6 +1215,22 @@ def test_node_outputs_the_uploaded_background_without_inference(library, monkeyp
     with pytest.raises(ValueError, match="Select or create"):
         node.create_background()
     inference.assert_not_called()
+
+
+@pytest.mark.parametrize("selection", [None, ""])
+def test_run_acknowledges_the_original_empty_workflow_selection(workspace, selection):
+    document = job_with_image(workspace)
+    state = {"schema_version": 2, "background_id": document["background_id"], "editor": document["editor"]}
+    if selection is not None:
+        state["selected_image_id"] = selection
+    raw = json.dumps(state)
+    for _ in range(2):
+        result = generation.VNCCS_BackgroundCreator().create_background(background_data=raw)
+        preview = result["ui"]["background_preview"][0]
+        assert preview["source"] == "upload"
+        assert preview["request_image_id"] == ""
+        assert preview["image_id"] == document["selected_image_id"]
+    workspace.generated.assert_not_called()
 
 
 def test_preview_uses_real_torch_rgb_batch_when_available(library):
@@ -2055,7 +2150,7 @@ def test_negative_prompt_reaches_each_encoder_without_entering_enhanced_scene(ru
     assert metadata["negative"] == editor["negative"] and editor["negative"] not in metadata["prompt"]
 
 
-@pytest.mark.parametrize("failure", ["json", "publish"])
+@pytest.mark.parametrize("failure", ["json", "publish", "journal"])
 @pytest.mark.parametrize("regenerate", [False, True])
 def test_background_publication_failure_restores_images_json_and_previous_versions(library, monkeypatch, failure, regenerate):
     document = with_image("Transactional room")
@@ -2070,6 +2165,8 @@ def test_background_publication_failure_restores_images_json_and_previous_versio
         if failure == "json" and Path(target) == primary:
             raise OSError("Publication failed")
         if failure == "publish" and Path(source).name.startswith(".vnccs-sprites-"):
+            raise OSError("Publication failed")
+        if failure == "journal" and Path(target).name == "transaction.json":
             raise OSError("Publication failed")
         return replace(source, target)
     monkeypatch.setattr(storage.os, "replace", fail)

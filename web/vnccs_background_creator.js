@@ -477,6 +477,7 @@ export class BackgroundCreatorWidget {
                     const document = await this.request(`/backgrounds/${state.background_id}`);
                     if (epoch !== this.epoch || this.disposed) return;
                     if (!stored.editor) state.editor = editorDefaults(document.editor);
+                    state.selected_image_id ||= document.selected_image_id;
                     state.revision = document.revision;
                     await this.acceptDocument(document, false, epoch);
                 }
@@ -618,7 +619,7 @@ export class BackgroundCreatorWidget {
                     }
                     this.markEdited(); this.render();
                 },
-                catalogURL: () => BASE + "/styles", showGenerateAll: true, allowNone: () => true,
+                catalogURL: () => BASE + "/styles", allowNone: () => true,
                 getPreviewPayload: () => {
                     if (this.restoring || this.busy || this.disposed) throw new Error("Background Creator is busy");
                     return { node_id: String(this.node.id), editor: clone(this.state.editor) };
@@ -1090,7 +1091,10 @@ export class BackgroundCreatorWidget {
         this.wizardDialog = modal;
         const remove = modal.overlay.remove;
         modal.overlay.remove = (...args) => {
-            if (this.wizardDialog === modal) this.wizardDialog = null;
+            if (this.wizardDialog === modal) {
+                this.wizardDialog = null;
+                this.cancelWizard?.();
+            }
             return remove.apply(modal.overlay, args);
         };
     }
@@ -1358,6 +1362,19 @@ export class BackgroundCreatorWidget {
         this.busy = true; this.activeAction = action;
         if (action === "background") this.startPreviewGeneration();
         this.updateControls(); this.message("Preparing " + action + "…");
+        let jobId = "", cancelRequested = false, cancellation = null;
+        const cancel = () => {
+            cancelRequested = true;
+            if (jobId && !cancellation) {
+                cancellation = this.json(`/jobs/${jobId}/cancel`, {}).catch(error => {
+                    cancellation = null;
+                    if (!this.disposed && epoch === this.epoch) this.message("Could not cancel the wizard. Retrying: " + error.message, true);
+                });
+            }
+            if (epoch === this.epoch) { clearTimeout(this.pollTimer); this.pollResolve?.(); }
+            return cancellation;
+        };
+        if (action === "wizard") this.cancelWizard = cancel;
         try {
             await this.persist();
             if (epoch !== this.epoch || this.disposed || this.workflowBusy || !ownsRequest()) return false;
@@ -1365,23 +1382,25 @@ export class BackgroundCreatorWidget {
             const payload = { action, editor: clone(this.state.editor), revision: this.state.revision, image_id: this.state.selected_image_id, _vnccs_seed_resolved: true };
             if (action === "wizard") payload.description = description;
             let result = await this.json(`/backgrounds/${id}/jobs`, payload);
-            if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
-            const jobId = result.job_id;
+            jobId = result.job_id;
+            if (action === "wizard" && (cancelRequested || !ownsRequest())) await cancel();
+            if (this.disposed || epoch !== this.epoch || action !== "wizard" && !ownsRequest()) return false;
             this.jobId = jobId; this.updateControls();
-            while (!this.disposed && epoch === this.epoch && ownsRequest()) {
+            while (!this.disposed && epoch === this.epoch && (action === "wizard" || ownsRequest())) {
+                if (action === "wizard" && (cancelRequested || !ownsRequest())) await cancel();
                 try {
                     result = await this.request(`/jobs/${jobId}`);
                 } catch (error) {
-                    if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
+                    if (this.disposed || epoch !== this.epoch || action !== "wizard" && !ownsRequest()) return false;
                     if (error.status && error.status < 500) throw error;
                     result = null;
                 }
-                if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
-                this.message(result?.message || (result ? "Working…" : "Could not read job status. Retrying; the background job is still tracked."));
+                if (this.disposed || epoch !== this.epoch || action !== "wizard" && !ownsRequest()) return false;
+                this.message(cancelRequested ? "Stopping background wizard…" : result?.message || (result ? "Working…" : "Could not read job status. Retrying; the background job is still tracked."));
                 if (result && ["completed", "failed", "cancelled"].includes(result.status)) break;
                 await new Promise(resolve => { this.pollTimer = setTimeout(resolve, 500); this.pollResolve = resolve; });
             }
-            if (this.disposed || epoch !== this.epoch || !ownsRequest()) return false;
+            if (this.disposed || epoch !== this.epoch || cancelRequested || !ownsRequest()) return false;
             if (result.status !== "completed") throw new Error(result.error || (result.status === "cancelled" ? "Generation stopped." : "Generation failed."));
             if (result.result.editor) {
                 this.busy = false;
@@ -1401,7 +1420,10 @@ export class BackgroundCreatorWidget {
             }
             this.message(action === "wizard" ? "Scene attributes filled." : "Background generated and saved.");
             return true;
-        } finally { if (epoch === this.epoch && !this.disposed) { this.stopPreviewGeneration(); this.jobId = ""; this.busy = false; this.activeAction = ""; this.render(); } }
+        } finally {
+            if (this.cancelWizard === cancel) this.cancelWizard = null;
+            if (epoch === this.epoch && !this.disposed) { this.stopPreviewGeneration(); this.jobId = ""; this.busy = false; this.activeAction = ""; this.render(); }
+        }
     }
 
     resize() {
