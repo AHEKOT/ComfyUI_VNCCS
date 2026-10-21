@@ -362,6 +362,7 @@ def add_image(background_id, image, settings, expected_revision=None):
         selected = next((item for item in document["images"] if item["image_id"] == document["selected_image_id"]), None)
         current = document["images"][-1] if document["images"] else None
         sources = {item["source_image_id"] for item in document.get("generated_sets", [])}
+        sources.update(item["source_image_id"] for item in document.get("models", []))
         replace = selected is current and current is not None and "preview_revision" in current and current["image_id"] not in sources
         if not replace and len(document["images"]) >= MAX_IMAGES:
             raise ValueError("Background image limit reached")

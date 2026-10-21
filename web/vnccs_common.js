@@ -640,7 +640,7 @@ export function registerCleanup(node, cleanupFn) {
         node._vnccsCleanups = [];
         const orig = node.onRemoved;
         node.onRemoved = function () {
-            for (const fn of node._vnccsCleanups) {
+            for (const fn of node._vnccsCleanups || []) {
                 try { fn(); } catch (e) { console.warn("[VNCCS] cleanup error:", e); }
             }
             node._vnccsCleanups = null;
@@ -1067,7 +1067,7 @@ export function enableMiddleMouseCanvasPan(root, node = root?._node) {
     };
 
     const startPan = (event) => {
-        if (event._vnccsForwardedCanvasInput) return;
+        if (event._vnccsForwardedCanvasInput || event.target?.closest?.("[data-vnccs-own-navigation]")) return;
         if (event.button !== 1) return;
         if (panning) stopPan();
         panCanvas = canvas();
@@ -1094,14 +1094,14 @@ export function enableMiddleMouseCanvasPan(root, node = root?._node) {
     root.addEventListener(downEvent, startPan, true);
 
     const suppressAuxClick = (event) => {
-        if (event.button !== 1) return;
+        if (event.button !== 1 || event.target?.closest?.("[data-vnccs-own-navigation]")) return;
         event.preventDefault();
         event.stopPropagation();
     };
     root.addEventListener("auxclick", suppressAuxClick, true);
 
     const forwardWheel = (event) => {
-        if (event._vnccsForwardedCanvasInput) return;
+        if (event._vnccsForwardedCanvasInput || event.target?.closest?.("[data-vnccs-own-navigation]")) return;
         if (hasOwnWheelHandler(event.target) || hasScrollableAncestor(event.target)) return;
         const canvasEl = canvas();
         if (!canvasEl) return;
@@ -1111,13 +1111,15 @@ export function enableMiddleMouseCanvasPan(root, node = root?._node) {
     };
     root.addEventListener("wheel", forwardWheel, { capture: true, passive: false });
 
-    if (node) registerCleanup(node, () => {
+    const cleanup = () => {
         stopPan();
         root.removeEventListener(downEvent, startPan, true);
         root.removeEventListener("auxclick", suppressAuxClick, true);
         root.removeEventListener("wheel", forwardWheel, true);
         delete root._vnccsMiddleMouseCanvasPan;
-    });
+    };
+    if (node) registerCleanup(node, cleanup);
+    return cleanup;
 }
 
 // ── CSS Injection (once per class prefix) ─────────────────────────────────────
