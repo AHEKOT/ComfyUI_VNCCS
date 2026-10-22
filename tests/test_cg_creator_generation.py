@@ -353,6 +353,19 @@ def test_selected_builtin_turbo_model_uses_standard_eight_step_sampling(runtime)
     assert metadata["settings"]["generation"]["turbo"] is False
 
 
+@pytest.mark.parametrize("model", ["QI2/" + generation.TURBO_MODEL, "User models/other_family_custom.safetensors"])
+def test_restored_model_and_authored_sampling_reach_the_loader_and_sampler(runtime, model):
+    settings = {"generation": {"diffusion_model_name": model, "steps": 19, "cfg": 2.5,
+        "seed": 918273, "seed_mode": "fixed", "sampler": "dpmpp_2m", "scheduler": "normal"}}
+    _image, metadata = generation.generate_image(settings, "restored-model", threading.Event(), runtime.reference, runtime.background)
+    calls = dict(runtime.calls)
+    assert calls["UNETLoader"]["unet_name"] == model
+    for key, sampler_key in [("steps", "steps"), ("cfg", "cfg"), ("seed", "seed"), ("sampler", "sampler_name"), ("scheduler", "scheduler")]:
+        assert calls["KSampler"][sampler_key] == settings["generation"][key]
+    for key, value in settings["generation"].items():
+        assert metadata["settings"]["generation"][key] == value
+
+
 def test_random_seed_is_resolved_once_and_saved_with_the_actual_frame(runtime, monkeypatch):
     bits = mock.Mock(side_effect=[0, 42])
     monkeypatch.setattr(generation.random, "getrandbits", bits)

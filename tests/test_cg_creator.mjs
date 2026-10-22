@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 import { FactoryCommandHistory } from "./fixtures/factory_history.mjs";
-import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
+import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, connectionSource, cleanupSource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
 
 const BASE = "/vnccs/cg-creator";
 const A = "a".repeat(32), B = "b".repeat(32), MODEL = "c".repeat(32), IMAGE = "d".repeat(32), CG = "e".repeat(32);
@@ -20,7 +20,7 @@ const scene = (id = A, overrides = {}) => ({ scene_id: "f".repeat(32), model_id:
 const configuration = () => ({ settings: settingsDefaults(), installed: true, assets: [], loras: ["environment.safetensors"], samplers: ["euler"], schedulers: ["simple"] });
 const response = (value, status = 200) => ({ ok: status < 400, status, json: async () => clone(value) });
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
-const settle = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+const settle = () => new Promise(resolve => setImmediate(resolve));
 const dataKey = key => key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 const abortCallbacks = new WeakMap();
 
@@ -66,6 +66,7 @@ class Element {
     matches(selector) {
         return selector.split(",").some(part => {
             part = part.trim();
+            if (part === "*") return true;
             if (part.startsWith(".")) return this.classList.contains(part.slice(1));
             const attribute = /^\[([^=\]]+)(?:=["']?([^\]"']+)["']?)?\]$/.exec(part);
             if (attribute) {
@@ -83,6 +84,20 @@ class Element {
     append(...children) { for (const child of children) this.appendChild(child); }
     replaceChildren(...children) { for (const child of this.children) child.parentElement = null; this.children = []; this.append(...children); }
     remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this); this.parentElement = null; this.removed = true; }
+    replaceWith(child) {
+        const parent = this.parentElement;
+        if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child);
+        parent.children.splice(parent.children.indexOf(this), 1, child); child.parentElement = parent; this.parentElement = null; this.removed = true;
+    }
+    cloneNode(deep = false) {
+        const copy = new Element(this.tagName);
+        copy.style = { ...this.style }; copy.dataset = { ...this.dataset }; copy.attributes = new Map(this.attributes);
+        for (const key of ["className", "value", "src", "hidden", "disabled", "textContent", "width", "height"]) copy[key] = this[key];
+        if (deep) for (const child of this.children) copy.appendChild(child.cloneNode(true));
+        return copy;
+    }
+    decode() { return Promise.resolve(); }
+    getContext() { return { drawImage: bitmap => { this.bitmap = bitmap; } }; }
     addEventListener(type, callback, options = {}) {
         const callbacks = this.listeners.get(type) || []; callbacks.push(callback); this.listeners.set(type, callbacks);
         if (options.signal) {
@@ -111,7 +126,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
     let extension, timerId = 0;
     const window = new Element("window"), documents = new Map([[A, background()], [B, background(B)]]);
     class Viewer {
-        constructor(host, options) { this.options = options; this.canvas = new Element("canvas"); this.controls = {}; this.camera = clone(camera); this.frames = []; this.loads = []; }
+        constructor(host, options) { this.options = options; this.canvas = new Element("canvas"); this.canvas.width = 1600; this.canvas.height = 900; host.appendChild(this.canvas); this.controls = {}; this.camera = clone(camera); this.frames = []; this.loads = []; }
         async setScene(value) { this.scene = value; this.loads.push(value); this.camera = { ...camera, position: [99, 99, 99] }; return { failures: [] }; }
         setLighting(settings) { this.lighting = settings; }
         setCaptureSettings(settings) { this.settings = settings; }
@@ -152,10 +167,10 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
     const context = vm.createContext({
         document: Object.assign(new Element("document"), { getElementById: () => true, createElement: tag => new Element(tag), head: new Element("head"), activeElement: null }),
         window, storage: localStorage, STYLE: "", injectStyles() {}, generateRandomSeed: () => 424242, workflowScope: node => scope + ":" + node.id, cacheIdentity: () => Math.random().toString(36).slice(2), crypto: { randomUUID: () => "01234567-89ab-cdef-0123-456789abcdef" },
-        URL, AbortController, FormData, Blob, console, api, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, syncDOMWidgetWidth, syncDOMWidgetWidthSoon() {}, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT,
+        URL, AbortController, FormData, Blob, createImageBitmap: async () => ({ close() { this.closed = true; } }), console, api, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, syncDOMWidgetWidth, syncDOMWidgetWidthSoon() {}, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT,
         ResizeObserver: class { constructor(callback) { this.callback = callback; } observe(target) { this.target = target; } disconnect() { this.disconnected = true; } },
         createSakuraInteractions: () => ({ syncSelects() {}, captureView() { return {}; }, restoreView() {}, dispose() { this.disconnected = true; } }),
-        playSakuraMotion() {}, stopSakuraMotion() {},
+        playSakuraMotion(_owner, _element, _frames, _duration, finish) { finish?.(); }, stopSakuraMotion() {},
         CGQi2Controls: class { constructor(host, options) { this.options = options; this.host = host; this.els = {}; } render(config) { this.config = config; } setDisabled(value) { this.disabled = value; } dispose() { this.disposed = true; } },
         showModal: (container, title, createContent, actions) => {
             const overlay = new Element("div"), modal = new Element("div"), content = createContent(), buttons = [];
@@ -171,6 +186,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
         clearTimeout: id => timers.delete(id),
     });
+    vm.runInContext(cleanupSource + connectionSource, context);
     vm.runInContext(widgetSource.replace(/^import .*\n/gm, "").replace("class CGCreatorWidget", "globalThis.CGCreatorWidget = class CGCreatorWidget").replaceAll("import.meta.url", '"https://localhost/widget.mjs"'), context);
     vm.runInContext(entrySource.replace(/^import .*\n/gm, ""), context);
     class Node {
@@ -187,7 +203,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
     const emit = (name, detail) => { for (const callback of events.get(name) || []) callback({ detail }); };
     return { node, widget, calls, api, events, timers, drafts, queued, documents, context, window, extension, data: node.widgets[0],
         emit: detail => emit("vnccs_cg_creator", { node_id: "7", ...detail }), emitEvent: emit, fireTimers,
-        ready: async () => { fireTimers(0); await widget.operations; },
+        ready: async ({ loadSource = true } = {}) => { fireTimers(0); await widget.operations; if (loadSource) await widget.sourceLoad?.onload?.(); },
         control: selector => widget.container.querySelector(selector),
     };
 }
@@ -206,6 +222,188 @@ test("CG state restores nested settings without sharing mutable defaults", () =>
     restored.settings.generation.lora_stack.push({ name: "environment.safetensors", strength: 1 });
     assert.deepEqual(settingsDefaults().generation.lora_stack, []);
     for (const raw of ["{broken", "[]", "null", '{"schema_version":2}', JSON.stringify(state({ model_id: "../model" })), JSON.stringify(state({ camera: {} }))]) assert.throws(() => readState(raw));
+});
+
+test("legacy workflows inherit missing model fields from the library while explicit workflow fields remain authoritative", async () => {
+    const savedModel = "Local models/custom_checkpoint.safetensors";
+    for (const settings of [undefined, { generation: { steps: 39, cfg: 0 } }, { generation: { diffusion_model_name: "Explicit/workflow.safetensors", steps: 17 } }]) {
+        const raw = JSON.stringify(state({ settings, model_settings: undefined })), h = harness(raw);
+        h.documents.set(A, background(A, { cg_settings: settingsDefaults({ generation: { diffusion_model_name: savedModel, steps: 13, cfg: 2, seed: 918273 } }),
+            model_settings: { ...MODEL_DEFAULTS, steps: 33 } }));
+        for (let index = 0; index < 2; index++) {
+            h.data.value = raw; h.node.onConfigure(); await h.ready();
+            const generation = h.widget.state.settings.generation;
+            assert.equal(generation.diffusion_model_name, settings?.generation?.diffusion_model_name || savedModel);
+            assert.equal(generation.steps, settings?.generation?.steps ?? 13);
+            assert.equal(generation.cfg, settings?.generation?.cfg ?? 2); assert.equal(generation.seed, 918273);
+            assert.equal(h.widget.state.model_settings.steps, 33);
+            assert.equal(JSON.parse(h.data.serializeValue()).settings.generation.diffusion_model_name, generation.diffusion_model_name);
+        }
+    }
+});
+
+test("a restored active model differing from the library remains dirty and is saved before background navigation", { timeout: 5000 }, async () => {
+    const model = "User models/restored_checkpoint.safetensors", raw = JSON.stringify(state({ settings: settingsDefaults({ generation: { diffusion_model_name: model, steps: 19, cfg: 2.5 } }) }));
+    const h = harness(raw); await h.ready();
+    assert.equal(h.widget.unsaved, true);
+    const select = h.control('[data-library]'); select.value = B;
+    const away = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await away;
+    assert.equal(h.documents.get(A).cg_settings.generation.diffusion_model_name, model);
+    select.value = A;
+    const back = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await back;
+    assert.equal(h.widget.state.settings.generation.diffusion_model_name, model);
+    assert.equal(h.widget.state.settings.generation.steps, 19); assert.equal(h.widget.state.settings.generation.cfg, 2.5);
+    assert.equal(JSON.parse(h.data.serializeValue()).settings.generation.diffusion_model_name, model);
+});
+
+test("saved preview, collection and generation references are bounded without changing legacy workflows", () => {
+    const preview = { kind: "cg", cg_id: CG, zoom: 2.4, center: [.4, .6] };
+    assert.deepEqual(readState(JSON.stringify(state({ preview }))).preview, preview);
+    for (const changes of [{ preview: { ...preview, zoom: 9 } }, { preview: { ...preview, center: [0] } },
+        { preview: { ...preview, cg_id: "../file" } }, { scroll: { sources: -1, cgs: 0 } },
+        { job: { id: "../job", action: "model", name: "" } }, { job: { request_id: B, action: "unknown", name: "" } }]) {
+        assert.throws(() => readState(JSON.stringify(state(changes))), /saved CG/);
+    }
+    assert.equal(readState(JSON.stringify(state())).preview, undefined);
+});
+
+test("serialized preview mode and scroll survive a fresh widget and configure cannot overwrite incoming state", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    await h.control("[data-cg-id]").click();
+    h.widget.state.preview.zoom = 2; h.widget.state.preview.center = [.35, .6];
+    h.control("[data-source-choices]").scrollLeft = 240; h.control("[data-cgs]").scrollTop = 130;
+    const info = { widgets_values: ["stale"] }; h.node.onSerialize(info);
+    const reloaded = harness(info.widgets_values[0]); await reloaded.ready();
+    assert.equal(reloaded.control("[data-large-preview]").src, background().cgs[0].url);
+    assert.deepEqual(clone(reloaded.widget.state.preview), { kind: "cg", cg_id: CG, zoom: 2, center: [.35, .6] });
+    assert.equal(reloaded.control("[data-source-choices]").scrollLeft, 240); assert.equal(reloaded.control("[data-cgs]").scrollTop, 130);
+    const incoming = JSON.stringify(state({ background_id: B, preview: { kind: "source", zoom: 1.5, center: [.4, .3] } }));
+    h.data.value = incoming; h.node.onConfigure(); assert.equal(h.data.value, incoming); await h.ready();
+    assert.match(h.control("[data-large-preview]").src, new RegExp(B));
+    assert.equal(h.widget.state.preview.kind, "source");
+    h.widget.cgPreviewClose(); const closed = harness(h.data.serializeValue()); await closed.ready();
+    assert.equal(closed.control("[data-large-preview]"), null); assert.equal(closed.widget.canEditCamera(), true);
+});
+
+test("preview and camera updates retain decoded gallery cards and their reserved dimensions", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const gallery = h.control("[data-cgs]"), card = h.control("[data-cg-id]"), image = card.querySelector("img");
+    assert.equal(image.style.aspectRatio, "1600 / 896"); gallery.scrollTop = 130;
+    await h.control("[data-enlarge]").click(); h.widget.render();
+    assert.equal(h.control("[data-cg-id]"), card); assert.equal(card.querySelector("img"), image); assert.equal(gallery.scrollTop, 130);
+    h.widget.cgPreviewClose(); h.widget.state.selected_cg_id = ""; h.widget.render();
+    assert.equal(h.control("[data-cg-id]"), card); assert.equal(card.classList.contains("is-selected"), false);
+});
+
+test("reload resumes acknowledged and unacknowledged jobs without another generation request", async () => {
+    for (const action of ["model", "cg"]) for (const acknowledged of [false, true]) {
+        const h = harness(JSON.stringify(state())); await h.ready();
+        const submission = deferred(), completion = deferred(), polled = deferred();
+        h.api.handle = path => path.endsWith("/jobs") ? submission.promise : path === `${BASE}/jobs/${B}` ? (polled.resolve(), completion.promise) : undefined;
+        const running = action === "cg" ? generateCG(h) : h.widget.runJob(action);
+        await settle();
+        assert.match(h.widget.state.job.request_id, /^[A-Za-z0-9_-]{1,160}$/);
+        if (acknowledged) { submission.resolve(response({ job_id: B })); await polled.promise; }
+        const saved = h.data.serializeValue(); assert.doesNotMatch(saved, /blob:/);
+        h.node.onRemoved(); submission.resolve(response({ job_id: B })); completion.resolve(response({ status: "cancelled" })); await running;
+        const reloaded = harness(saved), resumed = deferred(), resumedPoll = deferred();
+        reloaded.api.handle = path => {
+            if (path.includes(`/backgrounds/${A}/jobs/`)) return response({ job_id: B });
+            if (path === `${BASE}/jobs/${B}`) { resumedPoll.resolve(); return resumed.promise; }
+        };
+        await reloaded.ready(); await resumedPoll.promise;
+        assert.equal(reloaded.widget.busy, true); assert.equal(reloaded.control('[data-action="model"]').disabled, true);
+        assert.throws(() => reloaded.data.beforeQueued(), /operation/);
+        assert.equal(reloaded.calls.some(call => call.options.method === "POST"), false);
+        if (action === "cg") { assert.ok(reloaded.control("[data-pending-cg]")); assert.ok(reloaded.widget.pendingCG.url.startsWith("blob:")); }
+        resumed.resolve(response({ status: "completed", result: { document: background() } })); await reloaded.widget.jobOperation;
+        assert.equal(reloaded.widget.busy, false); assert.equal(reloaded.widget.state.job, undefined);
+        assert.equal(reloaded.widget.state.selected_cg_id, action === "cg" ? CG : "");
+    }
+});
+
+test("generation connection failures preserve resumable state while terminal failures release it", async () => {
+    for (const status of [404, 503]) {
+        const job = { id: B, action: "model", name: "" }, h = harness(JSON.stringify(state({ job })));
+        h.api.handle = path => path === `${BASE}/jobs/${B}` ? response({ error: "Status unavailable" }, status) : undefined;
+        await h.ready(); await h.widget.jobOperation;
+        assert.equal(h.widget.busy, false); assert.equal(h.widget.state.background_id, A);
+        if (status === 503) {
+            assert.deepEqual(clone(h.widget.state.job), job); assert.throws(() => h.data.beforeQueued(), /operation/);
+            assert.equal(h.control('[data-action="model"]').disabled, true); assert.equal(h.control("[data-refresh]"), null);
+            h.api.handle = path => path === `${BASE}/jobs/${B}` ? response({ status: "cancelled" }) : undefined;
+            h.emitEvent("reconnected"); await h.widget.operations; await h.widget.jobOperation;
+        }
+        assert.equal(h.widget.state.job, undefined);
+    }
+});
+
+test("duplicating a node retains its assets and settings without attaching to the original node's generation", async () => {
+    const saved = state({ job: { id: B, node_id: "7", action: "cg", name: "Original node job" }, preview: { kind: "pending", zoom: 1, center: [.5, .5] } });
+    const clone = harness(JSON.stringify(saved), { nodeId: 8 }); await clone.ready();
+    assert.equal(clone.widget.state.job, undefined); assert.equal(clone.widget.state.preview, undefined);
+    assert.equal(clone.widget.state.selected_cg_id, CG); assert.equal(clone.widget.state.background_id, A);
+    assert.equal(clone.calls.some(call => call.path.includes("/jobs/")), false);
+    assert.equal(clone.widget.busy, false); assert.equal(clone.widget.canEditCamera(), true);
+});
+
+test("restoring a frame-less workflow preserves the authored aspect instead of replacing it with the source aspect", async () => {
+    const h = harness(JSON.stringify(state({ selected_cg_id: "", settings: settingsDefaults({ aspect: "9:16", resolution_mp: 3 }) }))); await h.ready();
+    assert.equal(h.widget.state.settings.aspect, "9:16");
+    assert.deepEqual(clone(h.widget.state.frame), frameDimensions("9:16", 3));
+    assert.equal(JSON.parse(h.data.value).settings.aspect, "9:16");
+});
+
+test("a missing 3D model does not prevent restoring a finished CG preview or its workflow output", async () => {
+    const preview = { kind: "cg", cg_id: CG, zoom: 2, center: [.4, .6] }, h = harness(JSON.stringify(state({ preview })));
+    h.api.handle = path => path.includes("/models/") ? response({ error: "Model file unavailable" }, 404) : undefined;
+    await h.ready();
+    assert.equal(h.widget.restoring, false); assert.equal(h.widget.restoreFailed, false);
+    assert.equal(h.control("[data-large-preview]").src, background().cgs[0].url);
+    assert.equal(h.widget.state.selected_cg_id, CG); assert.deepEqual(clone(h.widget.state.preview), preview);
+    assert.doesNotThrow(() => h.data.beforeQueued()); assert.equal(h.control("[data-save-view]").disabled, true);
+    assert.match(h.widget.status.textContent, /Model file unavailable/);
+});
+
+test("a completed CG job can reconnect even when its previous 3D model is unavailable", async () => {
+    const job = { id: B, node_id: "7", action: "cg", name: "Recover finished CG" }, h = harness(JSON.stringify(state({ job })));
+    h.api.handle = path => path.includes("/models/") ? response({ error: "Model file unavailable" }, 404)
+        : path === `${BASE}/jobs/${B}` ? response({ status: "completed", result: { document: background() } }) : undefined;
+    await h.ready(); await h.widget.jobOperation;
+    assert.equal(h.widget.restoring, false); assert.equal(h.widget.state.job, undefined);
+    assert.equal(h.widget.state.selected_cg_id, CG); assert.equal(h.widget.busy, false);
+    assert.doesNotThrow(() => h.data.beforeQueued()); assert.equal(h.calls.some(call => call.options.method === "POST"), false);
+});
+
+test("late model asset loading cannot overwrite a more recently configured model canvas", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const oldId = "2".repeat(32), newId = "3".repeat(32), loading = deferred(), started = deferred(), viewer = h.widget.viewer;
+    h.api.handle = path => path.includes("/models/") ? response(scene(path.includes(`/backgrounds/${B}/`) ? B : A, { model_id: path.split('/').at(-1), source_image_id: IMAGE })) : undefined;
+    viewer.setScene = async scene => {
+        if (scene.model_id === oldId) { started.resolve(); await loading.promise; }
+        viewer.visibleModel = scene.model_id; return { failures: [] };
+    };
+    h.widget.state.model_id = oldId; const oldLoad = h.widget.showModel(); await started.promise;
+    h.data.value = JSON.stringify(state({ background_id: B, model_id: newId, selected_cg_id: "" })); h.node.onConfigure(); h.fireTimers(0); await settle(); await settle();
+    loading.resolve(); await oldLoad; await h.widget.operations;
+    assert.equal(viewer.visibleModel, newId); assert.equal(h.widget.scene.model_id, newId);
+    assert.equal(h.widget.state.background_id, B); assert.equal(h.widget.restoring, false);
+});
+
+test("removing a generating node preserves its persisted pending preview mode", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.widget.state.job = { id: B, action: "cg", name: "Keep pending preview" };
+    h.widget.pendingCG = { ...frameDimensions("16:9", 2), camera, name: "Keep pending preview", url: URL.createObjectURL(new Blob(["png"])) };
+    h.widget.openPreview(h.widget.pendingCG); const saved = h.data.value;
+    h.node.onRemoved(); assert.equal(h.data.value, saved); assert.equal(JSON.parse(h.data.value).preview.kind, "pending");
+});
+
+test("an archived selected background retains its name and placeholder selection cannot mislabel the current document", async () => {
+    const h = harness(JSON.stringify(state())); h.documents.set(A, background(A, { archived: true })); await h.ready();
+    const select = h.control("[data-library]");
+    assert.equal(select.children.some(option => option.value === A && option.textContent.includes("Evening room")), true);
+    select.value = ""; await h.widget.change({ target: select });
+    assert.equal(select.value, A); assert.equal(h.widget.state.background_id, A);
 });
 
 test("source-camera calibration keeps image-plane framing while saved CG cameras stay exact", async () => {
@@ -335,9 +533,47 @@ test("library navigation locks generation before saving and until the new model 
     assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}`), true); await assertLocked();
     load.resolve(response(background(B))); await settle();
     assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), true); await assertLocked();
-    model.resolve(response(scene(B, { source_image_id: IMAGE }))); await navigation;
+    model.resolve(response(scene(B, { source_image_id: IMAGE }))); await settle(); await assertLocked();
+    assert.ok(h.widget.backgroundTransition); assert.equal(h.widget.backgroundTransition.snapshot.inert, true);
+    assert.match(h.widget.backgroundTransition.snapshot.querySelector("[data-model-source]").src, new RegExp(A));
+    assert.equal(h.widget.backgroundTransition.snapshot.querySelector("canvas").bitmap.closed, true);
+    await h.widget.sourceLoad.onload(); await navigation;
     assert.equal(h.widget.busy, false); assert.equal(h.widget.document.background_id, B);
+    assert.equal(h.widget.backgroundTransition, null);
     assert.equal(h.control('[data-action="model"]').disabled, false);
+});
+
+test("failed background assets restore the previous document, camera and saved workflow", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const original = h.data.value, create = h.context.document.createElement;
+    h.context.document.createElement = tag => {
+        const element = create(tag);
+        if (tag === "img") element.decode = () => element.src?.includes(B) ? Promise.reject(new Error("Missing asset")) : Promise.resolve();
+        return element;
+    };
+    const library = h.control("[data-library]"); library.value = B;
+    const navigation = h.widget.change({ target: library }); await settle(); await settle();
+    await h.widget.sourceLoad?.onload?.(); await settle(); await settle();
+    await h.widget.sourceLoad?.onload?.(); await navigation;
+    assert.equal(h.widget.document.background_id, A); assert.equal(h.widget.scene.background_id, A);
+    assert.deepEqual(h.widget.viewer.camera, camera); assert.equal(h.data.value, original);
+    assert.equal(h.control("[data-library]").value, A); assert.equal(h.widget.backgroundTransition, null);
+    assert.equal(h.widget.busy, false); assert.match(h.widget.status.textContent, /assets could not be loaded/);
+});
+
+test("reconfiguration and removal cancel background transitions without publishing late assets", async () => {
+    for (const remove of [false, true]) {
+        const h = harness(JSON.stringify(state())); await h.ready();
+        const library = h.control("[data-library]"); library.value = B;
+        const navigation = h.widget.change({ target: library }); await settle(); await settle();
+        const snapshot = h.widget.backgroundTransition.snapshot, late = h.widget.sourceLoad.onload;
+        if (remove) h.node.onRemoved();
+        else { h.data.value = JSON.stringify(state()); h.node.onConfigure(); }
+        await navigation; await late();
+        assert.equal(snapshot.removed, true); assert.equal(h.widget.backgroundTransition, null);
+        if (remove) assert.equal(h.widget.disposed, true);
+        else { await h.ready(); assert.equal(h.widget.state.background_id, A); assert.equal(h.widget.scene.background_id, A); }
+    }
 });
 
 test("settings edited during a pending disk save survive its acknowledgement and preserve scroll", async () => {
@@ -395,18 +631,40 @@ test("separate workflows and tabs do not inherit the same node's recovery draft"
     }
 });
 
-test("source previews hide stale pixels, expose failures and ignore replaced loads", async () => {
+test("source previews retain the displayed frame until the replacement loads and ignore stale loads", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const image = h.control("[data-model-source]"), placeholder = h.control("[data-empty]");
-    assert.equal(image.hidden, true);
-    const oldLoad = image.onload;
+    const original = image.src;
+    assert.equal(image.hidden, false);
     h.widget.document.images[0].url += "?revision=2"; h.widget.render();
-    oldLoad(); assert.equal(image.hidden, true);
-    image.onerror(); assert.equal(image.hidden, true); assert.equal(placeholder.hidden, false);
-    assert.match(placeholder.querySelector(".vnccs-common-creator-placeholder-title").textContent, /unavailable/);
-    image.onload(); assert.equal(image.hidden, false); assert.equal(placeholder.hidden, true);
-    const lateLoad = image.onload;
-    h.widget.dispose(); lateLoad(); assert.equal(image.onload, null); assert.equal(image.onerror, null);
+    const obsolete = h.control("[data-source-incoming]"), oldLoad = obsolete.onload;
+    assert.equal(image.hidden, false); assert.equal(image.src, original); assert.equal(placeholder.hidden, true);
+    h.widget.document.images[0].url += "&revision=3"; h.widget.render();
+    await oldLoad(); assert.equal(image.src, original); assert.equal(obsolete.onload, null);
+    h.control("[data-source-incoming]").onerror();
+    assert.equal(image.hidden, false); assert.equal(image.src, original); assert.equal(placeholder.hidden, true);
+    assert.match(h.widget.status.textContent, /Background image unavailable/);
+    h.widget.render(); await h.control("[data-source-incoming]").onload();
+    const replacement = h.control("[data-model-source]");
+    assert.equal(replacement.hidden, false); assert.equal(placeholder.hidden, true); assert.match(replacement.src, /revision=3/);
+    assert.ok(replacement.parentElement.children.indexOf(replacement) < replacement.parentElement.children.indexOf(h.control("[data-enlarge]")), "The image stays behind the accessible preview button");
+    assert.equal(h.widget.status.classList.contains("error"), false);
+    assert.equal(image.removed, true); assert.equal(h.control("[data-source-incoming]"), null);
+    h.widget.document.images[0].url += "&revision=4"; h.widget.render();
+    const pending = h.control("[data-source-incoming]"), lateLoad = pending.onload;
+    h.widget.dispose(); await lateLoad(); assert.equal(pending.onload, null); assert.equal(pending.onerror, null); assert.equal(pending.removed, true);
+});
+
+test("an initial source load exposes loading/errors and configure cancels its obsolete response", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready({ loadSource: false });
+    assert.equal(h.control("[data-model-source]").hidden, true); assert.equal(h.control("[data-empty]").hidden, false);
+    h.control("[data-source-incoming]").onerror();
+    assert.equal(h.control("[data-model-source]").hidden, true);
+    assert.match(h.control("[data-empty]").querySelector(".vnccs-common-creator-placeholder-title").textContent, /unavailable/);
+    h.widget.render(); const obsolete = h.control("[data-source-incoming]"), onload = obsolete.onload;
+    h.node.onConfigure(); await h.ready({ loadSource: false }); await onload();
+    assert.equal(obsolete.onload, null); assert.equal(h.control("[data-model-source]").hidden, true);
+    await h.control("[data-source-incoming]").onload(); assert.equal(h.control("[data-model-source]").hidden, false);
 });
 
 test("a save acknowledgement cannot remove a changed recovery payload under the same key", async () => {
@@ -444,14 +702,48 @@ test("failed restoration can retry without losing the original workflow bytes", 
     h.api.handle = path => path.endsWith("/backgrounds") ? response({ error: "Storage unavailable" }, 503) : undefined;
     await h.ready();
     assert.equal(h.data.value, raw); assert.equal(h.widget.restoreFailed, true);
-    assert.equal(h.control("[data-refresh]").disabled, false);
+    assert.equal(h.control("[data-refresh]"), null);
     assert.throws(() => h.data.beforeQueued(), /restoring/i);
     h.api.handle = undefined;
-    await h.control("[data-refresh]").click(); await h.widget.operations;
+    h.emitEvent("reconnecting"); h.emitEvent("status", {}); await h.widget.operations;
     assert.equal(h.widget.restoring, false); assert.equal(h.widget.restoreFailed, false);
     assert.equal(h.widget.state.background_id, A); assert.equal(h.widget.state.model_id, MODEL);
     assert.equal(JSON.parse(h.data.value).camera.fov, camera.fov);
     h.data.beforeQueued();
+});
+
+test("the shared connection watcher updates the library without a refresh button or resetting authored state", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    assert.equal(h.control('[data-refresh]'), null);
+    h.widget.state.settings.generation.diffusion_model_name = 'User models/keep_selected.safetensors'; h.widget.markEdited();
+    await h.control('[data-enlarge]').click();
+    const preview = h.control('[data-large-preview]'), camera = clone(h.widget.viewer.camera), id = '2'.repeat(32);
+    h.documents.set(id, background(id, { name: 'Newly saved background' }));
+    await h.window.fire('focus');
+    assert.ok(h.control('[data-library]').children.some(option => option.value === id));
+    assert.equal(h.control('[data-library]').value, A); assert.equal(h.control('[data-large-preview]'), preview);
+    assert.deepEqual(h.widget.viewer.camera, camera);
+    assert.equal(h.widget.state.settings.generation.diffusion_model_name, 'User models/keep_selected.safetensors');
+    assert.equal(h.documents.get(A).cg_settings.generation.diffusion_model_name, 'User models/keep_selected.safetensors');
+    const beforeRemoval = h.calls.length; h.node.onRemoved();
+    h.emitEvent('reconnected'); await h.window.fire('focus');
+    assert.equal(h.calls.length, beforeRemoval); assert.equal(h.events.size, 0);
+});
+
+test("automatic library updates ignore active operations and obsolete responses", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const initial = h.calls.length; h.widget.busy = true; await h.window.fire('focus');
+    assert.equal(h.calls.length, initial); h.widget.busy = false;
+    const catalog = deferred(); let held = false;
+    h.api.handle = path => {
+        if (!held && path === `${BASE}/backgrounds`) { held = true; return catalog.promise; }
+    };
+    const update = h.window.fire('focus'); await settle();
+    h.data.value = JSON.stringify(state({ background_id: B })); h.node.onConfigure(); await h.ready();
+    const restored = h.data.value;
+    catalog.resolve(response({ backgrounds: [] })); await update;
+    assert.equal(h.widget.state.background_id, B); assert.equal(h.data.value, restored);
+    assert.equal(h.widget.catalog.length, 2); assert.equal(h.widget.busy, false);
 });
 
 test("a pending save cannot overwrite settings restored by later configuration", async () => {
@@ -482,6 +774,9 @@ test("read-only backup recovery disables generation while retaining the saved CG
     assert.equal(h.widget.restoring, false); assert.match(h.widget.status.textContent, /read-only|read only/i);
     assert.equal(h.control('[data-action="model"]').disabled, true); assert.equal(h.control("[data-save-view]").disabled, true);
     assert.equal(h.control("[data-cgs]").children.length, 1);
+    h.widget.unsaved = true; await h.window.fire('focus');
+    assert.equal(h.calls.some(call => call.options.method === 'PATCH'), false);
+    assert.match(h.widget.status.textContent, /read-only|read only/i);
 });
 
 function variantBackground() {
@@ -528,6 +823,7 @@ test("CG preview opens inside the model viewport and cleans up on close, configu
     await h.control("[data-cg-id]").click();
     assert.equal(h.control(".bg-camera-toolbar").hidden, false, "The toolbar keeps its layout row during image inspection");
     assert.equal(h.control(".bg-camera-toolbar").style.visibility, "hidden");
+    assert.equal(h.control(".bg-camera-toolbar").style.opacity, "0"); assert.equal(h.control(".bg-camera-toolbar").inert, true);
     assert.deepEqual([...h.node.size], layout.size); assert.equal(h.widget.container.style.height, layout.height);
     assert.equal(h.widget.host.inert, true); assert.equal(h.control("[data-fov]").disabled, true);
     h.widget.fov.value = "90"; await h.widget.fov.fire("input");
@@ -543,13 +839,16 @@ test("CG preview opens inside the model viewport and cleans up on close, configu
     h.widget.cgPreviewClose();
     assert.equal(h.control(".bg-camera-toolbar").hidden, false); assert.equal(h.widget.host.inert, false);
     assert.equal(h.control(".bg-camera-toolbar").style.visibility, "");
+    assert.equal(h.control(".bg-camera-toolbar").style.opacity, ""); assert.equal(h.control(".bg-camera-toolbar").inert, false);
     assert.deepEqual([...h.node.size], layout.size); assert.equal(h.widget.container.style.height, layout.height);
     assert.equal(h.control('[role="dialog"]'), null); assert.equal(h.widget.cgPreviewClose, null);
     assert.equal(image.onload, null); assert.equal(navigation.onpointermove, null); assert.equal(navigation.onwheel, null); assert.equal(h.widget.dialogs.size, 0);
-    assert.equal(h.data.value, saved, "Closing the image preserves the selected CG and its camera");
+    const closed = JSON.parse(h.data.value), inspected = JSON.parse(saved); delete inspected.preview;
+    assert.deepEqual(closed, inspected, "Closing the image changes only its saved viewing mode");
     await h.control("[data-cg-id]").click();
     await h.control("[data-cg-id]").click(); assert.equal(h.widget.dialogs.size, 1);
     h.node.onConfigure(); assert.equal(h.control('[role="dialog"]'), null); await h.ready();
+    assert.equal(h.control("[data-large-preview]").src, background().cgs[0].url, "Configure reopens the saved preview");
     await h.control("[data-cg-id]").click(); h.node.onRemoved();
     assert.equal(h.widget.dialogs.size, 0); assert.equal(h.widget.cgPreviewClose, null);
     assert.equal(h.window.listeners.get("blur")?.length || 0, 0);
@@ -642,7 +941,8 @@ test("generation has an animated transient CG card and no status panel, progress
             assert.equal(h.control("[data-close-preview]").disabled, false);
             await h.control("[data-cgs]").querySelectorAll("[data-cg-id]").at(-1).click();
             assert.equal(h.control("[data-large-preview]").src, background().cgs[0].url);
-            assert.equal(h.data.value, before, "Inspection while generating preserves the selected output and camera");
+            const after = JSON.parse(h.data.value), previous = JSON.parse(before); delete after.preview;
+            assert.deepEqual(after, previous, "Inspection while generating changes only the saved preview");
             h.widget.cgPreviewClose();
         } else {
             assert.equal(h.control("[data-pending-cg]"), null);
@@ -745,7 +1045,7 @@ test("Generate CG captures its camera and frame then selects the finished CG", a
     assert.equal(gallery.scrollTop, 72, "Completion preserves gallery scroll position");
     assert.deepEqual(h.widget.document.cgs.map(cg => cg.cg_id), [CG, cgId], "Display order never mutates saved history");
     assert.equal(JSON.parse(h.data.value).selected_cg_id, cgId); assert.deepEqual(h.queued, []);
-    await h.control("[data-refresh]").click(); h.node.onConfigure(); await h.ready();
+    await h.window.fire("focus"); h.node.onConfigure(); await h.ready();
     assert.deepEqual(gallery.querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [cgId, CG], "Newest-first order survives refresh and workflow reload");
     assert.equal(h.widget.state.selected_cg_id, cgId);
 });
@@ -806,6 +1106,7 @@ test("named generated variants preserve exact model, CG, preview and workflow ow
     const choices = sourceChoices(document); assert.deepEqual(choices.map(choice => choice.label), ["Original", "Morning"]);
     await h.control(`[data-source-choice="${choices[1].key}"]`).click();
     assert.equal(h.widget.state.model_id, variantModel); assert.deepEqual(clone(h.widget.state.selected_variant), ref);
+    await h.control("[data-source-incoming]").onload();
     assert.equal(h.control("[data-model-source]").src, "/morning.png");
     assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [variantCG]);
     assert.deepEqual(JSON.parse(h.data.value).selected_variant, ref);
@@ -833,10 +1134,12 @@ test("source selections keep every card and image in the same slot", async () =>
     assert.deepEqual(cards.map(card => card.querySelector("img").src), images);
     assert.equal(cards[3].attributes.get("aria-pressed"), "true");
     assert.equal(cards[0].attributes.get("aria-pressed"), "false");
+    await h.control("[data-source-incoming]").onload();
     assert.equal(h.control("[data-model-source]").src, "/v2.png");
     assert.equal(scroll.scrollLeft, 150);
     assert.equal(JSON.parse(h.data.value).selected_variant.index, 3);
     await h.control('[data-source-choice="' + IMAGE + '"]').click();
+    await h.control("[data-source-incoming]").onload();
     assert.deepEqual(keys(), before); assert.equal(h.control("[data-model-source]").src, doc.images[0].url);
     assert.equal(cards[0].attributes.get("aria-pressed"), "true");
     const selected = JSON.stringify(h.widget.state), requests = h.calls.length;

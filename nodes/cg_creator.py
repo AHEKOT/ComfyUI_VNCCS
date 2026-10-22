@@ -67,6 +67,12 @@ def _id(value):
     return value
 
 
+def _request_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", value):
+        raise ValueError("Invalid CG generation request reference")
+    return value
+
+
 def _name(value):
     if not isinstance(value, str):
         raise ValueError("A background or CG name is required")
@@ -354,9 +360,16 @@ def _commit(directory, document, previous):
     return background._commit(directory, document, previous)
 
 
-def list_backgrounds():
+def list_backgrounds(errors=None):
     with background._LOCK:
-        documents = [_read_document(directory)[0] for directory in _directories()]
+        documents = []
+        for directory in _directories():
+            try:
+                documents.append(_read_document(directory)[0])
+            except BackgroundStorageError as error:
+                if errors is None:
+                    raise
+                errors.append({"name": directory.name, "error": str(error)})
         return sorted((item for item in documents if not item["archived"]), key=lambda item: item["name"].casefold())
 
 
@@ -1580,9 +1593,11 @@ def _inference_slot(job):
 def save_settings(background_id, payload):
     if not isinstance(payload, dict):
         raise ValueError("CG settings must be an object")
-    ensure_idle(background_id)
-    return public_document(_save_settings(background_id, model_settings(payload.get("model_settings", {})),
-        normalize_settings(payload.get("cg_settings", {})), None))
+    model = model_settings(payload.get("model_settings", {}))
+    settings = normalize_settings(payload.get("cg_settings", {}))
+    with _JOBS_LOCK:
+        ensure_idle(background_id)
+        return public_document(_save_settings(background_id, model, settings, None))
 
 
 def delete_cg(background_id, cg_id, payload):
@@ -1601,14 +1616,11 @@ def start_job(background_id, payload, raw_image=None):
     action = payload.get("action")
     if action not in {"model", "cg"}:
         raise ValueError("CG Creator supports only model reconstruction and CG refinement")
-    document = load_background(background_id)
-    if document.get("_recovery") or document.get("archived"):
-        raise ValueError("This saved background is read-only")
-    revision = document["revision"]
+    request_id = _request_id(payload["request_id"]) if "request_id" in payload else ""
     image_id = payload.get("image_id", "")
     source_variant = copy.deepcopy(_source_variant(payload.get("source_variant")))
     image_path(background_id, image_id, source_variant)
-    values = {"revision": revision, "image_id": image_id, "source_variant": source_variant,
+    values = {"image_id": image_id, "source_variant": source_variant,
               "model_settings": model_settings(payload.get("model_settings", {})),
               "settings": normalize_settings(payload.get("settings", {}))}
     if action == "cg":
@@ -1623,6 +1635,10 @@ def start_job(background_id, payload, raw_image=None):
         values["raw"] = raw
     with _JOBS_LOCK:
         ensure_idle(background_id)
+        document = load_background(background_id)
+        if document.get("_recovery") or document.get("archived"):
+            raise ValueError("This saved background is read-only")
+        values["revision"] = document["revision"]
         for old_id in list(_JOBS):
             if len(_JOBS) < 64:
                 break
@@ -1631,7 +1647,7 @@ def start_job(background_id, payload, raw_image=None):
         if len(_JOBS) >= 64:
             raise RuntimeError("CG job queue is full. Wait for a job to finish before trying again.")
         job = runtime._new_job(f"cg_creator_{action}")
-        job.update(background_id=background_id, action=action)
+        job.update(background_id=background_id, action=action, request_id=request_id)
         _JOBS[job["job_id"]] = job
         _WORKER.submit(runtime._run_job, job, lambda current: _execute(current, values))
     return job_status(job["job_id"])
@@ -1693,6 +1709,16 @@ def job_status(job_id):
         if snapshot.get("stage") != "unknown":
             value.update(message=snapshot.get("message", value["message"]), progress=100 * snapshot.get("progress", 0))
     return value
+
+
+def request_status(background_id, request_id):
+    background_id, request_id = _id(background_id), _request_id(request_id)
+    with _JOBS_LOCK:
+        job_id = next((job["job_id"] for job in reversed(list(_JOBS.values()))
+                       if job["background_id"] == background_id and job.get("request_id") == request_id), None)
+    if job_id is None:
+        raise FileNotFoundError("CG generation request was not found")
+    return job_status(job_id)
 
 
 def cancel_job(job_id):
@@ -1765,7 +1791,15 @@ def register_routes(routes):
 
     @routes.get(base + "/backgrounds")
     async def backgrounds(request):
-        return await perform(lambda: {"backgrounds": [public_document(item) for item in list_backgrounds()]})
+        def inventory():
+            errors, documents = [], []
+            for item in list_backgrounds(errors):
+                try:
+                    documents.append(public_document(item))
+                except (ValueError, TypeError, KeyError) as error:
+                    errors.append({"name": item["name"], "error": str(error)})
+            return {"backgrounds": documents, "errors": errors}
+        return await perform(inventory)
 
     @routes.get(base + "/backgrounds/{background_id}")
     async def background_document(request):
@@ -1780,6 +1814,10 @@ def register_routes(routes):
     @respond
     def job(info, payload, image):
         return start_job(info["background_id"], payload, image)
+
+    @routes.get(base + "/backgrounds/{background_id}/jobs/{request_id}")
+    async def submitted_job(request):
+        return await perform(request_status, request.match_info["background_id"], request.match_info["request_id"])
 
     @routes.get(base + "/jobs/{job_id}")
     async def status(request):

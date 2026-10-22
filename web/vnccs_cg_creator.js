@@ -1,8 +1,8 @@
 import { STYLE_PICKER_CSS } from "./character_styles.mjs";
 import { app } from "../../scripts/app.js";
-import { vnccsApi as api, storage, workflowScope, cacheIdentity } from "./vnccs_transport.js";
+import { vnccsApi as api, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { createSakuraInteractions, playSakuraMotion, stopSakuraMotion } from "./sakura_interactions.mjs";
-import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, injectStyles, showModal, enableMiddleMouseCanvasPan, createControlCenterClient, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, setHelpText, attachHelpTooltips, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon } from "./vnccs_common.js";
+import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, SAKURA_CREATOR_CONTROL_CSS, injectStyles, showModal, enableMiddleMouseCanvasPan, createControlCenterClient, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, setHelpText, attachHelpTooltips, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, registerCleanup } from "./vnccs_common.js";
 
 const BACKGROUND_CREATOR_ZOOM = .67;
 const BACKGROUND_GENERATION_WIDTH = (1280 - 24 * BACKGROUND_CREATOR_ZOOM) * .35;
@@ -23,9 +23,6 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-panel { min-width:0; min-height:0; overflow-x:hidden; overscroll-behavior:contain; }
 .vnccs-cg-creator .bg-panel>* { flex:0 0 auto; min-width:0; }
 .vnccs-cg-creator .bg-model-source { overflow:hidden; gap:10px; }
-.vnccs-cg-creator .bg-source-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.vnccs-cg-creator .bg-source-heading .vnccs-common-creator-section-title { margin:0; }
-.vnccs-cg-creator [data-refresh] { width:28px; height:24px; padding:0; font-size:18px; }
 .vnccs-cg-creator .cg-middle { position:relative; display:grid; grid-template-rows:minmax(0,1fr) 248px; min-height:0; min-width:0; gap:12px; }
 .vnccs-cg-creator .bg-generation-dock { min-width:0; min-height:248px; }
 .vnccs-cg-creator .bg-generation-dock .bg-panel { overflow:hidden; gap:7px; padding:12px; }
@@ -150,6 +147,14 @@ function readState(raw) {
     if (value.settings != null && (typeof value.settings !== "object" || Array.isArray(value.settings))) throw new Error("Invalid CG settings.");
     if (value.settings && Object.hasOwn(value.settings, "generation") && (!value.settings.generation || typeof value.settings.generation !== "object" || Array.isArray(value.settings.generation))) throw new Error("Invalid CG generation settings.");
     if (value.model_settings != null && (typeof value.model_settings !== "object" || Array.isArray(value.model_settings))) throw new Error("Invalid TripoSplat settings.");
+    if (value.preview != null && (!["source", "cg", "pending"].includes(value.preview.kind)
+        || value.preview.kind === "cg" && !/^[a-f0-9]{32}$/.test(value.preview.cg_id)
+        || !Number.isFinite(value.preview.zoom) || value.preview.zoom < 1 || value.preview.zoom > 8
+        || !Array.isArray(value.preview.center) || value.preview.center.length !== 2 || !value.preview.center.every(n => Number.isFinite(n) && Math.abs(n) <= 1e6))) throw new Error("Invalid saved CG preview.");
+    if (value.scroll != null && (!value.scroll || ![value.scroll.sources, value.scroll.cgs].every(n => Number.isFinite(n) && n >= 0 && n <= 1e7))) throw new Error("Invalid saved CG scroll position.");
+    if (value.job != null && (!(value.job.id ? /^[a-f0-9]{32}$/.test(value.job.id) : typeof value.job.request_id === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(value.job.request_id)) || !["model", "cg"].includes(value.job.action)
+        || typeof value.job.name !== "string" || value.job.name.length > 96
+        || value.job.node_id != null && (typeof value.job.node_id !== "string" || !value.job.node_id || value.job.node_id.length > 64))) throw new Error("Invalid saved CG generation.");
     return { schema_version: 1, background_id: "", selected_image_id: "", model_id: "", selected_cg_id: "", ...value,
         settings: settingsDefaults(value.settings), model_settings: { ...MODEL_DEFAULTS, ...value.model_settings } };
 }
@@ -423,7 +428,7 @@ class CGQi2Controls {
             return "Missing";
         };
 
-        const buildAssetCard = ({ entry, cat, selectedValue, onSelect, compact = false, toggled = false, onToggle = null, pickerHead = false, onDownload = null, displayName = null, nameAccessory = null }) => {
+        const buildAssetCard = ({ entry, cat, selectedValue, onSelect, pickerHead = false, onDownload = null }) => {
             const status = ccResolveStatus(entry, cat);
             const rel = ccRelPath(entry);
             const installed = status === "installed";
@@ -437,13 +442,13 @@ class CGQi2Controls {
             if (pickerHead) card.dataset.sakuraFocusDefault = "true";
             card.classList.toggle("is-picker-head", pickerHead);
             card.classList.toggle("is-installed", installed);
-            card.classList.toggle("is-selected", (cat !== "lora" || installed) && (selected || toggled));
+            card.classList.toggle("is-selected", (cat !== "lora" || installed) && Boolean(selected));
             card.classList.toggle("is-missing", !installed);
             if (installed || pickerHead) {
                 card.onclick = () => onSelect?.(rel, entry);
                 card.role = "button";
                 card.tabIndex = 0;
-                card.ariaPressed = String(selected || toggled);
+                card.ariaPressed = String(Boolean(selected));
                 card.ariaLabel = entry.name || rel || "Model";
                 card.onkeydown = event => {
                     if (event.target !== card || !["Enter", " "].includes(event.key)) return;
@@ -461,53 +466,24 @@ class CGQi2Controls {
 
             const name = document.createElement("div");
             name.className = "vnccs-common-creator-model-card-name";
-            name.textContent = displayName || entry.name || rel || "Unknown";
-            if (nameAccessory) {
-                const heading = document.createElement("div");
-                heading.className = "vnccs-common-creator-overhaul-heading";
-                heading.append(name, nameAccessory);
-                top.appendChild(heading);
-            } else {
-                top.appendChild(name);
-            }
+            name.textContent = entry.name || rel || "Unknown";
+            top.appendChild(name);
 
             const statusEl = document.createElement("div");
             statusEl.className = "vnccs-common-creator-model-card-status " + (installed ? "ok" : progress ? "progress" : "missing");
             statusEl.textContent = cardStatusLabel(status, entry, cat);
             top.appendChild(statusEl);
 
-            if (onToggle && installed) {
-                card.dataset.toggleState = String(!!toggled);
-                const toggle = document.createElement("label");
-                toggle.className = "vnccs-common-creator-toggle vnccs-common-creator-model-card-toggle";
-                toggle.onclick = event => event.stopPropagation();
-                const input = document.createElement("input");
-                input.type = "checkbox";
-                input.ariaLabel = `Enable ${entry.name || rel}`;
-                input.checked = !!toggled;
-                input.onchange = (event) => {
-                    event.stopPropagation();
-                    onToggle(event.target.checked, rel, entry);
-                };
-                input.onclick = (event) => event.stopPropagation();
-                const track = document.createElement("div");
-                track.className = "vnccs-common-creator-toggle-track";
-                const thumb = document.createElement("div");
-                thumb.className = "vnccs-common-creator-toggle-thumb";
-                toggle.append(input, track, thumb);
-                top.appendChild(toggle);
-            }
-
             card.appendChild(top);
 
-            if (entry.description && !compact) {
+            if (entry.description) {
                 const desc = document.createElement("div");
                 desc.className = "vnccs-common-creator-model-card-desc";
                 desc.textContent = entry.description;
                 card.appendChild(desc);
             }
 
-            if (!installed) {
+            if (!installed && entry.source !== "local") {
                 const actions = document.createElement("div");
                 actions.className = "vnccs-common-creator-model-card-actions";
                 const btn = document.createElement("button");
@@ -537,6 +513,11 @@ class CGQi2Controls {
             picker.classList.toggle("is-open", !!modelPickerOpen[mode]);
             containerEl.appendChild(picker);
 
+            const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
+            if (current && !entries.some(entry => ccRelPath(entry) === current)) {
+                entries = [...entries, { name: current, local_path: `models/diffusion_models/${current}`, status: "missing", source: "local",
+                    description: "Saved model is unavailable. Its selection is retained." }];
+            }
             if (!entries.length) {
                 const empty = document.createElement("div");
                 empty.className = "vnccs-common-creator-model-card-desc";
@@ -545,7 +526,6 @@ class CGQi2Controls {
                 return;
             }
 
-            const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
             const selectedEntry = entries.find(entry => ccRelPath(entry) === current)
                 || entries[0];
 
@@ -613,14 +593,6 @@ class CGQi2Controls {
                 els.seed_mode.setAttribute("aria-pressed", randomMode ? "true" : "false");
                 els.seed_mode.setAttribute("aria-label", randomMode ? "Use fixed seed" : "Use random seed");
                 els.seed?.classList.toggle("is-random", randomMode);
-            }
-            if (els.dmdSelect) {
-                ensureOption(els.dmdSelect, g.dmd_lora_name);
-                els.dmdSelect.value = g.dmd_lora_name || "";
-            }
-            if (els.dmdSlider) {
-                els.dmdSlider.disabled = isQi2TurboModel(g.diffusion_model_name);
-                els.dmdSlider.checked = !els.dmdSlider.disabled && !!g.turbo_enabled;
             }
             renderControlCenterCards();
             els._ui?.animateValues(before);
@@ -857,7 +829,7 @@ class CGCreatorWidget {
         this.frame = document.createElement("div"); this.frame.className = "vnccs-cg-widget"; this.frame.appendChild(this.container);
         this.container.innerHTML = `<section class="cg-workspace">
                 <aside class="bg-panel bg-model-source vnccs-common-creator-col">
-                    <div class="bg-source-heading"><div class="vnccs-common-creator-section-title">Background select</div><button type="button" class="vnccs-common-creator-sprite-nav-btn" data-refresh aria-label="Refresh backgrounds" title="Refresh backgrounds"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"/></svg></button></div>
+                    <div class="vnccs-common-creator-section-title">Background select</div>
                     <select class="vnccs-common-creator-select" data-library aria-label="Saved background"></select>
                     <div class="bg-preview vnccs-common-creator-preview-container"><img data-preview data-model-source alt="Selected background" hidden>
                         <span class="vnccs-common-creator-placeholder" data-empty><span class="vnccs-common-creator-placeholder-title">Select a background</span><span class="vnccs-common-creator-placeholder-hint">Choose a saved background and one of its variants.</span></span>
@@ -890,59 +862,105 @@ class CGCreatorWidget {
         for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) this.on(this.host, type, () => this.commitGesture());
         this.on(this.host, "wheel", () => { this.beginGesture(); clearTimeout(this.wheelTimer); this.wheelTimer = setTimeout(() => this.commitGesture(), 180); }, { capture: true, passive: true });
         this.on(this.container, "keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.target.closest("input,textarea")) { event.preventDefault(); if (this.canEditCamera()) this.history[event.shiftKey ? "redo" : "undo"](); } });
-        this.on(this.container.querySelector("[data-source-choices]"), "scroll", () => this.updateSourceScroll(), { passive: true });
+        this.on(this.container.querySelector("[data-source-choices]"), "scroll", () => { this.updateSourceScroll(); if (!this.restoring) this.sync(); }, { passive: true });
+        this.on(this.container.querySelector("[data-cgs]"), "scroll", () => { if (!this.restoring) this.sync(); }, { passive: true });
         this.on(window, "beforeunload", event => { if (this.unsaved && this.draftFailed) { event.preventDefault(); event.returnValue = ""; } });
+        watchConnection(node, () => this.refreshLibrary(), registerCleanup);
         this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(this.frame); this.updateControls();
     }
 
     on(target, type, callback, options = {}) { target.addEventListener(type, callback, { ...options, signal: this.events.signal }); }
-    message(text, error = false) { if (!this.disposed) { this.status.textContent = error ? text : CAMERA_HINT; this.status.classList.toggle("error", error); } }
+    message(text, error = false) { if (!this.disposed) { this.status.textContent = error ? text : this.modelError || this.libraryError || CAMERA_HINT; this.status.classList.toggle("error", error || Boolean(this.modelError || this.libraryError)); } }
     async request(path, options = {}) {
         const response = await this.api.fetchApi(BASE + path, { ...options, signal: this.events.signal }), result = await response.json();
-        if (!response.ok) throw new Error(result.error || `Request failed: HTTP ${response.status}`);
+        if (!response.ok) { const error = new Error(result.error || `Request failed: HTTP ${response.status}`); error.status = response.status; throw error; }
         return result;
     }
     json(path, data, method = "POST") { return this.request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); }
-    canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.scene && this.scene.model_id === this.state?.model_id); }
+    canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.state?.job && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.scene && this.scene.model_id === this.state?.model_id); }
     beginGesture() { if (this.canEditCamera()) this.history.begin("Camera", this.viewer.getCameraState()); }
     commitGesture() { if (this.canEditCamera()) { this.sync(); this.history.commit(this.viewer.getCameraState()); } }
     updateControls() {
-        for (const control of this.container.querySelectorAll("button,input,select,textarea")) control.disabled = this.busy || this.restoring || Boolean(this.document?._recovery || this.document?.archived);
-        for (const control of this.container.querySelectorAll("[data-library],[data-refresh]")) control.disabled = this.busy || this.restoring;
-        this.container.querySelector("[data-refresh]").disabled = this.busy || this.restoring && !this.restoreFailed;
-        for (const control of this.container.querySelectorAll("[data-cg-id],[data-close-preview]")) control.disabled = this.restoring;
+        for (const control of this.container.querySelectorAll("button,input,select,textarea")) control.disabled = this.busy || this.restoring || Boolean(this.state?.job || this.document?._recovery || this.document?.archived);
+        this.container.querySelector("[data-library]").disabled = this.busy || this.restoring || Boolean(this.state?.job);
+        for (const control of this.container.querySelectorAll("[data-cg-id],[data-close-preview]")) control.disabled = this.restoring || Boolean(this.backgroundTransition);
         for (const control of this.container.querySelectorAll("[data-pending-cg]")) control.disabled = this.restoring || !this.pendingCG?.url;
         for (const control of this.container.querySelectorAll("[data-fov],[data-fov-number],[data-recenter]")) control.disabled = !this.canEditCamera();
         this.container.querySelector("[data-save-view]").disabled = !this.canEditCamera() || Boolean(this.document?._recovery || this.document?.archived);
         this.container.querySelector('[data-action="model"]').disabled ||= !this.state?.selected_image_id;
-        this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(this.document?._recovery || this.document?.archived));
+        this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(this.state?.job || this.document?._recovery || this.document?.archived));
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
         this.host.inert = !this.canEditCamera();
-        this.container.querySelector(".bg-camera-toolbar").style.visibility = this.previewSource || !this.state?.model_id || this.scene?.model_id !== this.state.model_id ? "hidden" : "";
-        this.container.querySelector("[data-model-status]").textContent = this.busy && this.activeAction === "model" ? "Creating model…" : this.state?.model_id ? "Model ready" : "Model not created";
+        const toolbar = this.container.querySelector(".bg-camera-toolbar"), hidden = Boolean(this.previewSource || !this.state?.model_id || this.scene?.model_id !== this.state.model_id);
+        toolbar.style.visibility = hidden ? "hidden" : ""; toolbar.style.opacity = hidden ? "0" : ""; toolbar.inert = hidden;
+        this.container.querySelector("[data-model-status]").textContent = this.busy && this.activeAction === "model" ? "Creating model…" : this.modelError ? "Model unavailable" : this.state?.model_id ? "Model ready" : "Model not created";
     }
 
-    invalidateRestore() { stopSakuraMotion(this.customSelects); this.clearPendingCG(); this.cgPreviewClose?.(); ++this.epoch; this.restoring = true; this.restoreFailed = false; this.busy = false; this.jobId = ""; clearTimeout(this.saveTimer); this.updateControls(); }
+    invalidateRestore() { this.restoring = true; this.clearBackgroundTransition(); this.clearSourceLoad(); stopSakuraMotion(this.customSelects); this.clearPendingCG(); this.cgPreviewClose?.(); ++this.epoch; this.restoreFailed = false; this.busy = false; this.jobId = ""; clearTimeout(this.saveTimer); clearTimeout(this.pollTimer); this.pollResolve?.(); this.updateControls(); }
     restore() {
         const epoch = ++this.epoch; this.restoring = true; this.restoreFailed = false; this.updateControls(); this.message("Loading saved backgrounds…");
         this.operations = this.operations.catch(() => {}).then(async () => {
             if (this.disposed || epoch !== this.epoch) return;
             try {
-                const state = readState(this.node.widgets.find(item => item.name === "cg_data").value);
+                const raw = this.node.widgets.find(item => item.name === "cg_data").value, state = readState(raw), stored = JSON.parse(raw);
                 const [config, catalog] = await Promise.all([this.request("/config"), this.request("/backgrounds")]);
                 if (this.disposed || epoch !== this.epoch) return;
                 this.factoryRuntime = await loadFactoryRuntime(config.factory);
                 if (this.disposed || epoch !== this.epoch) return;
                 this.history ??= new this.factoryRuntime.FactoryCommandHistory({ onRestore: camera => this.viewer.setCameraState(camera, { emit: true }) });
                 this.state = state; this.document = null; this.unsaved = false; this.config = config; this.catalog = catalog.backgrounds;
-                if (state.background_id) await this.acceptDocument(await this.request(`/backgrounds/${state.background_id}`), false, epoch);
+                this.libraryError = (catalog.errors || []).map(item => `${item.name}: ${item.error}`).join(" ");
+                if (state.job?.node_id != null && state.job.node_id !== String(this.node.id)) {
+                    delete state.job; if (state.preview?.kind === "pending") delete state.preview;
+                }
+                if (state.background_id) {
+                    const document = await this.request(`/backgrounds/${state.background_id}`);
+                    if (this.disposed || epoch !== this.epoch) return;
+                    state.settings = settingsDefaults({ ...document.cg_settings, ...stored.settings,
+                        generation: { ...document.cg_settings?.generation, ...stored.settings?.generation } });
+                    state.model_settings = { ...MODEL_DEFAULTS, ...document.model_settings, ...stored.model_settings };
+                    if (!state.job && state.frame && stored.settings?.aspect != null && frameAspect(state.frame) !== state.settings.aspect)
+                        state.frame = frameDimensions(state.settings.aspect, state.settings.resolution_mp);
+                    await this.acceptDocument(document, false, epoch);
+                }
                 if (this.disposed || epoch !== this.epoch) return;
-                this.restoreDraft(); this.restoring = false; this.render(); this.sync();
-                this.message(this.document?._recovery ? "Recovered backup is read-only. The original data is preserved." : this.catalog.length ? "Set the camera and press Generate CG." : "Create a background in VNCCS Background Creator, then refresh this library.", Boolean(this.document?._recovery));
-            } catch (error) { if (!this.disposed && epoch === this.epoch) { this.restoreFailed = true; this.message(error.message + " Original workflow data is preserved. Use Refresh backgrounds to retry.", true); } }
+                this.restoreDraft();
+                if (this.document && !this.document._recovery && !this.document.archived) {
+                    this.unsaved ||= JSON.stringify(this.state.settings) !== JSON.stringify(settingsDefaults(this.document.cg_settings))
+                        || JSON.stringify(this.state.model_settings) !== JSON.stringify({ ...MODEL_DEFAULTS, ...this.document.model_settings });
+                }
+                this.render();
+                await Promise.allSettled([...this.container.querySelector("[data-cgs]").querySelectorAll("img")].map(image => image.decode()));
+                if (this.disposed || epoch !== this.epoch) return;
+                const scroll = this.state.scroll;
+                this.container.querySelector("[data-source-choices]").scrollLeft = scroll?.sources || 0;
+                this.container.querySelector("[data-cgs]").scrollTop = scroll?.cgs || 0;
+                this.restoring = false; this.sync();
+                this.message(this.document?._recovery ? "Recovered backup is read-only. The original data is preserved." : this.catalog.length ? "Set the camera and press Generate CG." : "Create a background in VNCCS Background Creator.", Boolean(this.document?._recovery));
+                this.restorePreview();
+                if (this.state.job && !this.document?._recovery && !this.document?.archived) this.jobOperation = this.runJob(this.state.job.action).catch(error => { if (!this.disposed && epoch === this.epoch) this.message(error.message, true); });
+            } catch (error) { if (!this.disposed && epoch === this.epoch) { this.restoreFailed = true; this.message(error.message + " Original workflow data is preserved. Restoration will retry when the connection returns or this window becomes active.", true); } }
             this.updateControls();
         }); return this.operations;
+    }
+
+    async refreshLibrary() {
+        if (this.disposed || this.busy || this.restoring && !this.restoreFailed) return;
+        if (this.restoreFailed || this.state?.job) { this.invalidateRestore(); return this.restore(); }
+        const epoch = this.epoch;
+        this.busy = true; this.updateControls();
+        try {
+            if (!this.document?._recovery && !this.document?.archived) await this.persist();
+            if (this.disposed || epoch !== this.epoch) return;
+            const catalog = await this.request("/backgrounds");
+            if (this.disposed || epoch !== this.epoch) return;
+            this.catalog = catalog.backgrounds;
+            this.libraryError = (catalog.errors || []).map(item => `${item.name}: ${item.error}`).join(" ");
+            if (this.state.background_id) await this.acceptDocument(await this.request(`/backgrounds/${this.state.background_id}`), false, epoch);
+            if (!this.disposed && epoch === this.epoch) { this.render(); if (!this.document?._recovery) this.message(CAMERA_HINT); }
+        } catch (error) { if (!this.disposed && epoch === this.epoch) this.message(error.message, true); }
+        finally { if (!this.disposed && epoch === this.epoch) { this.busy = false; this.updateControls(); } }
     }
 
     async acceptDocument(document, adopt = true, epoch = this.epoch) {
@@ -961,7 +979,15 @@ class CGCreatorWidget {
             if (selected) this.state.model_id = selected.model_id;
             this.state.camera = null; this.state.frame = null;
         }
-        if (this.state.model_id) await this.showModel(epoch);
+        this.modelError = "";
+        if (this.state.model_id) {
+            try { await this.showModel(epoch); }
+            catch (error) {
+                if (this.disposed || epoch !== this.epoch) return;
+                if (adopt) throw error;
+                this.scene = null; this.modelError = error.message;
+            }
+        }
         if (this.disposed || epoch !== this.epoch) return;
         this.render(); this.sync(); this.updateControls();
     }
@@ -969,29 +995,98 @@ class CGCreatorWidget {
     async showModel(epoch = this.epoch) {
         const modelId = this.state.model_id, backgroundId = this.state.background_id;
         if (!modelId) return;
-        const scene = await this.request(`/backgrounds/${backgroundId}/models/${modelId}`);
-        if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
-        if (!this.viewer) {
-            this.viewer = new this.factoryRuntime.Factory3DViewer(this.host, { cameraDragScale: 0.7, resolveAssetURL: path => this.api.apiURL(path),
-                onSelectionChange: () => this.viewer.select("", { emit: false }),
-                onStateChange: value => { if (this.canEditCamera()) { this.state.camera = clone(value.camera); this.syncFov(value.camera); this.sync(); } },
-                onError: error => this.message(String(error.message || error), true) });
-            this.viewer.controls.enableDamping = false; this.viewer.canvas.setAttribute("aria-label", "CG camera. Drag to look, middle-drag to pan, scroll to move.");
-        }
+        const previous = this.modelLoad;
+        let finish;
+        // The shared canvas must finish its old load before a new scene can replace it.
+        const load = this.modelLoad = new Promise(resolve => { finish = resolve; });
         this.loadingModel = true;
         try {
-            if (this.scene?.model_id !== modelId) { const result = await this.viewer.setScene(scene); if (result.failures.length) throw new Error("The model could not be loaded."); this.history.clear(); }
+            await previous;
+            if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
+            const scene = await this.request(`/backgrounds/${backgroundId}/models/${modelId}`);
+            if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
+            if (!this.viewer) {
+                this.viewer = new this.factoryRuntime.Factory3DViewer(this.host, { cameraDragScale: 0.7, resolveAssetURL: path => this.api.apiURL(path),
+                    onSelectionChange: () => this.viewer.select("", { emit: false }),
+                    onStateChange: value => { if (this.canEditCamera()) { this.state.camera = clone(value.camera); this.syncFov(value.camera); this.sync(); } },
+                    onError: error => this.message(String(error.message || error), true) });
+                this.viewer.controls.enableDamping = false; this.viewer.canvas.setAttribute("aria-label", "CG camera. Drag to look, middle-drag to pan, scroll to move.");
+            }
+            if (this.scene?.model_id !== modelId || this.scene?.background_id !== backgroundId) { const result = await this.viewer.setScene(scene); if (result.failures.length) throw new Error("The model could not be loaded."); this.history.clear(); }
             if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
             this.scene = scene; this.state.selected_image_id = scene.source_image_id; this.state.selected_variant = clone(scene.source_variant || null);
             const selected = this.document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id && cg.model_id === modelId);
             const camera = this.state.camera || selected?.camera || sourceCameraView(scene.objects[0].source_camera || scene.camera);
             const source = selectedSource(this.document, this.state)?.image || this.document.images.find(image => image.image_id === scene.source_image_id);
-            const size = this.state.frame || (selected ? { width: selected.width, height: selected.height } : frameDimensions(`${source.width}:${source.height}`, this.state.settings.resolution_mp || source.width * source.height / 1e6));
+            const size = this.state.frame || (selected ? { width: selected.width, height: selected.height } : frameDimensions(this.state.settings.aspect, this.state.settings.resolution_mp || source.width * source.height / 1e6));
             this.state.settings.aspect = frameAspect(size);
             this.state.camera = clone(camera); this.state.frame = clone(size); this.viewer.setLighting({ preset: "off", background: "#000000" });
             this.viewer.setCaptureSettings({ ...size, show_camera_frame: true }); this.viewer.setCameraState(camera); this.viewer.select("", { emit: false }); this.syncFov(camera);
-        } finally { this.loadingModel = false; }
+            if (this.unsaved && !this.restoring) this.retainDraft();
+            this.modelError = "";
+        } finally { finish(); if (this.modelLoad === load) this.loadingModel = false; }
         this.resize();
+    }
+
+    clearSourceLoad() {
+        const incoming = this.sourceLoad; this.sourceLoad = null;
+        this.resolveSource?.(); this.resolveSource = null;
+        if (!incoming) return;
+        delete this.container.querySelector("[data-model-source]").dataset.sourceURL;
+        incoming.onload = incoming.onerror = null;
+        this.customSelects._motionByElement?.get(incoming)?.cancel(); incoming.remove();
+    }
+
+    clearBackgroundTransition() {
+        const transition = this.backgroundTransition; this.backgroundTransition = null;
+        if (!transition) return;
+        this.customSelects._motionByElement?.get(transition.snapshot)?.cancel();
+        transition.snapshot.remove(); transition.finish();
+    }
+
+    async switchBackground(document, epoch) {
+        if (this.disposed || epoch !== this.epoch) return;
+        this.clearSourceLoad();
+        // Keep the old composition, including the GPU canvas, until every replacement asset is ready.
+        let bitmap;
+        if (this.viewer && !this.host.hidden && !this.previewSource) {
+            const canvas = this.viewer.canvas;
+            bitmap = await createImageBitmap(await this.viewer.capturePreview({ width: canvas.width, height: canvas.height, cameraState: this.viewer.getCameraState() }));
+        }
+        if (this.disposed || epoch !== this.epoch) { bitmap?.close(); return; }
+        const snapshot = this.container.cloneNode(true), originals = this.container.querySelectorAll("*"), copies = snapshot.querySelectorAll("*");
+        snapshot.dataset.backgroundSnapshot = ""; snapshot.inert = true; snapshot.setAttribute("aria-hidden", "true");
+        Object.assign(snapshot.style, { position: "absolute", left: "0", top: "0", zIndex: "20", pointerEvents: "none" });
+        for (const copy of copies) copy.removeAttribute("id");
+        if (bitmap) { snapshot.querySelector("canvas").getContext("2d").drawImage(bitmap, 0, 0); bitmap.close(); }
+        this.frame.appendChild(snapshot);
+        originals.forEach((element, index) => { copies[index].scrollTop = element.scrollTop; copies[index].scrollLeft = element.scrollLeft; });
+        const transition = { snapshot }; transition.cancelled = new Promise(resolve => { transition.finish = resolve; });
+        this.backgroundTransition = transition;
+        const previous = { document: this.document, state: clone(this.state), unsaved: this.unsaved };
+        const current = () => !this.disposed && epoch === this.epoch && this.backgroundTransition === transition;
+        const imagesReady = () => Promise.race([Promise.all([this.sourceReady, ...[...this.container.querySelectorAll("img")].filter(image => image.src).map(image => image.decode())]), transition.cancelled]);
+        try {
+            await this.acceptDocument(document, true, epoch);
+            if (!current()) return;
+            this.restoreDraft(); this.render();
+            try { await imagesReady(); } catch (_) { throw new Error("Background assets could not be loaded. The previous background is still selected."); }
+            if (!current()) return;
+            playSakuraMotion(this.customSelects, snapshot, [{ opacity: 1 }, { opacity: 0 }], 240, () => {
+                if (this.backgroundTransition === transition) this.clearBackgroundTransition();
+            });
+            await transition.cancelled;
+        } catch (error) {
+            if (current()) {
+                this.clearSourceLoad(); this.document = previous.document; this.state = previous.state; this.unsaved = previous.unsaved;
+                this.scene = null;
+                try { if (this.state.model_id) await this.showModel(epoch); }
+                finally { if (current()) { this.render(); this.sync(); } }
+                await imagesReady();
+                if (current()) this.restorePreview();
+            }
+            throw error;
+        } finally { if (this.backgroundTransition === transition) this.clearBackgroundTransition(); }
     }
 
     render() {
@@ -1004,44 +1099,80 @@ class CGCreatorWidget {
             for (const [id, label] of entries) { const option = document.createElement("option"); option.value = id; option.textContent = label; select.appendChild(option); }
             select.value = value;
         };
-        fill("[data-library]", this.catalog.map(doc => [doc.background_id, doc.name]), this.state.background_id, "Select a background");
+        const catalog = this.document && !this.catalog.some(doc => doc.background_id === this.document.background_id) ? [...this.catalog, this.document] : this.catalog;
+        fill("[data-library]", catalog.map(doc => [doc.background_id, doc.name]), this.state.background_id, "Select a background");
         const choices = sourceChoices(this.document), selected = selectedSource(this.document, this.state);
         if (selected && !choices.some(choice => choice.key === selected.key)) choices.push(selected);
         this.renderSourceCards(choices, selected?.key);
         const source = selectedSource(this.document, this.state)?.image, image = this.container.querySelector("[data-model-source]");
         const sourceURL = source ? this.api.apiURL(source.url) : "", placeholder = this.container.querySelector("[data-empty]"), enlarge = this.container.querySelector("[data-enlarge]");
         if (image.dataset.sourceURL !== sourceURL) {
-            image.dataset.sourceURL = sourceURL; image.hidden = true; enlarge.hidden = true; placeholder.hidden = false;
+            this.clearSourceLoad();
+            image.dataset.sourceURL = sourceURL; enlarge.hidden = true;
+            const previous = !image.hidden && Boolean(image.src);
+            placeholder.hidden = previous;
             const title = placeholder.querySelector(".vnccs-common-creator-placeholder-title"), hint = placeholder.querySelector(".vnccs-common-creator-placeholder-hint");
             title.textContent = source ? "Loading background…" : "Select a background";
             hint.textContent = "Choose a saved background and one of its variants.";
-            const current = () => !this.disposed && image.dataset.sourceURL === sourceURL;
-            image.onload = () => { if (current()) { image.hidden = false; placeholder.hidden = true; enlarge.hidden = false; } };
-            image.onerror = () => { if (current()) { image.hidden = true; placeholder.hidden = false; enlarge.hidden = true; title.textContent = "Background image unavailable"; hint.textContent = "Select another variant or refresh the background library."; } };
-            if (source) image.src = sourceURL;
-            else { image.onload = image.onerror = null; image.removeAttribute("src"); }
+            if (source) {
+                const incoming = document.createElement("img"); this.sourceLoad = incoming;
+                this.sourceReady = new Promise(resolve => { this.resolveSource = resolve; });
+                incoming.dataset.preview = ""; incoming.dataset.sourceIncoming = "";
+                incoming.alt = "Selected background"; incoming.hidden = true; incoming.style.pointerEvents = "none";
+                image.parentElement.appendChild(incoming);
+                const current = () => !this.disposed && this.sourceLoad === incoming && image.dataset.sourceURL === sourceURL;
+                const failure = "Background image unavailable. Select another variant or return to this window to retry.";
+                const publish = () => {
+                    if (!current()) return;
+                    incoming.onload = incoming.onerror = null;
+                    incoming.dataset.modelSource = ""; incoming.dataset.sourceURL = sourceURL; delete incoming.dataset.sourceIncoming;
+                    image.replaceWith(incoming); this.sourceLoad = null; enlarge.hidden = false;
+                    this.resolveSource?.(); this.resolveSource = null;
+                };
+                incoming.onerror = () => {
+                    if (!current()) return;
+                    this.clearSourceLoad(); placeholder.hidden = previous;
+                    title.textContent = "Background image unavailable"; hint.textContent = "Select another variant or return to this window to retry.";
+                    if (previous) this.message(failure, true);
+                };
+                incoming.onload = async () => {
+                    try { await incoming.decode?.(); } catch (_) { if (current()) incoming.onerror(); return; }
+                    if (!current()) return;
+                    incoming.hidden = false; placeholder.hidden = true;
+                    if (this.status.textContent === failure) this.message(CAMERA_HINT);
+                    if (previous && !this.backgroundTransition) playSakuraMotion(this.customSelects, incoming, [{ opacity: 0 }, { opacity: 1 }], 240, publish);
+                    else publish();
+                };
+                incoming.src = sourceURL;
+            } else { image.hidden = true; placeholder.hidden = false; image.removeAttribute("src"); }
         }
-        this.container.querySelector("[data-model-status]").textContent = this.state.model_id ? "Model ready" : "Model not created";
+        this.container.querySelector("[data-model-status]").textContent = this.modelError ? "Model unavailable" : this.state.model_id ? "Model ready" : "Model not created";
         const visible = Boolean(this.state.model_id && this.scene?.model_id === this.state.model_id); this.host.hidden = !visible; this.container.querySelector("[data-viewer-empty]").hidden = visible;
-        const gallery = this.container.querySelector("[data-cgs]"); gallery.replaceChildren();
+        this.container.querySelector("[data-viewer-empty]").textContent = this.modelError || "Select a saved background and create its model.";
+        const gallery = this.container.querySelector("[data-cgs]");
         const cgs = imageCGs(this.document, this.state).reverse();
-        if (this.pendingCG) {
-            const pending = this.pendingCG, card = document.createElement("button"); card.className = "bg-cg-card vnccs-common-creator-model-card"; card.dataset.pendingCg = ""; card.setAttribute("aria-label", `Preview ${pending.name} while generating`);
-            const title = document.createElement("strong"); title.textContent = pending.name;
-            const preview = document.createElement("div"); preview.className = "bg-cg-pending-preview vnccs-common-creator-preview-container"; preview.style.aspectRatio = `${pending.width} / ${pending.height}`;
-            const layer = document.createElement("div"); layer.className = "vnccs-common-creator-generation-layer uses-mannequin";
-            if (pending.url) { const image = document.createElement("img"); image.className = "vnccs-common-creator-generation-img vnccs-common-creator-generation-base"; image.src = pending.url; image.alt = "Captured CG camera frame"; layer.appendChild(image); }
-            const scan = document.createElement("div"); scan.className = "vnccs-common-creator-generation-scan"; layer.appendChild(scan); preview.appendChild(layer);
-            const label = document.createElement("span"); label.textContent = "Generating CG…"; label.setAttribute("role", "status");
-            card.append(title, preview, label); gallery.appendChild(card);
+        const galleryKey = JSON.stringify([cgs.map(cg => [cg.cg_id, cg.name, cg.url, cg.width, cg.height]), this.pendingCG && [this.pendingCG.name, this.pendingCG.url, this.pendingCG.width, this.pendingCG.height]]);
+        if (gallery.dataset.cards !== galleryKey) {
+            gallery.replaceChildren(); gallery.dataset.cards = galleryKey;
+            if (this.pendingCG) {
+                const pending = this.pendingCG, card = document.createElement("button"); card.className = "bg-cg-card vnccs-common-creator-model-card"; card.dataset.pendingCg = ""; card.setAttribute("aria-label", `Preview ${pending.name} while generating`);
+                const title = document.createElement("strong"); title.textContent = pending.name;
+                const preview = document.createElement("div"); preview.className = "bg-cg-pending-preview vnccs-common-creator-preview-container"; preview.style.aspectRatio = `${pending.width} / ${pending.height}`;
+                const layer = document.createElement("div"); layer.className = "vnccs-common-creator-generation-layer uses-mannequin";
+                if (pending.url) { const image = document.createElement("img"); image.className = "vnccs-common-creator-generation-img vnccs-common-creator-generation-base"; image.src = pending.url; image.alt = "Captured CG camera frame"; layer.appendChild(image); }
+                const scan = document.createElement("div"); scan.className = "vnccs-common-creator-generation-scan"; layer.appendChild(scan); preview.appendChild(layer);
+                const label = document.createElement("span"); label.textContent = "Generating CG…"; label.setAttribute("role", "status");
+                card.append(title, preview, label); gallery.appendChild(card);
+            }
+            for (const cg of cgs) {
+                const entry = document.createElement("div"); entry.className = "bg-cg-entry";
+                const card = document.createElement("button"); card.className = "bg-cg-card vnccs-common-creator-model-card"; card.dataset.cgId = cg.cg_id; card.classList.toggle("is-selected", cg.cg_id === this.state.selected_cg_id);
+                const title = document.createElement("strong"); title.textContent = cg.name; const image = document.createElement("img"); image.src = this.api.apiURL(cg.url); image.alt = cg.name; image.style.aspectRatio = `${cg.width} / ${cg.height}`;
+                const remove = document.createElement("button"); remove.type = "button"; remove.className = "vnccs-style-delete"; remove.dataset.deleteCg = cg.cg_id; remove.textContent = "×"; remove.title = `Delete ${cg.name}`; remove.setAttribute("aria-label", remove.title);
+                card.append(title, image); entry.append(card, remove); gallery.appendChild(entry);
+            }
         }
-        for (const cg of cgs) {
-            const entry = document.createElement("div"); entry.className = "bg-cg-entry";
-            const card = document.createElement("button"); card.className = "bg-cg-card vnccs-common-creator-model-card"; card.dataset.cgId = cg.cg_id; card.classList.toggle("is-selected", cg.cg_id === this.state.selected_cg_id);
-            const title = document.createElement("strong"); title.textContent = cg.name; const image = document.createElement("img"); image.src = this.api.apiURL(cg.url); image.alt = cg.name;
-            const remove = document.createElement("button"); remove.type = "button"; remove.className = "vnccs-style-delete"; remove.dataset.deleteCg = cg.cg_id; remove.textContent = "×"; remove.title = `Delete ${cg.name}`; remove.setAttribute("aria-label", remove.title);
-            card.append(title, image); entry.append(card, remove); gallery.appendChild(entry);
-        }
+        for (const card of gallery.querySelectorAll("[data-cg-id]")) card.classList.toggle("is-selected", card.dataset.cgId === this.state.selected_cg_id);
         this.container.querySelector("[data-cg-count]").textContent = String(cgs.length + (this.pendingCG ? 1 : 0)); this.container.querySelector("[data-cg-empty]").hidden = Boolean(cgs.length || this.pendingCG);
         this.qi2.render(this.config); this.container.querySelector("[data-aspect]").value = this.state.settings.aspect;
         this.customSelects.syncSelects(); this.customSelects.restoreView(view); this.updateControls(); for (const [element, top, left] of scroll) { element.scrollTop = top; element.scrollLeft = left; } this.resize();
@@ -1085,6 +1216,8 @@ class CGCreatorWidget {
     sync() {
         if (this.disposed || this.restoring || !this.state) return;
         if (this.viewer && this.scene?.model_id === this.state.model_id && !this.busy && !this.loadingModel) this.state.camera = this.viewer.getCameraState();
+        const sources = this.container.querySelector("[data-source-choices]").scrollLeft, cgs = this.container.querySelector("[data-cgs]").scrollTop;
+        if (sources || cgs || this.state.scroll) this.state.scroll = { sources, cgs };
         const raw = JSON.stringify(this.state), widget = this.node.widgets.find(item => item.name === "cg_data");
         if (widget && widget.value !== raw) { widget.value = raw; this.node.properties ??= {}; this.node.properties.cgCreator = raw; this.node.graph?.setDirtyCanvas?.(true, true); } return raw;
     }
@@ -1103,7 +1236,16 @@ class CGCreatorWidget {
         try { const raw = this.draftKey() && storage.getItem(this.draftKey()); if (!raw) return; const draft = JSON.parse(raw);
             if (!draft || !draft.settings || !draft.model_settings) throw new Error("Invalid recovery draft");
             readState(JSON.stringify({ schema_version: 1, settings: draft.settings, model_settings: draft.model_settings }));
-            this.state.settings = settingsDefaults(draft.settings); this.state.model_settings = { ...MODEL_DEFAULTS, ...draft.model_settings }; this.unsaved = true;
+            const settings = settingsDefaults(draft.settings);
+            const resized = !this.state.job && (settings.aspect !== this.state.settings.aspect || settings.resolution_mp !== this.state.settings.resolution_mp
+                || this.state.frame && frameAspect(this.state.frame) !== settings.aspect);
+            const frame = resized ? frameDimensions(settings.aspect, settings.resolution_mp) : this.state.frame;
+            this.state.settings = settings; this.state.model_settings = { ...MODEL_DEFAULTS, ...draft.model_settings }; this.unsaved = true;
+            if (resized) {
+                this.state.frame = frame;
+                if (this.viewer && this.scene?.model_id === this.state.model_id) this.viewer.setCaptureSettings({ ...frame, show_camera_frame: true });
+            }
+            this.sync();
         } catch (_) { this.message("A recovery draft could not be read. Its original bytes are preserved.", true); }
     }
     markEdited() { this.unsaved = true; this.sync(); this.retainDraft(); clearTimeout(this.saveTimer); this.saveTimer = setTimeout(() => this.persist().catch(error => this.message(error.message, true)), 450); }
@@ -1175,7 +1317,6 @@ class CGCreatorWidget {
                 if (this.state.selected_cg_id === id) this.state.selected_cg_id = "";
                 this.sync(); this.render(); return;
             }
-            if (button.hasAttribute("data-refresh")) { if (this.restoreFailed) { await this.restore(); return; } navigating = this.busy = true; this.updateControls(); await this.persist(); const catalog = await this.request("/backgrounds"); if (epoch !== this.epoch || this.disposed) return; this.catalog = catalog.backgrounds; if (this.state.background_id) await this.acceptDocument(await this.request(`/backgrounds/${this.state.background_id}`), false, epoch); this.render(); return; }
             if (button.hasAttribute("data-source-choice")) {
                 const choice = sourceChoices(this.document).find(choice => choice.key === button.dataset.sourceChoice);
                 if (!choice || choice.key === selectedSource(this.document, this.state)?.key) return;
@@ -1184,14 +1325,13 @@ class CGCreatorWidget {
                 navigating = this.busy = true; this.updateControls(); this.state.selected_image_id = choice.image_id; this.state.selected_variant = clone(choice.variant);
                 this.state.model_id = latestModel(this.document, this.state)?.model_id || ""; this.state.selected_cg_id = ""; this.state.camera = null; this.state.frame = null;
                 this.sync(); this.render();
-                playSakuraMotion(this.customSelects, this.container.querySelector("[data-model-source]"), [{ opacity: .7 }, { opacity: 1 }], 180);
                 if (this.state.model_id) await this.showModel(epoch); this.sync(); this.render(); return;
             }
             if (button.hasAttribute("data-pending-cg")) { this.openPreview(this.pendingCG); return; }
             if (button.dataset.cgId) {
                 const cg = this.document.cgs.find(cg => cg.cg_id === button.dataset.cgId); if (!cg) return;
                 this.openPreview(cg);
-                if (this.busy || this.document?._recovery || this.document?.archived) return;
+                if (this.busy || this.state.job || this.document?._recovery || this.document?.archived) return;
                 navigating = this.busy = true; this.updateControls(); Object.assign(this.state, { selected_cg_id: cg.cg_id, model_id: cg.model_id, camera: clone(cg.camera), frame: { width: cg.width, height: cg.height } });
                 this.sync(); await this.showModel(epoch); if (epoch !== this.epoch || this.disposed) return; this.sync(); this.render(); return;
             }
@@ -1232,46 +1372,79 @@ class CGCreatorWidget {
         } else if (control.dataset.modelSetting && control.value !== "" && Number.isFinite(Number(control.value))) { this.state.model_settings[control.dataset.modelSetting] = Number(control.value); this.markEdited(); }
     }
     async change(event) {
-        if (this.restoring || this.busy) return; const control = event.target; let epoch = this.epoch;
+        if (this.restoring || this.busy || this.state?.job) return; const control = event.target; let epoch = this.epoch;
         let navigating = false;
         try {
-            if (control.hasAttribute("data-library")) { const id = control.value; if (!id) return; navigating = this.busy = true; this.updateControls(); await this.persist(); if (epoch !== this.epoch || this.disposed) return; epoch = ++this.epoch;
-                await this.acceptDocument(await this.request(`/backgrounds/${id}`), true, epoch); this.restoreDraft(); this.render();
+            if (control.hasAttribute("data-library")) { const id = control.value; if (!id || id === this.state.background_id) { control.value = this.state.background_id; return; } navigating = this.busy = true; this.updateControls(); await this.persist(); if (epoch !== this.epoch || this.disposed) return; epoch = ++this.epoch;
+                await this.switchBackground(await this.request(`/backgrounds/${id}`), epoch);
             } else if (control.hasAttribute("data-aspect")) { this.state.settings.aspect = control.value; this.updateFrame(); this.markEdited();
             }
         } catch (error) { if (epoch === this.epoch && !this.disposed) this.message(error.message, true); }
-        finally { if (navigating && epoch === this.epoch && !this.disposed) { this.busy = false; this.render(); } }
+        finally { if (navigating && epoch === this.epoch && !this.disposed) { this.busy = false; this.container.querySelector("[data-library]").value = this.state.background_id; this.updateControls(); } }
     }
 
     async runJob(action, extra = {}, raw = null) {
         if (!this.document) throw new Error("Select a saved background first."); const epoch = this.epoch, id = this.state.background_id;
+        const savedJob = this.state.job;
+        if (savedJob && savedJob.action !== action) throw new Error("Reconnect to the unfinished generation before starting another action.");
+        let terminal = false;
         this.activeAction = action;
         this.busy = true; this.updateControls(); this.message("Preparing " + action + "…");
         try {
-            await this.persist(); if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return;
-            const payload = { action, revision: this.document.revision, image_id: this.state.selected_image_id, source_variant: clone(this.state.selected_variant || null), model_settings: clone(this.state.model_settings), settings: clone(this.state.settings), ...extra };
-            if (action === "cg" && payload.settings.generation.seed_mode === "randomize") {
-                const seed = generateRandomSeed();
-                payload.settings.generation.seed = this.state.settings.generation.seed = seed;
-                payload.settings.generation.seed_mode = "fixed";
-                this.sync();
+            let result;
+            if (savedJob) {
+                this.jobId = savedJob.id || "";
+                if (!this.jobId) {
+                    result = await this.request(`/backgrounds/${id}/jobs/${savedJob.request_id}`);
+                    if (epoch !== this.epoch || this.disposed) return;
+                    if (!/^[a-f0-9]{32}$/.test(result.job_id)) throw new Error("Invalid generation response.");
+                    this.jobId = savedJob.id = result.job_id; this.sync();
+                }
+                if (action === "cg" && this.state.frame && this.state.camera && this.viewer && this.scene?.model_id === this.state.model_id) {
+                    this.pendingCG = { ...clone(this.state.frame), camera: clone(this.state.camera), name: savedJob.name };
+                    this.render();
+                    const preview = await this.viewer.capturePreview({ ...this.state.frame, cameraState: this.state.camera });
+                    if (epoch !== this.epoch || this.disposed) return;
+                    this.pendingCG.url = URL.createObjectURL(preview); this.render(); this.restorePreview();
+                }
+            } else {
+                await this.persist(); if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return;
+                const payload = { action, revision: this.document.revision, image_id: this.state.selected_image_id, source_variant: clone(this.state.selected_variant || null), model_settings: clone(this.state.model_settings), settings: clone(this.state.settings), ...extra };
+                payload.request_id = cacheIdentity();
+                this.state.job = { request_id: payload.request_id, node_id: String(this.node.id), action, name: extra.name || "" }; this.sync();
+                if (action === "cg" && payload.settings.generation.seed_mode === "randomize") {
+                    const seed = generateRandomSeed();
+                    payload.settings.generation.seed = this.state.settings.generation.seed = seed;
+                    payload.settings.generation.seed_mode = "fixed";
+                    this.sync();
+                }
+                if (raw) { const form = new FormData(); form.append("data", JSON.stringify(payload)); form.append("image", raw, "raw.png"); result = await this.request(`/backgrounds/${id}/jobs`, { method: "POST", body: form }); } else result = await this.json(`/backgrounds/${id}/jobs`, payload);
+                if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return;
+                if (!/^[a-f0-9]{32}$/.test(result.job_id)) throw new Error("Invalid generation response.");
+                this.jobId = result.job_id; this.state.job.id = this.jobId; this.sync();
             }
-            let result; if (raw) { const form = new FormData(); form.append("data", JSON.stringify(payload)); form.append("image", raw, "raw.png"); result = await this.request(`/backgrounds/${id}/jobs`, { method: "POST", body: form }); } else result = await this.json(`/backgrounds/${id}/jobs`, payload);
-            if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return; this.jobId = result.job_id; this.updateControls();
+            this.updateControls();
             while (epoch === this.epoch && !this.disposed && id === this.state.background_id) {
                 result = await this.request(`/jobs/${this.jobId}`); if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return;
                 if (["completed", "failed", "cancelled"].includes(result.status)) break;
                 await new Promise(resolve => { this.pollResolve = resolve; this.pollTimer = setTimeout(resolve, 500); });
             }
-            if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return; if (result.status !== "completed") throw new Error(result.error || "Generation stopped.");
+            if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return; terminal = true; if (result.status !== "completed") throw new Error(result.error || "Generation stopped.");
             const document = result.result.document;
             if (document.background_id !== id) throw new Error("The generation result belongs to another background.");
             const previewPending = this.pendingCG && this.previewSource === this.pendingCG;
             if (action === "cg") { const cg = document.cgs.at(-1); Object.assign(this.state, { selected_cg_id: cg.cg_id, model_id: cg.model_id, camera: clone(cg.camera), frame: { width: cg.width, height: cg.height } }); }
             else { this.state.model_id = document.models.at(-1).model_id; this.state.selected_cg_id = ""; this.state.camera = null; this.state.frame = null; }
             await this.acceptDocument(document, false, epoch); this.sync(); this.render(); this.message(action === "cg" ? "CG saved with its camera. The selected CG is the workflow output." : "Model ready. Compose the camera and press Generate CG.");
-            if (previewPending && this.previewSource === this.pendingCG) this.openPreview(document.cgs.at(-1));
-        } finally { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); this.jobId = ""; this.activeAction = ""; this.busy = false; this.render(); } }
+            if (previewPending && this.previewSource === this.pendingCG) this.openPreview(document.cgs.at(-1), this.state.preview);
+        } catch (error) {
+            if (!savedJob && !this.jobId && error.status >= 400 && error.status < 500) { terminal = true; throw error; }
+            if (this.state.job && !terminal) {
+                if (error.status === 404) { terminal = true; throw new Error("The saved generation is no longer available. Saved assets are preserved; select a finished result or generate again."); }
+                throw new Error("Generation status is unavailable. Reconnection will retry when the connection returns or this window becomes active. " + error.message);
+            }
+            throw error;
+        } finally { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); if (terminal) { delete this.state.job; if (this.state.preview?.kind === "pending") delete this.state.preview; } this.jobId = ""; this.activeAction = ""; this.busy = false; this.render(); this.sync(); } }
     }
     updateFrame() {
         if (!this.state || this.restoring || this.busy) return;
@@ -1283,7 +1456,15 @@ class CGCreatorWidget {
         this.sync();
     }
 
-    openPreview(cg = null) {
+    restorePreview() {
+        const preview = this.state?.preview;
+        if (!preview) return;
+        const cg = preview.kind === "cg" ? this.document?.cgs.find(cg => cg.cg_id === preview.cg_id) : preview.kind === "pending" ? this.pendingCG : null;
+        if (preview.kind === "cg" && !cg) { this.message("The saved preview is unavailable. Its workflow reference is preserved; select another preview or return to the model.", true); return; }
+        if (preview.kind !== "pending" || cg?.url) this.openPreview(cg, preview);
+    }
+
+    openPreview(cg = null, savedView = null) {
         const source = cg || selectedSource(this.document, this.state)?.image;
         if (!source?.url) return;
         this.cgPreviewClose?.();
@@ -1299,26 +1480,31 @@ class CGCreatorWidget {
         modal.modal.classList.add("bg-image-dialog"); modal.buttons[0].dataset.closePreview = "";
         for (const element of [modal.overlay, modal.modal]) for (const animation of element.getAnimations?.() || []) animation.cancel();
         this.cgPreviewClose = close; this.previewSource = source;
-        const dispose = this.attachPreviewNavigation(viewport, image);
+        this.state.preview = { kind: cg && cg === this.pendingCG ? "pending" : cg ? "cg" : "source", ...(cg?.cg_id ? { cg_id: cg.cg_id } : {}), zoom: savedView?.zoom || 1, center: clone(savedView?.center || [.5, .5]) };
+        const dispose = this.attachPreviewNavigation(viewport, image, this.state.preview, view => {
+            if (this.cgPreviewClose !== close || this.restoring || this.disposed) return;
+            Object.assign(this.state.preview, view); this.sync();
+        });
         this.dialogs.add(close);
         const remove = modal.overlay.remove;
-        modal.overlay.remove = () => { if (this.cgPreviewClose === close) { this.cgPreviewClose = null; this.previewSource = null; } this.dialogs.delete(close); dispose(); remove.apply(modal.overlay); if (!this.disposed) this.updateControls(); };
+        modal.overlay.remove = () => { if (this.cgPreviewClose === close) { this.cgPreviewClose = null; this.previewSource = null; if (!this.restoring && !this.disposed) { delete this.state.preview; this.sync(); } } this.dialogs.delete(close); dispose(); remove.apply(modal.overlay); if (!this.disposed) this.updateControls(); };
         image.src = this.api.apiURL(source.url); image.dataset.sourceURL = source.url;
-        this.render();
+        this.render(); this.sync();
     }
 
-    attachPreviewNavigation(viewport, image) {
+    attachPreviewNavigation(viewport, image, savedView = null, onChange = null) {
         const events = new AbortController();
         let scale = 1, fitScale = 1, x = 0, y = 0, width = 0, height = 0, ready = false, closed = false, drag = null;
-        const apply = () => {
+        const apply = (notify = false) => {
             image.style.width = `${image.naturalWidth}px`; image.style.height = `${image.naturalHeight}px`;
             image.style.transform = `matrix(${scale},0,0,${scale},${x},${y})`; image.style.visibility = "visible";
+            if (notify) onChange?.({ zoom: Math.max(1, Math.min(8, scale / fitScale)), center: [(width / 2 - x) / scale / image.naturalWidth, (height / 2 - y) / scale / image.naturalHeight] });
         };
         const fit = () => {
             if (closed || !image.complete || !image.naturalWidth || !viewport.clientWidth || !viewport.clientHeight) return;
-            const ratio = ready ? scale / fitScale : 1;
-            const centerX = ready ? (width / 2 - x) / scale : image.naturalWidth / 2;
-            const centerY = ready ? (height / 2 - y) / scale : image.naturalHeight / 2;
+            const ratio = ready ? scale / fitScale : savedView?.zoom || 1;
+            const centerX = ready ? (width / 2 - x) / scale : image.naturalWidth * (savedView?.center[0] ?? .5);
+            const centerY = ready ? (height / 2 - y) / scale : image.naturalHeight * (savedView?.center[1] ?? .5);
             width = viewport.clientWidth; height = viewport.clientHeight;
             fitScale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
             scale = fitScale * ratio; x = width / 2 - centerX * scale; y = height / 2 - centerY * scale;
@@ -1339,7 +1525,7 @@ class CGCreatorWidget {
             const anchor = point(event), next = Math.max(fitScale, Math.min(fitScale * 8, scale * (event.deltaY < 0 ? 1.12 : .88)));
             x = anchor.x - (anchor.x - x) * next / scale; y = anchor.y - (anchor.y - y) * next / scale; scale = next;
             if (scale === fitScale) { x = (width - image.naturalWidth * scale) / 2; y = (height - image.naturalHeight * scale) / 2; }
-            apply();
+            apply(true);
         };
         viewport.onpointerdown = event => {
             if (!ready || ![0, 1].includes(event.button) || event.isPrimary === false) return;
@@ -1351,7 +1537,7 @@ class CGCreatorWidget {
             if (!drag || event.pointerId !== drag.id) return;
             if (!(event.buttons & drag.buttons)) { finish(event); return; }
             event.preventDefault(); event.stopPropagation(); const next = point(event);
-            x += next.x - drag.x; y += next.y - drag.y; Object.assign(drag, next); apply();
+            x += next.x - drag.x; y += next.y - drag.y; Object.assign(drag, next); apply(true);
         };
         viewport.onpointerup = viewport.onpointercancel = viewport.onlostpointercapture = finish;
         viewport.onauxclick = event => { if (event.button === 1) event.preventDefault(); };
@@ -1395,14 +1581,17 @@ class CGCreatorWidget {
             this.node.setSize?.([this.node.size[0], this.node.size[1] + Math.ceil(missingHeight * scale)]);
             this.container.style.height = `${(this.node.size[1] - 90) / scale}px`;
         }
+        if (this.backgroundTransition) Object.assign(this.backgroundTransition.snapshot.style, { width: this.container.style.width, height: this.container.style.height, zoom: scale });
         this.updateSourceScroll();
         this.viewer?.resize();
     }
     dispose() {
         if (this.disposed) return; if (this.unsaved) { this.sync(); this.retainDraft(); }
+        this.disposed = true;
         this.clearPendingCG();
-        this.disposed = true; ++this.epoch; this.canvasNavigation?.(); this.events.abort(); clearTimeout(this.saveTimer); clearTimeout(this.wheelTimer); clearTimeout(this.pollTimer); this.pollResolve?.();
-        const sourceImage = this.container.querySelector("[data-model-source]"); sourceImage.onload = sourceImage.onerror = null;
+        ++this.epoch; this.canvasNavigation?.(); this.events.abort(); clearTimeout(this.saveTimer); clearTimeout(this.wheelTimer); clearTimeout(this.pollTimer); this.pollResolve?.();
+        this.clearSourceLoad();
+        this.clearBackgroundTransition();
         for (const finish of [...this.dialogs]) finish(null); this.observer.disconnect(); this.customSelects.dispose(); this.qi2.dispose(); this.viewer?.dispose(); this.frame.remove();
     }
 }
@@ -1440,7 +1629,7 @@ app.registerExtension({
                 state.beforeQueued = (...args) => {
                     beforeQueued?.apply(state, args);
                     if (this.cgCreator.restoring) throw new Error("CG Creator is still restoring its scene.");
-                    if (this.cgCreator.busy) throw new Error("Wait for CG Creator to finish its current operation.");
+                    if (this.cgCreator.busy || this.cgCreator.state?.job) throw new Error("Wait for CG Creator to finish its current operation.");
                     this.cgCreator.sync();
                 };
                 const serializeValue = state.serializeValue;

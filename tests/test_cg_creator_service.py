@@ -595,6 +595,7 @@ def test_http_cg_deletion_rejects_unsafe_or_stale_requests(routes, workspace, co
 def test_http_inventory_has_no_background_authoring_actions(routes):
     expected = {("GET", "/config"), ("GET", "/backgrounds"), ("GET", "/backgrounds/{background_id}"),
         ("PATCH", "/backgrounds/{background_id}"), ("POST", "/backgrounds/{background_id}/jobs"),
+        ("GET", "/backgrounds/{background_id}/jobs/{request_id}"),
         ("GET", "/jobs/{job_id}"), ("POST", "/jobs/{job_id}/cancel"),
         ("DELETE", "/backgrounds/{background_id}/cg/{cg_id}"),
         ("GET", "/backgrounds/{background_id}/images/{image_id}"),
@@ -603,6 +604,31 @@ def test_http_inventory_has_no_background_authoring_actions(routes):
         ("GET", "/backgrounds/{background_id}/models/{model_id}/objects/{object_id}/{kind}"),
         ("GET", "/backgrounds/{background_id}/cg/{cg_id}/{kind}")}
     assert set(routes) == {(method, service.API_BASE + path) for method, path in expected}
+
+
+@pytest.mark.parametrize("request_id", ["9" * 32, "plain-http-fallback_request-123"])
+def test_generation_can_reconnect_before_the_submission_response_arrives(routes, workspace, request_id):
+    document = with_model(workspace)
+    payload = job_payload(document, request_id=request_id)
+    submitted = service.start_job(document["background_id"], payload, png())
+    info = {"background_id": document["background_id"], "request_id": request_id}
+    response = call(routes, "GET", "/backgrounds/{background_id}/jobs/{request_id}", Request(info=info))
+    assert response.status == 200 and json.loads(response.text)["job_id"] == submitted["job_id"]
+    workspace.worker.submit.assert_called_once()
+    for changes in ({"background_id": "0" * 32}, {"request_id": "0" * 32}):
+        missing = call(routes, "GET", "/backgrounds/{background_id}/jobs/{request_id}", Request(info={**info, **changes}))
+        assert missing.status == 404
+    workspace.run_pending()
+    completed = call(routes, "GET", "/backgrounds/{background_id}/jobs/{request_id}", Request(info=info))
+    result = json.loads(completed.text)
+    assert result["status"] == "completed", result["error"]
+
+
+@pytest.mark.parametrize("request_id", [None, "", "../job", [], 7])
+def test_generation_request_reference_is_validated_before_work_is_started(workspace, request_id):
+    with pytest.raises(ValueError, match="request reference"):
+        service.start_job(workspace.document["background_id"], job_payload(workspace.document, "model", request_id=request_id))
+    workspace.worker.submit.assert_not_called()
 
 
 def test_http_config_library_read_and_cg_settings_save(routes, workspace, monkeypatch):

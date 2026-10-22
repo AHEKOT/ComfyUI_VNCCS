@@ -38,7 +38,7 @@ import '/web/vnccs_cg_creator.js';
 import { app } from '/scripts/app.js';
 const graphCanvas=document.createElement('canvas');graphCanvas.hidden=true;document.body.appendChild(graphCanvas);app.canvasEl=graphCanvas;
 window.graphInputs=[];
-window.sourceAnimations=()=>[...(window.widget?.customSelects?._motionAnimations||[])].filter(animation=>['running','paused'].includes(animation.playState)&&animation.effect.target?.matches('[data-model-source],[data-variation-image]'));
+window.sourceAnimations=()=>[...(window.widget?.customSelects?._motionAnimations||[])].filter(animation=>['running','paused'].includes(animation.playState)&&animation.effect.target?.matches('[data-model-source],[data-source-incoming]'));
 for(const type of ['pointerdown','mousedown','pointermove','mousemove','pointerup','mouseup','wheel'])graphCanvas.addEventListener(type,event=>graphInputs.push({type:event.type,clientX:event.clientX,clientY:event.clientY,buttons:event.buttons,deltaY:event.deltaY,forwarded:!!event._vnccsForwardedCanvasInput}));
 window.setup=async({width=${LAYOUT_WIDTH},height=950,empty=false,raw=null}={})=>{
  window.widget?.node.onRemoved();const host=document.querySelector('#host');host.replaceChildren();
@@ -348,13 +348,13 @@ try {
     await page.locator("[data-source-choice]").nth(clickedIndex).click();
     await page.waitForFunction(() => sourceAnimations().length === 1);
     const fades = await page.evaluate(() => sourceAnimations().map(animation => {
-        animation.pause(); animation.currentTime = 90;
-        return { frames: animation.effect.getKeyframes(), duration: animation.effect.getTiming().duration, main: animation.effect.target.hasAttribute("data-model-source") };
+        animation.pause(); animation.currentTime = 120;
+        return { frames: animation.effect.getKeyframes(), duration: animation.effect.getTiming().duration, main: animation.effect.target.hasAttribute("data-source-incoming") };
     }));
     for (const fade of fades) {
-        assert.equal(fade.duration, 180);
+        assert.equal(fade.duration, 240);
         assert.equal(fade.main, true, "Only the main preview fades; variant cards remain unchanged");
-        assert.equal(fade.frames[0].opacity, "0.7"); assert.equal(fade.frames.at(-1).opacity, "1");
+        assert.equal(fade.frames[0].opacity, "0"); assert.equal(fade.frames.at(-1).opacity, "1");
         assert.ok(fade.frames.every(frame => !("transform" in frame)), "Image changes animate opacity only");
     }
     await page.locator(".bg-model-source").screenshot({ path: join(output, "after-source-swap.png"), animations: "allow" });
@@ -411,7 +411,7 @@ try {
         const bounds = () => images.map(image => { const rect = image.getBoundingClientRect(); return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }; });
         for (const animation of animations) { animation.pause(); animation.currentTime = 0; }
         const from = bounds();
-        for (const animation of animations) animation.currentTime = 179;
+        for (const animation of animations) animation.currentTime = 239;
         const to = bounds();
         for (const animation of animations) animation.finish();
         return { from, to };
@@ -484,7 +484,7 @@ try {
     assert.ok(Math.abs(shrunk.widget.width - beforeHeightResize.widget.width) < 2, "Height-only dragging preserves the node width");
     assert.ok(Math.abs(shrunk.frame.width / shrunk.frame.height - 16 / 9) < .002);
     await page.evaluate(() => setup()); await settle();
-    const navigationHeading = await page.locator(".bg-source-heading").boundingBox();
+    const navigationHeading = await page.locator(".bg-model-source > .vnccs-common-creator-section-title").first().boundingBox();
     await page.evaluate(() => { graphInputs.length = 0; });
     await page.mouse.move(navigationHeading.x + 40, navigationHeading.y + navigationHeading.height / 2);
     await page.mouse.wheel(0, -120); await settle();

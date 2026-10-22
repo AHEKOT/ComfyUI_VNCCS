@@ -4,6 +4,9 @@ import vm from "node:vm";
 // Exercise sections of the real extension without importing ComfyUI's browser entry point.
 export const source = readFileSync(new URL("../../web/vnccs_cg_creator.js", import.meta.url), "utf8");
 const commonSource = readFileSync(new URL("../../web/vnccs_common.js", import.meta.url), "utf8");
+const transportSource = readFileSync(new URL("../../web/vnccs_transport.js", import.meta.url), "utf8");
+export const connectionSource = transportSource.slice(transportSource.indexOf("export function watchConnection")).replace("export ", "");
+export const cleanupSource = commonSource.slice(commonSource.indexOf("export function registerCleanup"), commonSource.indexOf("// Each loader owns a guard")).replace("export ", "");
 export const syncDOMWidgetWidth = vm.runInThisContext("(" + commonSource.slice(commonSource.indexOf("export function syncDOMWidgetWidth("), commonSource.indexOf("export function syncDOMWidgetWidthSoon(")).replace("export ", "") + ")");
 const section = (start, end) => source.slice(source.indexOf(start), end ? source.indexOf(end) : undefined);
 export const { BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } = vm.runInThisContext("(function () {" + section("const BACKGROUND_CREATOR_ZOOM", "const STYLE") + "return { BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT }; })()");
