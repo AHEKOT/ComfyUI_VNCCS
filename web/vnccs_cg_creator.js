@@ -55,14 +55,12 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-preview>[data-empty] { padding:18px; }
 .vnccs-cg-creator .bg-dialog-fields { display:flex; flex-direction:column; gap:12px; }
 .vnccs-cg-creator .vnccs-common-modal { max-height:calc(100% - 32px); overflow:auto; }
-.vnccs-cg-creator .bg-image-dialog { width:min(1400px,calc(100% - 32px)); max-width:min(1400px,calc(100% - 32px)); height:min(900px,calc(100% - 32px)); }
-.vnccs-cg-creator .bg-viewport .bg-image-dialog { position:relative; width:100%; max-width:100%; height:100%; max-height:100%; padding:0; border:0; border-radius:0; gap:0; }
-.vnccs-cg-creator .bg-image-dialog .vnccs-common-modal-title { display:none; }
-.vnccs-cg-creator .bg-image-dialog .vnccs-common-modal-btn-row { position:absolute; right:12px; bottom:12px; z-index:1; }
+.vnccs-cg-creator .bg-image-preview { position:absolute; inset:0; background:var(--bg-primary); }
+.vnccs-cg-creator .bg-image-preview [data-close-preview] { position:absolute; right:12px; bottom:12px; z-index:1; padding:6px 16px; font-size:13px; cursor:pointer; }
 .vnccs-cg-creator .bg-image-viewport { position:absolute; inset:0; min-height:0; overflow:hidden; touch-action:none; cursor:grab; }
 .vnccs-cg-creator .bg-image-viewport.is-dragging { cursor:grabbing; }
 .vnccs-cg-creator .bg-image-viewport:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
-.vnccs-cg-creator .bg-image-dialog img { position:absolute; left:0; top:0; display:block; max-width:none; max-height:none; transform-origin:0 0; pointer-events:none; user-select:none; }
+.vnccs-cg-creator .bg-image-preview img { position:absolute; left:0; top:0; display:block; max-width:none; max-height:none; transform-origin:0 0; pointer-events:none; user-select:none; }
 .vnccs-cg-creator .bg-model-card { display:flex; flex-direction:column; align-items:stretch; text-align:left; width:100%; }
 .vnccs-cg-creator .vnccs-i3s__camera-frame>span { display:none; }
 .vnccs-cg-creator .bg-viewport-panel { overflow:hidden; }
@@ -1263,7 +1261,7 @@ class CGCreatorWidget {
         }); this.saveSerial = operation; return operation;
     }
 
-    async dialog(title, fields, submitLabel = "Save") {
+    async dialog(title, fields, submitLabel = "Save", { message = "", danger = false } = {}) {
         return await new Promise(resolve => {
             const controls = {};
             const finish = value => { if (!this.dialogs.delete(close)) return; modal.overlay.remove(); resolve(value); };
@@ -1271,6 +1269,7 @@ class CGCreatorWidget {
             this.dialogs.add(close);
             const modal = showModal(this.container, title, () => {
                 const form = document.createElement("div"); form.className = "bg-dialog-fields";
+                if (message) { const description = document.createElement("div"); description.textContent = message; form.appendChild(description); }
                 for (const field of fields) {
                     const label = document.createElement("label"), text = document.createElement("span"); text.textContent = field.label; label.className = "bg-field";
                     const control = document.createElement(field.multiline ? "textarea" : field.options ? "select" : "input");
@@ -1285,7 +1284,7 @@ class CGCreatorWidget {
                     form.appendChild(label); controls[field.key] = control;
                 }
                 return form;
-            }, [{ text: "Cancel", action: close }, { text: submitLabel, class: "primary", action: () => {
+            }, [{ text: "Cancel", action: close }, { text: submitLabel, class: danger ? "danger" : "primary", action: () => {
                 if (!Object.values(controls).every(control => control.reportValidity())) return true;
                 finish(Object.fromEntries(Object.entries(controls).map(([key, control]) => [key, control.value])));
             } }]);
@@ -1308,7 +1307,11 @@ class CGCreatorWidget {
             }
             if (button.dataset.deleteCg) {
                 const id = button.dataset.deleteCg, backgroundId = this.state.background_id;
-                navigating = this.busy = true; this.updateControls(); await this.persist();
+                const cg = this.document?.cgs.find(cg => cg.cg_id === id); if (!cg) return;
+                navigating = this.busy = true; this.updateControls();
+                const confirmed = await this.dialog("Delete CG", [], "Delete", { message: `Delete "${cg.name}" from the CG library?`, danger: true });
+                if (!confirmed || epoch !== this.epoch || this.disposed || backgroundId !== this.state.background_id) return;
+                await this.persist();
                 if (epoch !== this.epoch || this.disposed) return;
                 const document = await this.json(`/backgrounds/${backgroundId}/cg/${id}`, { revision: this.document.revision }, "DELETE");
                 if (epoch !== this.epoch || this.disposed) return;
@@ -1468,17 +1471,24 @@ class CGCreatorWidget {
         const source = cg || selectedSource(this.document, this.state)?.image;
         if (!source?.url) return;
         this.cgPreviewClose?.();
-        let image, viewport;
-        const close = () => modal.overlay.remove();
-        const modal = showModal(this.host.parentElement, cg ? cg.name : "Background preview", () => {
-            viewport = document.createElement("div"); viewport.className = "bg-image-viewport"; viewport.dataset.previewViewport = ""; viewport.tabIndex = 0;
-            viewport.setAttribute("aria-label", "Image preview. Scroll to zoom, drag to pan.");
-            image = document.createElement("img"); image.dataset.largePreview = ""; image.alt = cg ? `Full-size ${cg.name}` : "Full-size selected background";
-            image.draggable = false; image.style.visibility = "hidden"; viewport.appendChild(image);
-            return viewport;
-        }, [{ text: "Close", action: close }]);
-        modal.modal.classList.add("bg-image-dialog"); modal.buttons[0].dataset.closePreview = "";
-        for (const element of [modal.overlay, modal.modal]) for (const animation of element.getAnimations?.() || []) animation.cancel();
+        const opener = document.activeElement;
+        const panel = document.createElement("div"); panel.className = "bg-image-preview";
+        panel.setAttribute("role", "region"); panel.setAttribute("aria-label", cg ? `${cg.name} preview` : "Background preview");
+        const viewport = document.createElement("div"); viewport.className = "bg-image-viewport"; viewport.dataset.previewViewport = ""; viewport.tabIndex = 0;
+        viewport.setAttribute("aria-label", "Image preview. Scroll to zoom, drag to pan.");
+        const image = document.createElement("img"); image.dataset.largePreview = ""; image.alt = cg ? `Full-size ${cg.name}` : "Full-size selected background";
+        image.draggable = false; image.style.visibility = "hidden"; viewport.appendChild(image);
+        const close = () => {
+            if (!this.dialogs.delete(close)) return;
+            const returnFocus = panel.contains(document.activeElement);
+            if (this.cgPreviewClose === close) { this.cgPreviewClose = null; this.previewSource = null; if (!this.restoring && !this.disposed) { delete this.state.preview; this.sync(); } }
+            dispose(); panel.remove(); if (!this.disposed) this.updateControls();
+            if (returnFocus && !this.restoring && !this.disposed && opener?.isConnected) opener.focus({ preventScroll: true });
+        };
+        const button = document.createElement("button"); button.type = "button"; button.className = "vnccs-common-modal-btn";
+        button.dataset.closePreview = ""; button.textContent = "Close"; button.onclick = close;
+        panel.addEventListener("keydown", event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); close(); } });
+        panel.append(viewport, button); this.host.parentElement.appendChild(panel);
         this.cgPreviewClose = close; this.previewSource = source;
         this.state.preview = { kind: cg && cg === this.pendingCG ? "pending" : cg ? "cg" : "source", ...(cg?.cg_id ? { cg_id: cg.cg_id } : {}), zoom: savedView?.zoom || 1, center: clone(savedView?.center || [.5, .5]) };
         const dispose = this.attachPreviewNavigation(viewport, image, this.state.preview, view => {
@@ -1486,8 +1496,6 @@ class CGCreatorWidget {
             Object.assign(this.state.preview, view); this.sync();
         });
         this.dialogs.add(close);
-        const remove = modal.overlay.remove;
-        modal.overlay.remove = () => { if (this.cgPreviewClose === close) { this.cgPreviewClose = null; this.previewSource = null; if (!this.restoring && !this.disposed) { delete this.state.preview; this.sync(); } } this.dialogs.delete(close); dispose(); remove.apply(modal.overlay); if (!this.disposed) this.updateControls(); };
         image.src = this.api.apiURL(source.url); image.dataset.sourceURL = source.url;
         this.render(); this.sync();
     }

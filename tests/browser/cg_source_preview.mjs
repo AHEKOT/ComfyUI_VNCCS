@@ -124,6 +124,92 @@ try {
         return saved;
     };
     await page.goto(origin); await page.waitForFunction(() => window.ready); await ready();
+    await page.evaluate(() => {
+        const controls = document.createElement('nav'); controls.id = 'workflow-controls';
+        controls.innerHTML = '<button data-workflow-tab>Workflow tab</button><button data-workflow-save>Save workflow</button><input aria-label="Workflow name" value="Original workflow"><button data-workflow-after>After preview</button>';
+        document.querySelector('#node').before(controls);
+        controls.querySelector('[data-workflow-save]').onclick = () => {
+            const info = { widgets_values: ['stale'] }; widget.node.onSerialize(info); window.savedWorkflow = JSON.stringify(info);
+        };
+        controls.querySelector('[data-workflow-tab]').oncontextmenu = event => {
+            event.preventDefault();
+            const menu = document.createElement('div'); menu.setAttribute('role', 'menu');
+            const rename = document.createElement('button'); rename.setAttribute('role', 'menuitem'); rename.textContent = 'Rename';
+            rename.onblur = () => menu.remove();
+            rename.onclick = () => { controls.querySelector('input').focus(); menu.remove(); };
+            menu.append(rename); controls.append(menu); rename.focus();
+        };
+    });
+    for (const [width, scale, previewSelector, label] of [[1481, 1, '[data-cg-id]', 'compact'], [LAYOUT_WIDTH, 1, '[data-cg-id]', 'default'], [5200, 1, '[data-cg-id]', 'wide'], [LAYOUT_WIDTH, .7, '[data-cg-id]', 'scaled'], [LAYOUT_WIDTH, 1, '[data-enlarge]', 'source']]) {
+        await ready(width, scale);
+        await page.locator(previewSelector).first().click();
+        await page.waitForFunction(() => document.querySelector('[data-large-preview]')?.naturalWidth > 0 && !widget.busy);
+        const before = await geometry(); await capture(`preview-external-controls-${label}`);
+        await page.locator('[data-workflow-save]').click();
+        assert.ok(await page.evaluate(() => window.savedWorkflow), 'The workflow saves with its preview open');
+        const name = page.getByRole('textbox', { name: 'Workflow name' });
+        await name.focus();
+        assert.equal(await name.evaluate(element => element === document.activeElement), true, 'Inline preview must not steal focus from workflow controls');
+        await name.fill('Renamed workflow'); assert.equal(await name.inputValue(), 'Renamed workflow');
+        await page.locator('[data-workflow-tab]').click({ button: 'right' });
+        const rename = page.getByRole('menuitem', { name: 'Rename', exact: true });
+        await rename.waitFor({ state: 'visible' }); await rename.click();
+        assert.equal(await name.evaluate(element => element === document.activeElement), true);
+        assert.equal(await page.locator('[data-large-preview]').count(), 1, 'External controls leave the preview open');
+        equalGeometry(await geometry(), before);
+        await page.locator('[data-close-preview]').focus(); await page.keyboard.press('Tab');
+        assert.equal(await page.locator('[data-close-preview]').evaluate(element => element === document.activeElement), false, 'Tab can leave the inline preview');
+        await page.locator('[data-preview-viewport]').focus(); await page.keyboard.press('Escape');
+        assert.equal(await page.locator('[data-large-preview]').count(), 0);
+        samples.push({ name: `inline-preview-external-controls-${label}`, width, scale, before, after: await geometry() });
+    }
+    await page.evaluate(() => document.querySelector('#workflow-controls').remove());
+    samples.push({ name: 'inline-previews-allow-workflow-save-rename-and-tab-context-menu' });
+    const deleteId = saved.cgs[0].cg_id, deleteRoute = `**${base}/backgrounds/${backgroundId}/cg/${deleteId}`;
+    let deletions = 0, releaseDelete, receivedDelete;
+    await page.route(deleteRoute, async route => {
+        assert.equal(route.request().method(), 'DELETE'); deletions++; receivedDelete();
+        await new Promise(done => { releaseDelete = done; });
+        await route.fulfill({ json: { ...document, revision: document.revision + 1, cgs: document.cgs.filter(cg => cg.cg_id !== deleteId) } });
+    });
+    for (const [width, scale, name] of [[1481, 1, 'compact'], [LAYOUT_WIDTH, 1, 'default'], [5200, 1, 'wide'], [LAYOUT_WIDTH, .7, 'scaled']]) {
+        await ready(width, scale);
+        const cgName = name === 'compact' ? '<Scene> "Evening room" with a long descriptive title '.repeat(2).slice(0, 96) : saved.cgs[0].name;
+        await page.evaluate(name => { widget.document.cgs[0].name = name; widget.render(); }, cgName);
+        const before = await geometry(), raw = (await workflow()).raw;
+        const camera = await page.evaluate(() => widget.viewer.getCameraState()), count = deletions;
+        await capture(`delete-${name}-before`);
+        const remove = page.locator(`[data-delete-cg="${deleteId}"]`), dialog = page.getByRole('dialog', { name: 'Delete CG', exact: true });
+        for (const dismiss of ['Cancel', 'Escape']) {
+            await remove.click(); await settle();
+            assert.equal(deletions, count, 'Opening confirmation never submits deletion');
+            assert.equal(await dialog.locator('.bg-dialog-fields').textContent(), `Delete "${cgName}" from the CG library?`);
+            assert.equal(await dialog.getByRole('button', { name: 'Cancel', exact: true }).evaluate(element => element === document.activeElement), true);
+            assert.equal(await dialog.getByRole('button', { name: 'Delete', exact: true }).evaluate(element => element.classList.contains('vnccs-common-modal-btn-danger')), true);
+            equalGeometry(await geometry(), before);
+            const bounds = await dialog.boundingBox(), nodeBounds = before['#node'];
+            assert.ok(bounds.x >= nodeBounds.x && bounds.y >= nodeBounds.y && bounds.x + bounds.width <= nodeBounds.x + nodeBounds.width && bounds.y + bounds.height <= nodeBounds.y + nodeBounds.height);
+            assert.equal(await dialog.evaluate(element => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight), false);
+            const buttons = await dialog.getByRole('button').evaluateAll(elements => elements.map(element => { const rect = element.getBoundingClientRect(); return { y: rect.y, height: rect.height }; }));
+            assert.ok(Math.abs(buttons[0].y - buttons[1].y) <= 1 && Math.abs(buttons[0].height - buttons[1].height) <= 1);
+            if (dismiss === 'Cancel') { await capture(`delete-${name}-confirmation`); await dialog.getByRole('button', { name: 'Cancel', exact: true }).click(); }
+            else await page.keyboard.press('Escape');
+            await dialog.waitFor({ state: 'detached' }); await page.waitForFunction(() => !widget.busy);
+            assert.equal(deletions, count); assert.equal((await workflow()).raw, raw);
+            assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), camera);
+            equalGeometry(await geometry(), before);
+        }
+        await capture(`delete-${name}-cancelled`);
+        const received = new Promise(done => { receivedDelete = done; });
+        await remove.click(); await dialog.getByRole('button', { name: 'Delete', exact: true }).click(); await received;
+        assert.equal(await page.locator('[data-delete-cg]').count(), saved.cgs.length, 'Cards stay until the server acknowledges deletion');
+        releaseDelete(); await page.waitForFunction(() => !widget.busy);
+        assert.equal(deletions, count + 1); assert.equal(await page.locator('[data-delete-cg]').count(), saved.cgs.length - 1);
+        assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), camera);
+        equalGeometry(await geometry(), before); await capture(`delete-${name}-confirmed`);
+        samples.push({ name: `delete-confirmation-${name}`, width, scale, before, after: await geometry(), deletions: deletions - count });
+    }
+    await page.unroute(deleteRoute); await ready();
     assert.equal(await page.locator('[data-refresh]').count(), 0, 'The library uses shared automatic refresh without an extra button');
     const automaticGeometry = await geometry(), automaticWorkflow = await workflow();
     await capture('automatic-library-before');
@@ -194,6 +280,7 @@ try {
     await reloadWorkflow();
     assert.equal(await page.evaluate(() => widget.state.settings.generation.diffusion_model_name), turboModel);
     equalGeometry(await geometry(), modelGeometry); await capture('model-selection-after');
+    await page.waitForFunction(() => !document.querySelector('.vnccs-common-ui-motion-ghost'));
     await page.locator('[data-qi2-setting="generation.steps"]').fill('19');
     await page.locator('[data-qi2-setting="generation.cfg"]').fill('2.5');
     await page.locator('[data-qi2-setting="generation.seed"]').fill('918273');

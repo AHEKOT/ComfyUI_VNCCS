@@ -805,14 +805,12 @@ test("image selection binds its latest model and only its own CG gallery", async
 });
 
 test("image preview fills the model surface without modal padding, borders or control rows", () => {
-    const dialog = source.match(/\.vnccs-cg-creator \.bg-viewport \.bg-image-dialog \{([^}]+)\}/)[1];
-    assert.match(dialog, /position:relative;/); assert.match(dialog, /width:100%;/); assert.match(dialog, /height:100%;/);
-    assert.match(dialog, /padding:0;/); assert.match(dialog, /border:0;/);
+    const panel = source.match(/\.vnccs-cg-creator \.bg-image-preview \{([^}]+)\}/)[1];
+    assert.match(panel, /position:absolute;/); assert.match(panel, /inset:0;/);
     const image = source.match(/\.vnccs-cg-creator \.bg-image-viewport \{([^}]+)\}/)[1];
     assert.match(image, /position:absolute;/); assert.match(image, /inset:0;/);
-    const controls = source.match(/\.bg-image-dialog \.vnccs-common-modal-btn-row \{([^}]+)\}/)[1];
+    const controls = source.match(/\.bg-image-preview \[data-close-preview\] \{([^}]+)\}/)[1];
     assert.match(controls, /position:absolute;/);
-    assert.match(source, /\.bg-image-dialog \.vnccs-common-modal-title \{ display:none; \}/);
 });
 
 test("CG preview opens inside the model viewport and cleans up on close, configure and removal", async () => {
@@ -829,10 +827,11 @@ test("CG preview opens inside the model viewport and cleans up on close, configu
     h.widget.fov.value = "90"; await h.widget.fov.fire("input");
     assert.equal(viewer.getCameraState().fov, camera.fov, "Image inspection cannot edit the model camera");
     const image = h.control("[data-large-preview]"), navigation = h.control("[data-preview-viewport]");
-    assert.equal(viewport.contains(h.control('[role="dialog"]')), true);
-    const modal = h.control('[role="dialog"]');
-    assert.equal(modal.getAnimations()[0].cancelled, true, "The preview never translates or scales into the model window");
-    assert.equal(modal.parentElement.getAnimations()[0].cancelled, true);
+    const panel = h.control('.bg-image-preview');
+    assert.equal(viewport.contains(panel), true);
+    assert.equal(panel.attributes.get('role'), 'region'); assert.equal(panel.hasAttribute('aria-modal'), false);
+    assert.equal(h.control('[role="dialog"]'), null, "Inline previews do not create a global modal");
+    assert.equal(panel.getAnimations().length, 0, "The preview never translates or scales into the model window");
     assert.equal(image.src, background().cgs[0].url); assert.equal(image.alt, "Full-size Window view");
     assert.equal(h.widget.state.selected_cg_id, CG); assert.equal(h.widget.viewer, viewer);
     const saved = h.data.value;
@@ -841,13 +840,13 @@ test("CG preview opens inside the model viewport and cleans up on close, configu
     assert.equal(h.control(".bg-camera-toolbar").style.visibility, "");
     assert.equal(h.control(".bg-camera-toolbar").style.opacity, ""); assert.equal(h.control(".bg-camera-toolbar").inert, false);
     assert.deepEqual([...h.node.size], layout.size); assert.equal(h.widget.container.style.height, layout.height);
-    assert.equal(h.control('[role="dialog"]'), null); assert.equal(h.widget.cgPreviewClose, null);
+    assert.equal(h.control('.bg-image-preview'), null); assert.equal(h.widget.cgPreviewClose, null);
     assert.equal(image.onload, null); assert.equal(navigation.onpointermove, null); assert.equal(navigation.onwheel, null); assert.equal(h.widget.dialogs.size, 0);
     const closed = JSON.parse(h.data.value), inspected = JSON.parse(saved); delete inspected.preview;
     assert.deepEqual(closed, inspected, "Closing the image changes only its saved viewing mode");
     await h.control("[data-cg-id]").click();
     await h.control("[data-cg-id]").click(); assert.equal(h.widget.dialogs.size, 1);
-    h.node.onConfigure(); assert.equal(h.control('[role="dialog"]'), null); await h.ready();
+    h.node.onConfigure(); assert.equal(h.control('.bg-image-preview'), null); await h.ready();
     assert.equal(h.control("[data-large-preview]").src, background().cgs[0].url, "Configure reopens the saved preview");
     await h.control("[data-cg-id]").click(); h.node.onRemoved();
     assert.equal(h.widget.dialogs.size, 0); assert.equal(h.widget.cgPreviewClose, null);
@@ -860,7 +859,7 @@ test("background preview fills the model viewport and shares preview replacement
     await h.control("[data-enlarge]").click();
     assert.equal(h.control(".bg-camera-toolbar").hidden, false, "Hiding camera controls must preserve their row");
     assert.equal(h.control(".bg-camera-toolbar").style.visibility, "hidden", "Camera controls are visible only in model view");
-    assert.equal(h.control(".bg-viewport").contains(h.control('[role="dialog"]')), true);
+    assert.equal(h.control(".bg-viewport").contains(h.control('.bg-image-preview')), true);
     assert.equal(h.control("[data-large-preview]").src, background().images[0].url);
     await h.control("[data-enlarge]").click();
     assert.equal(h.widget.dialogs.size, 1);
@@ -868,7 +867,7 @@ test("background preview fills the model viewport and shares preview replacement
     assert.equal(h.widget.dialogs.size, 1);
     await h.control("[data-enlarge]").click(); h.widget.cgPreviewClose();
     assert.equal(h.control(".bg-camera-toolbar").hidden, false);
-    assert.equal(h.control('[role="dialog"]'), null);
+    assert.equal(h.control('.bg-image-preview'), null);
     assert.equal(h.widget.viewer, viewer); assert.equal(h.data.value, saved);
 });
 
@@ -884,6 +883,10 @@ test("CG deletion waits for disk acknowledgement and preserves the camera and ot
     };
     await h.control(`[data-cg-id="${CG}"]`).click();
     const operation = h.control(`[data-delete-cg="${CG}"]`).click(); await settle();
+    assert.equal(h.calls.some(call => call.options.method === "DELETE"), false, "Opening confirmation does not delete");
+    const dialog = h.control('.bg-dialog-fields').parentElement;
+    assert.equal(dialog.querySelector('.bg-dialog-fields').children[0].textContent, 'Delete "Window view" from the CG library?');
+    dialog.querySelectorAll("button").at(-1).onclick(); await settle();
     assert.equal(h.widget.busy, true); assert.equal(h.control("[data-delete-cg]").disabled, true);
     assert.equal(h.control("[data-cgs]").children.length, 2, "Deletion is not optimistic");
     const saved = background(A, { revision: 4, cgs: [other] }); h.documents.set(A, saved);
@@ -899,10 +902,44 @@ test("CG deletion waits for disk acknowledgement and preserves the camera and ot
 test("failed CG deletion retains the card and selected output", async () => {
     const h = harness(JSON.stringify(state())); await h.ready(); const saved = h.data.value;
     h.api.handle = (path, options) => options.method === "DELETE" ? response({ error: "Scene changed elsewhere" }, 409) : undefined;
-    await h.control("[data-delete-cg]").click();
+    const operation = h.control("[data-delete-cg]").click();
+    h.control('[role="dialog"]').querySelectorAll("button").at(-1).onclick(); await operation;
     assert.equal(h.widget.busy, false); assert.equal(h.widget.state.selected_cg_id, CG);
     assert.equal(h.data.value, saved); assert.equal(h.control("[data-cgs]").children.length, 1);
     assert.match(h.widget.status.textContent, /Scene changed elsewhere/);
+});
+
+test("cancelling CG deletion preserves the library, workflow and camera", async () => {
+    for (const dismiss of ["cancel", "close"]) {
+        const h = harness(JSON.stringify(state())); await h.ready();
+        const saved = h.data.value, camera = h.widget.viewer.getCameraState();
+        const operation = h.control("[data-delete-cg]").click();
+        await h.control("[data-delete-cg]").click();
+        assert.equal(h.control("[data-library]").disabled, true);
+        assert.equal(h.widget.dialogs.size, 1, "Repeated clicks do not open another confirmation");
+        const dialog = h.control('[role="dialog"]');
+        if (dismiss === "cancel") dialog.querySelectorAll("button")[0].onclick();
+        else dialog.parentElement.remove();
+        await operation;
+        assert.equal(h.calls.some(call => call.options.method === "DELETE"), false);
+        assert.equal(h.data.value, saved); assert.equal(h.control("[data-cgs]").children.length, 1);
+        assert.deepEqual(h.widget.viewer.getCameraState(), camera);
+        assert.equal(h.widget.busy, false); assert.equal(h.control("[data-delete-cg]").disabled, false);
+        assert.equal(h.widget.dialogs.size, 0);
+    }
+});
+
+test("stale CG confirmations cannot delete after workflow restoration or removal", async () => {
+    for (const lifecycle of ["configure", "remove"]) {
+        const h = harness(JSON.stringify(state())); await h.ready();
+        const operation = h.control("[data-delete-cg]").click();
+        const confirm = h.control('[role="dialog"]').querySelectorAll("button").at(-1);
+        if (lifecycle === "configure") {
+            h.data.value = JSON.stringify(state({ background_id: B })); h.node.onConfigure();
+        } else h.node.onRemoved();
+        confirm.onclick(); await operation;
+        assert.equal(h.calls.some(call => call.options.method === "DELETE"), false);
+    }
 });
 
 test("model generation runs independently and starts at the calibrated source camera", async () => {

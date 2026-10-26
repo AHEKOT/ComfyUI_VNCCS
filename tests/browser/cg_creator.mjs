@@ -564,7 +564,7 @@ try {
     await page.locator(`[data-cg-id="${initial.cgs[1].cg_id}"]`).click();
     await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.evaluate(() => widget.viewer.getCameraState().fov), 48);
-    const cgPreview = page.locator('.bg-viewport [role="dialog"]'), cgImage = cgPreview.locator("[data-large-preview]");
+    const cgPreview = page.locator('.bg-viewport .bg-image-preview'), cgImage = cgPreview.locator("[data-large-preview]");
     await page.waitForFunction(() => document.querySelector('.bg-viewport [data-large-preview]')?.naturalWidth > 0);
     await (await cgPreview.elementHandle()).waitForElementState("stable");
     assert.equal(await cgImage.getAttribute("src"), initial.cgs[1].url, "CG preview loads the original saved image");
@@ -573,7 +573,7 @@ try {
     assertBounds(await cgPreview.locator("[data-preview-viewport]").boundingBox(), modelCanvasBeforePreview,
         "The image navigation surface exactly replaces the previous model canvas");
     assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), false);
-    assert.equal(await cgPreview.locator(".vnccs-common-modal-title").isVisible(), false);
+    assert.equal(await cgPreview.locator(".vnccs-common-modal-title").count(), 0);
     assert.equal(await cgPreview.evaluate(element => element.getAnimations().length), 0, "Image preview never moves or scales into place");
     assert.ok(Math.abs(cgBounds.x - frameBounds.x - 1) < 1 && Math.abs(cgBounds.width - frameBounds.width + 2) < 1 && Math.abs(cgBounds.height - frameBounds.height + 2) < 1, "CG preview fills the model window without covering other panels");
     await capture("after-cg-preview");
@@ -653,7 +653,7 @@ try {
     await page.locator("[data-enlarge]").click(); await page.getByRole("dialog").waitFor();
     await page.waitForFunction(() => document.querySelector("[data-large-preview]")?.naturalWidth > 0);
     assert.match(await page.locator("[data-large-preview]").getAttribute("src"), new RegExp(`/sets/${setId}/1`));
-    const backgroundPreview = page.locator('.bg-viewport [role="dialog"]');
+    const backgroundPreview = page.locator('.bg-viewport .bg-image-preview');
     await (await backgroundPreview.elementHandle()).waitForElementState("stable");
     const backgroundBounds = await backgroundPreview.boundingBox(), modelBounds = await page.locator(".bg-viewport").boundingBox();
     assertBounds(modelBounds, backgroundFrameBeforePreview, "Opening a background preview preserves the model window");
@@ -707,7 +707,7 @@ try {
     await page.waitForFunction(() => document.querySelector('.bg-viewport [data-large-preview]')?.naturalWidth > 0);
     assert.ok((await page.locator('.bg-viewport [data-large-preview]').getAttribute("src")).startsWith("blob:"));
     await page.locator('.bg-viewport [data-close-preview]').click();
-    await page.locator('.bg-viewport [role="dialog"]').waitFor({ state: "detached" });
+    await page.locator('.bg-viewport .bg-image-preview').waitFor({ state: "detached" });
     assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), true);
     assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), queuedCamera, "Pending preview does not change the generation camera");
     assert.equal(await page.locator(".vnccs-common-creator-generation-scan").count(), 1);
@@ -728,10 +728,14 @@ try {
     await page.waitForFunction(() => document.querySelector('.bg-viewport [data-large-preview]')?.naturalWidth > 0 && !widget.busy);
     assert.equal(await page.locator('.bg-viewport [data-large-preview]').getAttribute("src"), document.cgs.at(-1).url);
     await page.locator('.bg-viewport [data-close-preview]').click();
-    await page.locator('.bg-viewport [role="dialog"]').waitFor({ state: "detached" });
+    await page.locator('.bg-viewport .bg-image-preview').waitFor({ state: "detached" });
     scenarios.push({ name: "saved-cg-preview-survives-missing-model" });
     const beforeDelete = await page.evaluate(() => widget.viewer.getCameraState());
-    await page.locator("[data-delete-cg]").click(); await page.waitForFunction(() => !widget.busy);
+    const deleteCount = mutations.filter(item => item.delete_cg).length;
+    await page.locator("[data-delete-cg]").click();
+    assert.equal(mutations.filter(item => item.delete_cg).length, deleteCount);
+    await page.getByRole("dialog", { name: "Delete CG", exact: true }).getByRole("button", { name: "Delete", exact: true }).click();
+    await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.locator("[data-cgs] .bg-cg-card").count(), 0);
     assert.equal(await page.locator("[data-cg-count]").textContent(), "0");
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).selected_cg_id), "");
