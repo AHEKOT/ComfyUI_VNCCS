@@ -209,3 +209,17 @@ def _vnccs_register_background_creator():
 
 
 _vnccs_register_background_creator()
+
+
+def _vnccs_register_cg_creator():
+    try:
+        from server import PromptServer
+    except ImportError:
+        return
+    if getattr(PromptServer.instance, "app", None) is None:
+        return
+    from .nodes.cg_creator import register_routes
+    register_routes(PromptServer.instance.routes)
+
+
+_vnccs_register_cg_creator()

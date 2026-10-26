@@ -148,7 +148,7 @@ test("packaged workflows select QI2 without legacy model state", () => {
     for (const name of readdirSync(directory).filter(name => name.endsWith(".json"))) {
         inspect(JSON.parse(readFileSync(new URL(name, directory), "utf8")));
     }
-    assert.equal(count, 3);
+    assert.equal(count, 4);
 });
 
 test("QI2 cache controls are inline above Turbo LoRA and persist node parameters", () => {

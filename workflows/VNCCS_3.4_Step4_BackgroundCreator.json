@@ -1,0 +1,221 @@
+{
+  "id": "7f865c31-41d1-484f-99af-aca09e2fb437",
+  "revision": 0,
+  "last_node_id": 5,
+  "last_link_id": 3,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VNCCS_BackgroundCreator",
+      "pos": [
+        -3780,
+        5650
+      ],
+      "size": [
+        1790,
+        1120
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            2
+          ]
+        },
+        {
+          "name": "Prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            3
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "04b2e9b58813626336f83807ccbb13a266240108",
+        "Node name for S&R": "VNCCS_BackgroundCreator",
+        "backgroundCreator": "{\"schema_version\":2,\"background_id\":\"0bff2441a21341c7bc5dc7ee77fba57a\",\"selected_image_id\":\"ca037f5595ea4469a3c2bff2ce3e9d29\",\"model_id\":\"\",\"selected_cg_id\":\"\",\"step\":\"background\",\"editor\":{\"description\":\"\",\"scene_description\":\"A sleek, minimalist girl's bedroom in a modern high-tech house, featuring clean lines, neutral tones, and integrated technology. The room is spacious with floor-to-ceiling windows allowing natural light to flood the space. A low-profile platform bed with a matte black frame sits centered, flanked by floating nightstands embedded with touch-sensitive controls. Above the bed, a large wall-mounted display serves as both art and interface.\",\"front\":\"A wide glass door framed in brushed aluminum leads into the room, revealing a glimpse of the hallway beyond. To the left of the door, a slim, wall-mounted smart mirror reflects the interior, displaying ambient lighting settings.\",\"back\":\"The far wall features a panoramic window overlooking a landscaped courtyard with geometric planters. Below the window, a built-in desk with a retractable monitor and voice-activated controls is tucked beneath a floating shelf holding minimalist decor.\",\"left\":\"A curved accent wall houses a wall-mounted media console with hidden speakers and a holographic projector. A tall, narrow cabinet with magnetic door handles stores tech accessories and personal items, illuminated by LED strips along its base.\",\"right\":\"A full-length closet with sliding panels made of frosted glass and aluminum track systems contains modular storage units. Adjacent to it, a smart lighting panel mounted on the ceiling adjusts brightness and color temperature based on time of day.\",\"prompt\":\"\",\"attributes\":{\"scene_type\":\"Interior\",\"time\":\"Day\"},\"variants\":[{\"id\":\"morning\",\"name\":\"Morning\",\"time\":\"Morning\",\"weather\":\"\",\"additional_details\":\"\"},{\"id\":\"evening\",\"name\":\"Evening\",\"time\":\"Evening\",\"weather\":\"\",\"additional_details\":\"\"},{\"id\":\"night\",\"name\":\"Night\",\"time\":\"Night\",\"weather\":\"\",\"additional_details\":\"\"}],\"aspect\":\"16:9\",\"style\":\"2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail\",\"aesthetics\":\"\",\"negative\":\"\",\"generation\":{\"model_type\":\"qi2\",\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"qwen_image_2.1_turbo_int8_convrot.safetensors\"},\"custom_style\":\"\",\"generation_profiles\":{\"qi2\":{\"model_type\":\"qi2\",\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"qwen_image_2.1_turbo_int8_convrot.safetensors\"},\"moss\":{\"model_type\":\"moss\",\"steps\":25,\"cfg\":2.5,\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"moss_image_sft_int8_convrot.safetensors\"}},\"style_id\":\"bg_2000s_slice_of_life_anime\"},\"model_settings\":{\"num_gaussians\":262144,\"steps\":20,\"guidance_scale\":3,\"seed\":0,\"conditioning_resolution\":1024,\"prevent_upscale\":false,\"remove_background\":false},\"camera\":null,\"frame\":null,\"camera_view_version\":1,\"background_name\":\"Test4\",\"revision\":28}"
+      },
+      "widgets_values": [
+        0,
+        "{\"schema_version\":2,\"background_id\":\"0bff2441a21341c7bc5dc7ee77fba57a\",\"selected_image_id\":\"ca037f5595ea4469a3c2bff2ce3e9d29\",\"model_id\":\"\",\"selected_cg_id\":\"\",\"step\":\"background\",\"editor\":{\"description\":\"\",\"scene_description\":\"A sleek, minimalist girl's bedroom in a modern high-tech house, featuring clean lines, neutral tones, and integrated technology. The room is spacious with floor-to-ceiling windows allowing natural light to flood the space. A low-profile platform bed with a matte black frame sits centered, flanked by floating nightstands embedded with touch-sensitive controls. Above the bed, a large wall-mounted display serves as both art and interface.\",\"front\":\"A wide glass door framed in brushed aluminum leads into the room, revealing a glimpse of the hallway beyond. To the left of the door, a slim, wall-mounted smart mirror reflects the interior, displaying ambient lighting settings.\",\"back\":\"The far wall features a panoramic window overlooking a landscaped courtyard with geometric planters. Below the window, a built-in desk with a retractable monitor and voice-activated controls is tucked beneath a floating shelf holding minimalist decor.\",\"left\":\"A curved accent wall houses a wall-mounted media console with hidden speakers and a holographic projector. A tall, narrow cabinet with magnetic door handles stores tech accessories and personal items, illuminated by LED strips along its base.\",\"right\":\"A full-length closet with sliding panels made of frosted glass and aluminum track systems contains modular storage units. Adjacent to it, a smart lighting panel mounted on the ceiling adjusts brightness and color temperature based on time of day.\",\"prompt\":\"\",\"attributes\":{\"scene_type\":\"Interior\",\"time\":\"Day\"},\"variants\":[{\"id\":\"morning\",\"name\":\"Morning\",\"time\":\"Morning\",\"weather\":\"\",\"additional_details\":\"\"},{\"id\":\"evening\",\"name\":\"Evening\",\"time\":\"Evening\",\"weather\":\"\",\"additional_details\":\"\"},{\"id\":\"night\",\"name\":\"Night\",\"time\":\"Night\",\"weather\":\"\",\"additional_details\":\"\"}],\"aspect\":\"16:9\",\"style\":\"2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail\",\"aesthetics\":\"\",\"negative\":\"\",\"generation\":{\"model_type\":\"qi2\",\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"qwen_image_2.1_turbo_int8_convrot.safetensors\"},\"custom_style\":\"\",\"generation_profiles\":{\"qi2\":{\"model_type\":\"qi2\",\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"qwen_image_2.1_turbo_int8_convrot.safetensors\"},\"moss\":{\"model_type\":\"moss\",\"steps\":25,\"cfg\":2.5,\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"moss_image_sft_int8_convrot.safetensors\"}},\"style_id\":\"bg_2000s_slice_of_life_anime\"},\"model_settings\":{\"num_gaussians\":262144,\"steps\":20,\"guidance_scale\":3,\"seed\":0,\"conditioning_resolution\":1024,\"prevent_upscale\":false,\"remove_background\":false},\"camera\":null,\"frame\":null,\"camera_view_version\":1,\"background_name\":\"Test4\",\"revision\":28}",
+        ""
+      ],
+      "widgets_values_named": {
+        "seed": 0,
+        "background_data": "{\"schema_version\":2,\"background_id\":\"0bff2441a21341c7bc5dc7ee77fba57a\",\"selected_image_id\":\"ca037f5595ea4469a3c2bff2ce3e9d29\",\"model_id\":\"\",\"selected_cg_id\":\"\",\"step\":\"background\",\"editor\":{\"description\":\"\",\"scene_description\":\"A sleek, minimalist girl's bedroom in a modern high-tech house, featuring clean lines, neutral tones, and integrated technology. The room is spacious with floor-to-ceiling windows allowing natural light to flood the space. A low-profile platform bed with a matte black frame sits centered, flanked by floating nightstands embedded with touch-sensitive controls. Above the bed, a large wall-mounted display serves as both art and interface.\",\"front\":\"A wide glass door framed in brushed aluminum leads into the room, revealing a glimpse of the hallway beyond. To the left of the door, a slim, wall-mounted smart mirror reflects the interior, displaying ambient lighting settings.\",\"back\":\"The far wall features a panoramic window overlooking a landscaped courtyard with geometric planters. Below the window, a built-in desk with a retractable monitor and voice-activated controls is tucked beneath a floating shelf holding minimalist decor.\",\"left\":\"A curved accent wall houses a wall-mounted media console with hidden speakers and a holographic projector. A tall, narrow cabinet with magnetic door handles stores tech accessories and personal items, illuminated by LED strips along its base.\",\"right\":\"A full-length closet with sliding panels made of frosted glass and aluminum track systems contains modular storage units. Adjacent to it, a smart lighting panel mounted on the ceiling adjusts brightness and color temperature based on time of day.\",\"prompt\":\"\",\"attributes\":{\"scene_type\":\"Interior\",\"time\":\"Day\"},\"variants\":[{\"id\":\"morning\",\"name\":\"Morning\",\"time\":\"Morning\",\"weather\":\"\",\"additional_details\":\"\"},{\"id\":\"evening\",\"name\":\"Evening\",\"time\":\"Evening\",\"weather\":\"\",\"additional_details\":\"\"},{\"id\":\"night\",\"name\":\"Night\",\"time\":\"Night\",\"weather\":\"\",\"additional_details\":\"\"}],\"aspect\":\"16:9\",\"style\":\"2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail\",\"aesthetics\":\"\",\"negative\":\"\",\"generation\":{\"model_type\":\"qi2\",\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"qwen_image_2.1_turbo_int8_convrot.safetensors\"},\"custom_style\":\"\",\"generation_profiles\":{\"qi2\":{\"model_type\":\"qi2\",\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"qwen_image_2.1_turbo_int8_convrot.safetensors\"},\"moss\":{\"model_type\":\"moss\",\"steps\":25,\"cfg\":2.5,\"sampler\":\"er_sde\",\"scheduler\":\"simple\",\"seed\":0,\"resolution_mp\":2,\"seed_mode\":\"fixed\",\"turbo\":false,\"turbo_previous_settings\":null,\"prompt_enhance\":true,\"cache_device\":\"gpu\",\"cache_dtype\":\"int8\",\"lora_stack\":[],\"diffusion_model_name\":\"moss_image_sft_int8_convrot.safetensors\"}},\"style_id\":\"bg_2000s_slice_of_life_anime\"},\"model_settings\":{\"num_gaussians\":262144,\"steps\":20,\"guidance_scale\":3,\"seed\":0,\"conditioning_resolution\":1024,\"prevent_upscale\":false,\"remove_background\":false},\"camera\":null,\"frame\":null,\"camera_view_version\":1,\"background_name\":\"Test4\",\"revision\":28}",
+        "background_ui": ""
+      }
+    },
+    {
+      "id": 3,
+      "type": "VNCCS_BackgroundGenerator",
+      "pos": [
+        -4540,
+        4500
+      ],
+      "size": [
+        2570,
+        1070
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "link": 1
+        },
+        {
+          "name": "background",
+          "type": "IMAGE",
+          "link": 2
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "link": 3
+        }
+      ],
+      "outputs": [
+        {
+          "name": "backgrounds",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "source_upscaled",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "variations",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "04b2e9b58813626336f83807ccbb13a266240108",
+        "Node name for S&R": "VNCCS_BackgroundGenerator"
+      },
+      "widgets_values": [
+        "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"from_generator\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"pose_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"vae_decode\":{\"tile_size\":512,\"overlap\":64,\"temporal_size\":64,\"temporal_overlap\":8},\"emotion_generation\":{\"task_batch_size\":0,\"target_size\":2048,\"face_denoise\":0.55,\"use_sam\":false,\"bbox_model\":\"bbox/face_yolov8m.pt\",\"segm_model\":\"bbox/face_yolov8m.pt\",\"sam_model\":\"sam_vit_b_01ec64.pth\",\"sam_device_mode\":\"AUTO\",\"guide_size\":1536,\"guide_size_for\":true,\"max_size\":1536,\"inherit_pipe_sampler\":true,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"feather\":50,\"noise_mask\":true,\"force_inpaint\":true,\"bbox_threshold\":0.5,\"bbox_dilation\":50,\"qi2_prompt_template\":\"Upscale face image.\\nMake character's face emotion {emotion}\\nChange only face. Keep original neck colour, clothes and hairs\\nkeep character's clothes\",\"bbox_crop_factor\":3,\"sam_detection_hint\":\"center-1\",\"sam_dilation\":0,\"sam_threshold\":0.93,\"sam_bbox_expansion\":0,\"sam_mask_hint_threshold\":0.7,\"sam_mask_hint_use_negative\":\"False\",\"drop_size\":10,\"cycle\":1,\"inpaint_model\":false,\"noise_mask_feather\":20,\"tiled_encode\":true,\"tiled_decode\":true,\"matte_expand_radius\":8,\"matte_feather_radius\":4,\"chroma_context\":16},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\",\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"White\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"remove_clothes_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_3b_fp8_e4m3fn.safetensors\",\"vae\":\"ema_vae_fp16.safetensors\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"inherit_pipe_seed\":true,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":true,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":false,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"preset\":\"Native\",\"use_sam3_details_recovery\":false,\"use_preset_values\":true,\"tolerance\":0.15,\"softness\":0.12,\"despill_strength\":0.65,\"edge_width\":3,\"matte_cleanup\":0.1,\"foreground_recover\":0.35,\"edge_decontaminate\":0.75,\"edge_choke\":0.08,\"matte_method\":\"screen_matte\",\"screen_mode\":\"from_background\",\"output_mode\":\"straight_rgba\",\"sam3_model\":\"\",\"sam3_segmentor\":\"image\",\"sam3_device\":\"auto\",\"sam3_precision\":\"bf16\",\"sam3_prompt\":\"face, clothes, accessories, hat, boots, eyes\",\"sam3_threshold\":0.4,\"sam3_add_background\":\"none\",\"sam3_detection_limit\":-1,\"sam3_erode_radius\":4,\"sam3_min_foreground_overlap\":0.55},\"ui\":{\"selected_preview\":\"pose_generation\",\"user_selected_preview\":false,\"resolution_model_key\":\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 INT8 ConvRot\\\"]\",\"resolution_by_model\":{\"[\\\"qi2\\\",\\\"unet\\\",\\\"\\\"]\":{\"target_size\":1024,\"updated_at\":0},\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 INT8 ConvRot\\\"]\":{\"target_size\":1024,\"updated_at\":0}},\"bg_remove_previous_preset\":\"balanced\",\"bg_remove_model_kind\":\"qi2\",\"resolution_model_kind\":\"qi2\"},\"background_id\":\"0bff2441a21341c7bc5dc7ee77fba57a\",\"background_source_image_id\":\"ca037f5595ea4469a3c2bff2ce3e9d29\",\"background_variants\":[\"Morning\",\"Evening\",\"Night\"]}",
+        ""
+      ],
+      "widgets_values_named": {
+        "widget_data": "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"from_generator\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"pose_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"vae_decode\":{\"tile_size\":512,\"overlap\":64,\"temporal_size\":64,\"temporal_overlap\":8},\"emotion_generation\":{\"task_batch_size\":0,\"target_size\":2048,\"face_denoise\":0.55,\"use_sam\":false,\"bbox_model\":\"bbox/face_yolov8m.pt\",\"segm_model\":\"bbox/face_yolov8m.pt\",\"sam_model\":\"sam_vit_b_01ec64.pth\",\"sam_device_mode\":\"AUTO\",\"guide_size\":1536,\"guide_size_for\":true,\"max_size\":1536,\"inherit_pipe_sampler\":true,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"feather\":50,\"noise_mask\":true,\"force_inpaint\":true,\"bbox_threshold\":0.5,\"bbox_dilation\":50,\"qi2_prompt_template\":\"Upscale face image.\\nMake character's face emotion {emotion}\\nChange only face. Keep original neck colour, clothes and hairs\\nkeep character's clothes\",\"bbox_crop_factor\":3,\"sam_detection_hint\":\"center-1\",\"sam_dilation\":0,\"sam_threshold\":0.93,\"sam_bbox_expansion\":0,\"sam_mask_hint_threshold\":0.7,\"sam_mask_hint_use_negative\":\"False\",\"drop_size\":10,\"cycle\":1,\"inpaint_model\":false,\"noise_mask_feather\":20,\"tiled_encode\":true,\"tiled_decode\":true,\"matte_expand_radius\":8,\"matte_feather_radius\":4,\"chroma_context\":16},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\",\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"White\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"remove_clothes_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_3b_fp8_e4m3fn.safetensors\",\"vae\":\"ema_vae_fp16.safetensors\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"inherit_pipe_seed\":true,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":true,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":false,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"preset\":\"Native\",\"use_sam3_details_recovery\":false,\"use_preset_values\":true,\"tolerance\":0.15,\"softness\":0.12,\"despill_strength\":0.65,\"edge_width\":3,\"matte_cleanup\":0.1,\"foreground_recover\":0.35,\"edge_decontaminate\":0.75,\"edge_choke\":0.08,\"matte_method\":\"screen_matte\",\"screen_mode\":\"from_background\",\"output_mode\":\"straight_rgba\",\"sam3_model\":\"\",\"sam3_segmentor\":\"image\",\"sam3_device\":\"auto\",\"sam3_precision\":\"bf16\",\"sam3_prompt\":\"face, clothes, accessories, hat, boots, eyes\",\"sam3_threshold\":0.4,\"sam3_add_background\":\"none\",\"sam3_detection_limit\":-1,\"sam3_erode_radius\":4,\"sam3_min_foreground_overlap\":0.55},\"ui\":{\"selected_preview\":\"pose_generation\",\"user_selected_preview\":false,\"resolution_model_key\":\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 INT8 ConvRot\\\"]\",\"resolution_by_model\":{\"[\\\"qi2\\\",\\\"unet\\\",\\\"\\\"]\":{\"target_size\":1024,\"updated_at\":0},\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 INT8 ConvRot\\\"]\":{\"target_size\":1024,\"updated_at\":0}},\"bg_remove_previous_preset\":\"balanced\",\"bg_remove_model_kind\":\"qi2\",\"resolution_model_kind\":\"qi2\"},\"background_id\":\"0bff2441a21341c7bc5dc7ee77fba57a\",\"background_source_image_id\":\"ca037f5595ea4469a3c2bff2ce3e9d29\",\"background_variants\":[\"Morning\",\"Evening\",\"Night\"]}",
+        "character_generator_ui": ""
+      }
+    },
+    {
+      "id": 4,
+      "type": "VNCCS_ControlCenter",
+      "pos": [
+        -4540,
+        5650
+      ],
+      "size": [
+        750,
+        1120
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            1
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "04b2e9b58813626336f83807ccbb13a266240108",
+        "Node name for S&R": "VNCCS_ControlCenter"
+      },
+      "widgets_values": [
+        "MIUProject/VNCCS_v3.0",
+        "{\"active_kind\":\"QI2\",\"selected_types_by_kind\":{\"QI2\":\"unet\"},\"output_slot_names\":[],\"selected_models\":{\"QI2:unet\":\"Qwen Image 2.1 INT8 ConvRot\"},\"selected_model\":\"Qwen Image 2.1 INT8 ConvRot\",\"model_params_by_kind\":{\"QI2\":{\"steps\":6,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3}}},\"loras\":[{\"name\":\"Qwen Image 2.1 Viggle Turbo\",\"auto_apply\":true,\"strength\":1}],\"selected_type\":\"unet\",\"model_params\":{\"steps\":6,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3}},\"collapsed\":{\"other\":true,\"controlnet\":true}}",
+        "{}"
+      ],
+      "widgets_values_named": {
+        "repo_id": "MIUProject/VNCCS_v3.0",
+        "node_state": "{\"active_kind\":\"QI2\",\"selected_types_by_kind\":{\"QI2\":\"unet\"},\"output_slot_names\":[],\"selected_models\":{\"QI2:unet\":\"Qwen Image 2.1 INT8 ConvRot\"},\"selected_model\":\"Qwen Image 2.1 INT8 ConvRot\",\"model_params_by_kind\":{\"QI2\":{\"steps\":6,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3}}},\"loras\":[{\"name\":\"Qwen Image 2.1 Viggle Turbo\",\"auto_apply\":true,\"strength\":1}],\"selected_type\":\"unet\",\"model_params\":{\"steps\":6,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":{\"steps\":25,\"cfg\":3}},\"collapsed\":{\"other\":true,\"controlnet\":true}}",
+        "cc_widget": "{}"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      4,
+      0,
+      3,
+      0,
+      "VNCCS_PIPE"
+    ],
+    [
+      2,
+      1,
+      0,
+      3,
+      1,
+      "IMAGE"
+    ],
+    [
+      3,
+      1,
+      1,
+      3,
+      2,
+      "STRING"
+    ]
+  ],
+  "groups": [
+    {
+      "id": 1,
+      "title": "Group",
+      "bounding": [
+        -4550,
+        5580,
+        2580,
+        1200
+      ],
+      "color": "#3f789e",
+      "flags": {}
+    }
+  ],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.7627768444385489,
+      "offset": [
+        5319.935563506842,
+        -5311.560317389536
+      ]
+    },
+    "vnccs_workflow_id": "mvf9pcaf-hn5yf4wne2-5wekq2f40px",
+    "frontendVersion": "1.55.18",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4,
+  "seed_widgets": {
+    "1": 0
+  }
+}
