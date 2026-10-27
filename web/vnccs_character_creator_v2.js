@@ -3,7 +3,7 @@ import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection } from "./vnccs_transport.js";
 import { presetGroups, presetSelection } from "./character_presets.mjs?v=legacy-tags-1";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, installResolvedSeedTransport, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, debounce, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, generateRandomSeed, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createRequestGuard, createControlCenterClient, showModelDownloadDialog, installResolvedSeedTransport, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
 const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
@@ -1908,9 +1908,12 @@ app.registerExtension({
                 const ccType = (entry) => ccNormalize(entry?.type ?? entry?.Type);
                 const ccStatusKey = (cat, entry) => `cc_${cat}_${entry?.name || ""}`;
                 const ccResolveStatus = (entry, cat) => {
-                    const transient = new Set(["queued", "downloading", "error", "auth_required"]);
-                    const dls = ccState.downloadStatus[ccStatusKey(cat, entry)] || {};
-                    return transient.has(dls.status) ? dls.status : (entry?.status || "missing");
+                    const files = cat === "models" && ["anima", "qi2"].includes(ccKind(entry))
+                        ? [[cat, entry], ["clip", ccAuxEntry("clip", ccKind(entry))], ["vae", ccAuxEntry("vae", ccKind(entry))]]
+                        : [[cat, entry]];
+                    return files.every(([category, file]) => ["installed", "outdated"].includes(file?.status)
+                        && !["queued", "downloading", "error", "auth_required"].includes(ccState.downloadStatus[ccStatusKey(category, file)]?.status))
+                        ? "installed" : "missing";
                 };
                 const ccRelPath = (entry) => {
                     const localPath = String(entry?.local_path || "").replace(/\\/g, "/");
@@ -1969,6 +1972,17 @@ app.registerExtension({
                     return merged;
                 };
                 const ccFirstEntry = (section, kind, predicate = null) => ccEntries(section, kind, predicate)[0] || null;
+                const ccAuxEntry = (category, kind) => {
+                    const gen = state.gen_settings;
+                    const profile = ccNormalize(gen.generation_mode) === ccNormalize(kind) ? gen : gen.mode_settings?.[ccNormalize(kind)] || {};
+                    const selected = String(profile[category === "clip" ? "clip_name" : "vae_name"] || "").replace(/\\/g, "/");
+                    if (!selected) return ccFirstEntry(category, kind);
+                    const local = localAssets[category === "clip" ? "text_encoders" : "vae_models"] || [];
+                    const entry = (ccState.config?.[category] || []).find(item => ccRelPath(item) === selected);
+                    return { ...entry, name: entry?.name || selected,
+                        local_path: entry?.local_path || `models/${category === "clip" ? "text_encoders" : "vae"}/${selected}`,
+                        status: localAssetRelSet(local).has(selected) ? "installed" : entry?.status || "missing" };
+                };
                 const ccHasRequiredFamilies = (config) => {
                     const models = config?.models || [];
                     const clips = config?.clip || [];
@@ -1987,6 +2001,9 @@ app.registerExtension({
                 const isCcMounted = createRequestGuard(node)();
                 const ccDownloadEntry = async (cat, entry) => {
                     if (!isCcMounted() || !entry?.name) return;
+                    entry = (ccState.config?.[cat] || []).find(item => item.name === entry.name) || entry;
+                    const pending = ccState.downloadStatus[ccStatusKey(cat, entry)]?.status;
+                    if (["queued", "downloading"].includes(pending) || (["installed", "outdated"].includes(entry.status) && !["error", "auth_required"].includes(pending))) return;
                     const key = ccStatusKey(cat, entry);
                     ccState.downloadStatus[key] = { status: "queued", message: "Queued…" };
                     renderControlCenterCards();
@@ -1994,7 +2011,7 @@ app.registerExtension({
                         const response = await api.fetchApi("/vnccs/control_center/download", {
                             method: "POST",
                             headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
-                            body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name }),
+                            body: JSON.stringify({ repo_id: CC_REPO_ID, category: cat, name: entry.name, skip_existing: true }),
                         });
                         const payload = await response.json();
                         if (!isCcMounted()) return;
@@ -3123,7 +3140,7 @@ app.registerExtension({
                         btn.disabled = progress;
                         btn.onclick = (event) => {
                             event.stopPropagation();
-                            if (!progress && status !== "auth_required") (onDownload || ccDownloadEntry)(cat, entry);
+                            if (!progress && status !== "auth_required") openCcDownload(cat, entry, onDownload || ccDownloadEntry);
                         };
                         actions.appendChild(btn);
                         card.appendChild(actions);
@@ -3309,20 +3326,35 @@ app.registerExtension({
 
                 const downloadAnimaBundle = async (cat, entry) => {
                     ensureAnimaDefaultAux();
+                    const clip = ccAuxEntry("clip", "Anima");
+                    const vae = ccAuxEntry("vae", "Anima");
                     await ccDownloadEntry(cat, entry);
-                    const clip = ccFirstEntry("clip", "Anima");
-                    const vae = ccFirstEntry("vae", "Anima");
                     if (clip && ccResolveStatus(clip, "clip") !== "installed") await ccDownloadEntry("clip", clip);
                     if (vae && ccResolveStatus(vae, "vae") !== "installed") await ccDownloadEntry("vae", vae);
                 };
 
                 const downloadQi2Bundle = async (cat, entry) => {
                     ensureQi2DefaultAux();
+                    const clip = ccAuxEntry("clip", "QI2");
+                    const vae = ccAuxEntry("vae", "QI2");
                     await ccDownloadEntry(cat, entry);
-                    const clip = ccFirstEntry("clip", "QI2");
-                    const vae = ccFirstEntry("vae", "QI2");
                     if (clip && ccResolveStatus(clip, "clip") !== "installed") await ccDownloadEntry("clip", clip);
                     if (vae && ccResolveStatus(vae, "vae") !== "installed") await ccDownloadEntry("vae", vae);
+                };
+
+                let ccDownloadDialog = null;
+                const openCcDownload = (cat, entry, download = ccDownloadEntry, start = true) => {
+                    ccDownloadDialog?.overlay.remove();
+                    const parts = [[cat, entry]];
+                    if (cat === "models" && ["anima", "qi2"].includes(ccKind(entry))) {
+                        parts.push(["clip", ccAuxEntry("clip", ccKind(entry))], ["vae", ccAuxEntry("vae", ccKind(entry))]);
+                    }
+                    ccDownloadDialog = showModelDownloadDialog(node, showModal, () => parts.map(([category, file]) => {
+                        const current = (ccState.config?.[category] || []).find(item => item.name === file?.name) || file;
+                        const status = ccState.downloadStatus[ccStatusKey(category, file)] || {};
+                        return { name: current?.name || `Missing ${category} catalog entry`,
+                            ...(["queued", "downloading", "error", "auth_required"].includes(status.status) ? status : { status: ["installed", "outdated"].includes(current?.status) ? "installed" : "missing" }) };
+                    }), () => download(cat, entry), start);
                 };
 
                 const setCcTurboMode = (enabled, rel) => {
@@ -5059,31 +5091,18 @@ app.registerExtension({
                         return;
                     }
                     const mode = (state.gen_settings.generation_mode || "illustrious").toLowerCase();
-                    if (mode === "anima" || mode === "qi2") {
-                        if (!state.gen_settings.diffusion_model_name) { showAlertModal("Missing Model", "Select Diffusion Model"); return; }
-                        if (!state.gen_settings.clip_name) { showAlertModal("Missing Model", "Select CLIP"); return; }
-                        if (!state.gen_settings.vae_name) { showAlertModal("Missing Model", "Select VAE"); return; }
-                        const family = mode === "qi2" ? "QI2" : "Anima";
-                        const familyLabel = mode === "qi2" ? "Qwen Image 2.1" : "Anima";
-                        if (!isSelectedCcAssetInstalled("models", family, "diffusion_model_name", entry => ccType(entry) === "unet")) {
-                            showAlertModal("Model Missing", `Download and select an installed ${familyLabel} Diffusion Model`);
-                            return;
-                        }
-                        if (!isSelectedCcAssetInstalled("clip", family, "clip_name")) {
-                            showAlertModal("Model Missing", `Download and select an installed ${familyLabel} CLIP`);
-                            return;
-                        }
-                        if (!isSelectedCcAssetInstalled("vae", family, "vae_name")) {
-                            showAlertModal("Model Missing", `Download and select an installed ${familyLabel} VAE`);
-                            return;
-                        }
-                    } else if (!state.gen_settings.ckpt_name) {
-                        showAlertModal("Missing Checkpoint", "Select Checkpoint"); return;
-                    } else if (!isSelectedCcAssetInstalled("models", null, "ckpt_name", entry => {
-                        const kind = ccKind(entry);
-                        return (kind === "illustrious" || kind === "sdxl") && ccType(entry) === "checkpoint";
-                    })) {
-                        showAlertModal("Model Missing", "Download and select an installed Illustrious checkpoint");
+                    const family = mode === "qi2" ? "QI2" : mode === "anima" ? "Anima" : "Illustrious";
+                    const key = mode === "illustrious" ? "ckpt_name" : "diffusion_model_name";
+                    const modelKind = mode === "illustrious" ? null : family;
+                    const modelType = entry => mode === "illustrious"
+                        ? ["illustrious", "sdxl"].includes(ccKind(entry)) && ccType(entry) === "checkpoint" : ccType(entry) === "unet";
+                    if (!isSelectedCcAssetInstalled("models", modelKind, key, modelType)
+                        || (mode !== "illustrious" && (!isSelectedCcAssetInstalled("clip", family, "clip_name") || !isSelectedCcAssetInstalled("vae", family, "vae_name")))) {
+                        const selected = String(state.gen_settings[key] || "").replace(/\\/g, "/");
+                        const entry = ccEntries("models", modelKind, modelType).find(item => ccRelPath(item) === selected)
+                            || { name: selected, kind: family, local_path: `models/${mode === "illustrious" ? "checkpoints" : "diffusion_models"}/${selected}`,
+                                status: localAssetHas(key, selected) ? "installed" : "missing" };
+                        openCcDownload("models", entry, mode === "anima" ? downloadAnimaBundle : mode === "qi2" ? downloadQi2Bundle : ccDownloadEntry, false);
                         return;
                     }
                     node._randomizeSeedIfNeeded();

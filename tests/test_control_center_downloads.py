@@ -251,3 +251,30 @@ def test_worker_keeps_installed_model_when_tensor_data_is_truncated(monkeypatch,
     assert cc._DOWNLOAD_STATUS["truncated-model"]["status"] == "error"
     assert target.read_bytes() == b"existing model must remain"
     assert set(tmp_path.iterdir()) == {cached, target}
+
+
+@pytest.mark.parametrize("created_during_download", [False, True])
+def test_node_card_download_never_replaces_an_existing_file(monkeypatch, tmp_path, created_during_download):
+    target = tmp_path / "model.gguf"
+    original = b"GGUF" + b"original" * 256
+    cached = tmp_path / "cached.gguf"
+    cached.write_bytes(b"GGUF" + b"new" * 1024)
+    if not created_during_download:
+        target.write_bytes(original)
+    tasks = queue.Queue()
+    tasks.put(("public/models", "model", {"local_path": "models/unet/model.gguf", "hf_path": "model.gguf", "skip_existing": True}))
+    tasks.put(None)
+    monkeypatch.setattr(cc, "_DOWNLOAD_QUEUE", tasks)
+    monkeypatch.setattr(cc, "_DOWNLOAD_STATUS", {})
+    monkeypatch.setattr(cc, "_resolve_model_download_path", lambda path: str(target))
+    monkeypatch.setattr(cc, "_find_model_on_disk", lambda path: (str(target), target.exists()))
+    def transfer(*args, **kwargs):
+        assert created_during_download, "An existing file must not even be downloaded again"
+        target.write_bytes(original)
+        return str(cached)
+    monkeypatch.setattr(cc, "_download_with_progress", transfer)
+    monkeypatch.setattr(cc, "update_installed_version", lambda *args: pytest.fail("Existing files must not be published again"))
+    cc._download_worker_loop()
+    assert target.read_bytes() == original
+    assert cc._DOWNLOAD_STATUS["model"]["status"] == ("error" if created_during_download else "success")
+    assert set(tmp_path.iterdir()) == {target, cached}

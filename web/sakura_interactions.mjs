@@ -372,7 +372,8 @@ export function createSakuraInteractions(container, node) {
         const selection = focusKey && typeof active.selectionStart === "number"
             ? { start: active.selectionStart, end: active.selectionEnd, direction: active.selectionDirection } : null;
         const heads = new Map([...container.querySelectorAll(".vnccs-creator-model-card.is-picker-head, [data-sakura-picker-head]")]
-            .filter(element => element.getClientRects().length && container.clientWidth)
+            .filter(element => element.getClientRects().length && container.clientWidth
+                && element.closest(".vnccs-creator-model-picker, [data-sakura-picker]"))
             .map(element => [element.closest(".vnccs-creator-model-picker, [data-sakura-picker]").dataset.mode,
                 { element, rect: sakuraRect(owner, element), signature: element.textContent }]));
         const toggles = new Map([...container.querySelectorAll("[data-toggle-state]")].map(card => {

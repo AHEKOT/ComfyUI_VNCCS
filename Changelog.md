@@ -1,3 +1,21 @@
+# VNCCS 3.3.2 Changelog
+
+This patch release fixes incomplete model installations from node cards and removes automatic green compositing of character references before pose generation.
+
+## Model Cards and Downloads
+
+- Anima and Qwen Image 2.1 cards in Character Creator and Emotion Studio now check the complete selection: diffusion model, text encoder, and VAE. Downloads use the selected auxiliary models from the existing catalog and generation profile.
+- Incomplete installations keep the existing **Missing** card appearance and download button until every required file is installed. Download status and progress are shown in a separate dialog without changing the card layout.
+- Replaced Character Creator's missing-model alerts with a dialog listing the required files and an **Install Missing Files** action. Download dialogs show progress and errors and can be closed while downloads continue.
+- Bundle downloads skip installed files and protect existing files from being overwritten during installation, including concurrent downloads.
+- SeedVR model cards now download the required VAE alongside the diffusion model and show **Installed** only when both files are present.
+- Fixed model-card animation updates failing when a card is displayed outside a picker.
+
+## Pose Generation
+
+- Removed the forced green background fill from the shared pose-generation path used by Character, Clone, and Clothes Generators. The original character reference, including its alpha channel, is passed to the generation encoder.
+- Added regression coverage for RGBA reference preservation and Native transparency instructions in both batch and sequential pose generation.
+
 # VNCCS 3.3.1 Changelog
 
 This patch release fixes Qwen runtime installation, conflicting clothes preview actions, and sprite archive preservation. The changes below are relative to `main` (`3.3.0`).

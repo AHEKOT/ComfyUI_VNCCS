@@ -64,6 +64,7 @@ from .vnccs_control_center import (
     _entry_kind,
     _resolve_model_download_path,
     _validate_downloaded_model_file,
+    _create_download_staging_file,
 )
 from .qi2_viggle import viggle_turbo_sigmas
 from .vnccs_utils import VNCCSChromaKey, VNCCS_MaskExtractor, _flatten_image_tensors, _as_bool
@@ -2161,11 +2162,10 @@ class VNCCS_CharacterGenerator:
         qwen_settings = self._qwen_settings(settings, background)
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
-        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
         if self._is_h3_pipe(pipe_values):
             return self._run_h3_pose_generation(
                 pose_parts,
-                character_rgb,
+                character,
                 pipe,
                 pipe_values,
                 prompt,
@@ -2209,7 +2209,7 @@ class VNCCS_CharacterGenerator:
                         pipe_values,
                         "Replace the pose of <image 2> with the pose of <image 1>. "
                         "Keep the character of <image 2>. " + prompts[index - 1],
-                        (pose, character_rgb), target_size=qwen_settings["target_size"],
+                        (pose, character), target_size=qwen_settings["target_size"],
                     )
                     encode_progress(index, total, index - 1)
                     samples = self._qi2_sample(
@@ -2228,7 +2228,7 @@ class VNCCS_CharacterGenerator:
         encoder_kwargs = {
             "clip": pipe_values["clip"],
             "vae": pipe_values["vae"],
-            "image2": character_rgb,
+            "image2": character,
         }
         if self._is_klein_pipe(pipe_values):
             encoder_kwargs.update(
@@ -4744,7 +4744,8 @@ def _seedvr_catalog():
             "name": name,
             "local_path": f"models/{folder}/{name}",
             "description": descriptions[name],
-            "status": "installed" if _find_model_on_disk(f"models/{folder}/{name}")[1] else "missing",
+            "status": "installed" if _find_model_on_disk(f"models/{folder}/{name}")[1]
+                and (category != "models" or _find_model_on_disk(f"models/vae/{SEEDVR_VAE_FILES[0]}")[1]) else "missing",
             "category": category,
         } for name in files]
 
@@ -4759,15 +4760,25 @@ def _download_seedvr_file(category, name):
 
     folder = "diffusion_models" if category == "models" else "vae"
     final_path = _resolve_model_download_path(f"models/{folder}/{name}")
-    downloaded = hf_hub_download(
-        repo_id=SEEDVR_HF_REPO,
-        filename=f"{folder}/{name}",
-        revision=SEEDVR_HF_REVISION,
-        token=False,
-    )
-    with atomic_output_path(final_path) as temporary:
-        shutil.copyfile(downloaded, temporary)
-        _validate_downloaded_model_file(temporary, name)
+    with character_storage_lock(final_path):
+        existing, installed = _find_model_on_disk(f"models/{folder}/{name}")
+        if installed:
+            _validate_downloaded_model_file(existing, name)
+            return existing
+        downloaded = hf_hub_download(
+            repo_id=SEEDVR_HF_REPO,
+            filename=f"{folder}/{name}",
+            revision=SEEDVR_HF_REVISION,
+            token=False,
+        )
+        descriptor, temporary = _create_download_staging_file(final_path, name)
+        os.close(descriptor)
+        try:
+            shutil.copyfile(downloaded, temporary)
+            _validate_downloaded_model_file(temporary, name)
+            os.link(temporary, final_path)
+        finally:
+            os.remove(temporary)
     return final_path
 
 
@@ -4791,6 +4802,8 @@ def _seedvr_download_worker(category, name):
     try:
         _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "downloading", "message": "Downloading from Hugging Face…"}
         _download_seedvr_file(category, name)
+        if category == "models":
+            _ensure_seedvr_vae_model()
         _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "installed", "message": "Installed"}
     except Exception as exc:
         _SEEDVR_DOWNLOAD_STATUS[key] = {"status": "error", "message": str(exc)}

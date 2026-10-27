@@ -1689,6 +1689,12 @@ def _download_worker_loop():
             _DOWNLOAD_STATUS[model_key] = {"status": "downloading", "message": "Initializing..."}
             log_event("download_started", component="ControlCenter", model=model_key, repository=download_repo_id)
             target_abs_path = _resolve_model_download_path(target_model["local_path"])
+            if target_model.get("skip_existing"):
+                existing, installed = _find_model_on_disk(target_model["local_path"])
+                if installed:
+                    _validate_downloaded_model_file(existing, os.path.basename(existing))
+                    _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Already installed"}
+                    continue
             if target_model.get("url"):
                 raise ValueError("Direct URL downloads are disabled; use hf_repo and hf_path")
 
@@ -1735,7 +1741,11 @@ def _download_worker_loop():
             _DOWNLOAD_STATUS[model_key]["message"] = "Validating..."
             _validate_downloaded_model_file(temp_path, os.path.basename(target_abs_path))
             _DOWNLOAD_STATUS[model_key]["message"] = "Installing..."
-            os.replace(temp_path, target_abs_path)
+            if target_model.get("skip_existing"):
+                os.link(temp_path, target_abs_path)
+                os.remove(temp_path)
+            else:
+                os.replace(temp_path, target_abs_path)
             update_installed_version(model_key, target_model.get("version", ""))
             _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Installed"}
             log_event("download_completed", component="ControlCenter", model=model_key, bytes=total_size,
@@ -2391,6 +2401,8 @@ async def cc_download(request):
             return web.json_response(dict(current))
         _DOWNLOAD_TARGETS[key] = target
         _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
+        if data.get("skip_existing") is True:
+            entry = {**entry, "skip_existing": True}
         _DOWNLOAD_QUEUE.put((repo_id, key, entry))
     return web.json_response({"status": "queued", "message": f"Download queued for {name}"})
 
