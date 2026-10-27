@@ -1,7 +1,8 @@
 """Cross-owner CG contracts without importing Utils, Torch or model weights."""
 
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+import sys
 
 import pytest
 from PIL import Image
@@ -22,13 +23,36 @@ def library(monkeypatch, tmp_path):
     return tmp_path
 
 
-def test_missing_or_old_utils_is_reported_without_importing_it(monkeypatch):
+def test_unavailable_factory_is_reported_without_importing_it(monkeypatch):
     import nodes
     for node in (None, type("OldFactory", (), {})):
         monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"VNCCS_3DFactory": node}, raising=False)
-        with pytest.raises(RuntimeError, match="Update ComfyUI_VNCCS_Utils"):
+        with pytest.raises(RuntimeError, match="3D Factory runtime is unavailable"):
             bridge.provider()
         assert "error" in bridge.frontend_configuration()
+
+
+def test_registered_factory_without_cg_provider_reuses_its_loaded_runtime(monkeypatch, tmp_path):
+    import nodes
+    package = ModuleType("installed_utils.nodes.factory3d")
+    package.runtime = SimpleNamespace(_model_operation_lock=lambda: lock)
+    package.storage = SimpleNamespace(_generation_settings=lambda settings: settings)
+    module = ModuleType(package.__name__ + ".node")
+    module.__package__ = package.__name__
+    module.__file__ = str(tmp_path / "renamed-utils" / "nodes" / "factory3d" / "node.py")
+    factory = type("VNCCS_3DFactory", (), {"__module__": module.__name__})
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"VNCCS_3DFactory": factory}, raising=False)
+    web_root = tmp_path / "renamed-utils" / "web"
+    monkeypatch.setattr(nodes, "EXTENSION_WEB_DIRS", {"Other": tmp_path / "other" / "web", "Installed Utils": web_root}, raising=False)
+    lock = object()
+    value = bridge.provider()
+    assert value["runtime"] is package.runtime
+    assert value["storage"] is package.storage
+    assert bridge.model_operation_lock() is lock
+    assert bridge.model_settings({"seed": 12})["seed"] == 12
+    assert bridge.frontend_configuration() == {"version": 1, "module_url": "/extensions/Installed%20Utils/factory3d/viewer.js"}
 
 
 def test_provider_discovery_uses_registered_mount_instead_of_checkout_name(monkeypatch, tmp_path):
@@ -38,7 +62,7 @@ def test_provider_discovery_uses_registered_mount_instead_of_checkout_name(monke
     monkeypatch.setattr(nodes, "NODE_CLASS_MAPPINGS", {"VNCCS_3DFactory": factory}, raising=False)
     monkeypatch.setattr(nodes, "EXTENSION_WEB_DIRS", {"Renamed Utils": value["web_root"]}, raising=False)
     assert bridge.provider() is value
-    assert bridge.frontend_configuration() == {"version": 1, "module_url": "/extensions/Renamed%20Utils/factory3d/cg_provider.mjs"}
+    assert bridge.frontend_configuration() == {"version": 1, "module_url": "/extensions/Renamed%20Utils/factory3d/viewer.js"}
     value["version"] = 2
     with pytest.raises(RuntimeError, match="Unsupported"):
         bridge.provider()

@@ -16,7 +16,7 @@ ${SAKURA_INTERACTION_CSS}
 ${SAKURA_CREATOR_CONTROL_CSS}
 ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 /* CG workspace and Utils viewport layout. */
-.vnccs-cg-creator.vnccs-i3s { position:relative; display:flex; flex-direction:column; min-height:0; box-sizing:border-box; overflow:hidden; transform-origin:top left; pointer-events:auto; font-family:var(--font); }
+.vnccs-cg-creator.vnccs-i3s { position:relative; display:flex; flex-direction:column; min-height:0; box-sizing:border-box; border:0; overflow:hidden; transform-origin:top left; pointer-events:auto; font-family:var(--font); }
 .vnccs-cg-creator [hidden] { display:none !important; }
 /* One logical composition scales as a whole with the node. */
 .vnccs-cg-creator .cg-workspace { flex:1; min-height:0; display:grid; grid-template-columns:${SOURCE_PANEL_WIDTH}px 2247px 960px; gap:12px; }
@@ -219,13 +219,16 @@ function selectedSource(document, state) {
 // Resolve Utils assets relative to ComfyUI's extension mount, including proxy prefixes.
 async function loadFactoryRuntime(descriptor) {
     if (descriptor?.error) throw new Error(descriptor.error);
-    if (descriptor?.version !== 1 || !/^\/extensions\/[^/]+\/factory3d\/cg_provider\.mjs$/.test(descriptor.module_url)) {
-        throw new Error("Update ComfyUI_VNCCS_Utils to use the CG Creator 3D runtime.");
+    if (descriptor?.version !== 1 || !/^\/extensions\/[^/]+\/factory3d\/viewer\.js$/.test(descriptor.module_url)) {
+        throw new Error("The installed 3D Factory viewer is unavailable.");
     }
     const root = new URL("../../", import.meta.url);
-    const runtime = await import(new URL(descriptor.module_url.slice(1), root).href);
+    const viewerURL = new URL(descriptor.module_url.slice(1), root);
+    const [viewer, history] = await Promise.all([import(viewerURL.href), import(new URL("./editor_commands.mjs", viewerURL).href)]);
+    const runtime = { Factory3DViewer: viewer.Factory3DViewer, FactoryCommandHistory: history.FactoryCommandHistory,
+        stylesURL: new URL("./styles.css", viewerURL).href };
     if (typeof runtime.Factory3DViewer !== "function" || typeof runtime.FactoryCommandHistory !== "function") {
-        throw new Error("Unsupported Utils CG viewer; update both VNCCS packages.");
+        throw new Error("Unsupported 3D Factory viewer interface.");
     }
     if (!document.getElementById("vnccs-3d-factory-styles")) {
         const link = document.createElement("link");

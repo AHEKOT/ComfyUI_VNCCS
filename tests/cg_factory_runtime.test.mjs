@@ -8,20 +8,23 @@ test("missing, incompatible and external Factory modules fail before loading", a
     for (const descriptor of [undefined, {}, { version: 2 },
         { version: 1, module_url: "https://other.example/viewer.mjs" },
         { version: 1, module_url: "/extensions/Utils/../../viewer.mjs" }]) {
-        await assert.rejects(loadFactoryRuntime(descriptor), /Update ComfyUI_VNCCS_Utils/);
+        await assert.rejects(loadFactoryRuntime(descriptor), /3D Factory viewer is unavailable/);
     }
     await assert.rejects(loadFactoryRuntime({ error: "Utils is unavailable" }), /Utils is unavailable/);
 });
 
-test("Utils viewer discovery preserves the ComfyUI reverse-proxy prefix", async () => {
-    let requested;
+test("existing Factory modules load without a CG provider and preserve the reverse-proxy prefix", async () => {
+    const requested = [], styles = [];
     const viewer = { Factory3DViewer: class {}, FactoryCommandHistory: class {} };
     const load = vm.runInNewContext(runtimeSource
         .replaceAll("import.meta.url", '"https://comfy.example/proxy/extensions/VNCCS/vnccs_cg_creator.js"')
-        .replace("await import(", "await loadModule(") + "\nloadFactoryRuntime", {
-        URL, document: { getElementById: () => true },
-        loadModule: async url => { requested = url; return viewer; },
+        .replaceAll("import(", "loadModule(") + "\nloadFactoryRuntime", {
+        URL, document: { getElementById: () => false, createElement: () => ({}), head: { appendChild: link => styles.push(link) } },
+        loadModule: async url => { requested.push(url); return viewer; },
     });
-    assert.equal(await load({ version: 1, module_url: "/extensions/Renamed%20Utils/factory3d/cg_provider.mjs" }), viewer);
-    assert.equal(requested, "https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/cg_provider.mjs");
+    const loaded = await load({ version: 1, module_url: "/extensions/Renamed%20Utils/factory3d/viewer.js" });
+    assert.equal(loaded.Factory3DViewer, viewer.Factory3DViewer);
+    assert.equal(loaded.FactoryCommandHistory, viewer.FactoryCommandHistory);
+    assert.deepEqual(requested, ["https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/viewer.js", "https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/editor_commands.mjs"]);
+    assert.equal(styles[0].href, "https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/styles.css");
 });

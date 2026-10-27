@@ -13,6 +13,7 @@ import os
 import random
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import time
@@ -1487,10 +1488,21 @@ def provider():
     factory = getattr(comfy_nodes, "NODE_CLASS_MAPPINGS", {}).get("VNCCS_3DFactory")
     accessor = getattr(factory, "cg_provider", None)
     if not callable(accessor):
-        raise RuntimeError("Update ComfyUI_VNCCS_Utils to use the CG Creator 3D runtime")
+        module = inspect.getmodule(factory)
+        package = sys.modules.get(getattr(module, "__package__", ""))
+        runtime, storage = getattr(package, "runtime", None), getattr(package, "storage", None)
+        if runtime is None or storage is None or not getattr(module, "__file__", None):
+            raise RuntimeError("The installed 3D Factory runtime is unavailable. Enable 3D Factory and restart ComfyUI")
+        # Reuse the registered Factory modules and locks without requiring a new Utils bridge.
+        node_file = Path(module.__file__).resolve()
+        for directory in getattr(comfy_nodes, "EXTENSION_WEB_DIRS", {}).values():
+            web_root = Path(directory).resolve()
+            if web_root.parent in node_file.parents:
+                return {"version": 1, "runtime": runtime, "storage": storage, "web_root": web_root}
+        raise RuntimeError("The installed 3D Factory web extension is unavailable. Restart ComfyUI")
     value = accessor()
     if not isinstance(value, dict) or type(value.get("version")) is not int or value.get("version") != 1:
-        raise RuntimeError("Unsupported Utils CG runtime; update both VNCCS packages")
+        raise RuntimeError("Unsupported 3D Factory runtime interface")
     return value
 
 
@@ -1502,8 +1514,8 @@ def frontend_configuration():
         web_root = Path(value["web_root"]).resolve()
         for name, directory in getattr(comfy_nodes, "EXTENSION_WEB_DIRS", {}).items():
             if Path(directory).resolve() == web_root:
-                return {"version": 1, "module_url": f"/extensions/{quote(name, safe='')}/factory3d/cg_provider.mjs"}
-        raise RuntimeError("Utils web extension is unavailable; restart ComfyUI after updating both packages")
+                return {"version": 1, "module_url": f"/extensions/{quote(name, safe='')}/factory3d/viewer.js"}
+        raise RuntimeError("The installed 3D Factory web extension is unavailable. Restart ComfyUI")
     except RuntimeError as error:
         return {"version": 1, "error": str(error)}
 
