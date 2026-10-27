@@ -18,7 +18,7 @@ const nextDocument = JSON.parse(JSON.stringify(document).replaceAll(backgroundId
 nextDocument.name = "Morning garden room"; nextDocument.cg_settings.prompt = "Morning light through the garden windows";
 const nextScene = JSON.parse(JSON.stringify(scene).replaceAll(backgroundId, nextBackgroundId).replaceAll(modelId, nextModelId));
 const localModel = "User models/other_family_custom.safetensors";
-const config = { factory: { version: 1, module_url: "/extensions/Fixture/factory3d/cg_provider.mjs" }, installed: true,
+const config = { factory: { version: 1, module_url: "/extensions/Fixture/factory3d/viewer.js" }, installed: true,
     settings: settingsDefaults(), diffusion_models: [baseModel, turboModel, localModel], model_presets: controlCenter.models,
     samplers: ["euler", "dpmpp_2m"], schedulers: ["simple", "normal"], loras: [] };
 const provider = `export {FactoryCommandHistory} from '/tests/fixtures/factory_history.mjs';
@@ -61,7 +61,8 @@ const server = createServer(async (request, response) => {
         else if (path === "/scripts/app.js") { body = "export const app={extensions:[],graph:{extra:{},setDirtyCanvas(){}},registerExtension(value){this.extensions.push(value)}}"; type = "text/javascript"; }
         else if (path === "/scripts/api.js") { body = "export const api=new EventTarget();api.apiURL=value=>value;api.fetchApi=(path,options)=>fetch(path,options)"; type = "text/javascript"; }
         else if (path === config.factory.module_url) { body = provider; type = "text/javascript"; }
-        else if (path === "/fixture.css") { body = ""; type = "text/css"; }
+        else if (path === "/extensions/Fixture/factory3d/editor_commands.mjs") { body = "export {FactoryCommandHistory} from '/tests/fixtures/factory_history.mjs';"; type = "text/javascript"; }
+        else if (path === "/fixture.css" || path === "/extensions/Fixture/factory3d/styles.css") { body = ""; type = "text/css"; }
         else if (path.startsWith("/web/") || path === "/tests/fixtures/factory_history.mjs") {
             const file = resolve(root, "." + decodeURIComponent(path)); assert.ok(file.startsWith(root + sep));
             body = await readFile(file); type = mime[extname(file)] || "application/octet-stream";

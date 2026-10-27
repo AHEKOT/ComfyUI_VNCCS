@@ -21,7 +21,7 @@ const room = await readFile(new URL("./fixtures/room.svg", import.meta.url));
 const splat = roomSplat(), assets = new Map();
 let document = { ...structuredClone(initial), cg_settings: settingsDefaults() }, job = null, readOnly = false, catalogAvailable = true;
 const scenes = new Map([[modelId, structuredClone(scene)]]);
-const config = () => ({ factory: { version: 1, module_url: "/extensions/Utils/factory3d/cg_provider.mjs" }, settings: settingsDefaults(), model: "Qwen Image 2.1 INT8 ConvRot", installed: true,
+const config = () => ({ factory: { version: 1, module_url: "/extensions/Utils/factory3d/viewer.js" }, settings: settingsDefaults(), model: "Qwen Image 2.1 INT8 ConvRot", installed: true,
     assets: [{ category: "diffusion_models", name: baseModel, installed: true }], diffusion_models: [baseModel, turboModel], model_presets: controlCenter.models,
     loras: [manualLora, turboLora], turbo_lora: { ...controlCenter.lora[0], installed: true, filename: turboLora },
     samplers: ["euler", "dpmpp_2m"], schedulers: ["simple", "normal"] });
@@ -52,7 +52,7 @@ window.setup=async({width=${LAYOUT_WIDTH},height=950,empty=false,raw=null}={})=>
  const node=new Node();app.graph._nodes=[node];node.onNodeCreated();window.widget=node.cgCreator;
  if(node.widgets[0].value!=='unconfigured')throw new Error('Construction overwrote workflow data');
  node.widgets[0].value=raw||JSON.stringify({schema_version:1,background_id:empty?'':saved.background_id,
-  selected_image_id:empty?'':saved.selected_image_id,model_id:empty?'':saved.models[0].model_id,selected_cg_id:empty?'':saved.cgs[0].cg_id,
+  selected_image_id:empty?'':saved.selected_image_id,model_id:empty?'':saved.models[0].model_id,selected_cg_id:empty?'':saved.cgs[0]?.cg_id||'',
   model_settings:saved.model_settings,settings:saved.cg_settings});
  node.onConfigure();clearTimeout(node._cgRestore);node.setSize([width,height]);host.append(widget.frame);node.onResize();await widget.restore();
  if(widget.restoring)throw new Error(widget.status.textContent);await document.fonts.ready;window.scrollTo(0,0);
@@ -66,7 +66,7 @@ const server = createServer(async (request, response) => {
         let content, type = "application/json";
         if (url.pathname === "/") { content = html; type = "text/html"; }
         else if (url.pathname === "/scripts/app.js") { content = "export const app={extensions:[],graph:{_nodes:[],setDirtyCanvas(){}},registerExtension(e){this.extensions.push(e)}};"; type = "text/javascript"; }
-        else if (url.pathname === "/scripts/api.js") { content = "export const api={apiURL:path=>path,fetchApi:(path,options)=>fetch(path,options),queuePrompt(){throw new Error('The browser fixture must not queue a workflow')}};"; type = "text/javascript"; }
+        else if (url.pathname === "/scripts/api.js") { content = "export const api=Object.assign(new EventTarget(),{apiURL:path=>path,fetchApi:(path,options)=>fetch(path,options),queuePrompt(){throw new Error('The browser fixture must not queue a workflow')}});"; type = "text/javascript"; }
         else if (url.pathname.startsWith("/extensions/Utils/")) {
             const path = resolve(utilsWeb, decodeURIComponent(url.pathname.slice("/extensions/Utils/".length)));
             assert.ok(path.startsWith(utilsWeb + sep));
@@ -359,7 +359,7 @@ try {
     }
     await page.locator(".bg-model-source").screenshot({ path: join(output, "after-source-swap.png"), animations: "allow" });
     await page.evaluate(() => sourceAnimations().forEach(animation => animation.finish()));
-    await page.waitForFunction(() => !sourceAnimations().length && !widget.busy);
+    await page.waitForFunction(() => !widget.sourceLoad && !sourceAnimations().length && !widget.busy);
     const selectedGrid = await page.locator("[data-source-choice]").evaluateAll(elements => elements.map(element => {
         const rect = element.getBoundingClientRect(); return { key: element.dataset.sourceChoice, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
     }));
@@ -380,7 +380,7 @@ try {
     await page.locator("[data-source-choice]").nth(6).scrollIntoViewIfNeeded(); await settle();
     const scrolledBefore = await strip.evaluate(element => element.scrollLeft);
     await page.locator("[data-source-choice]").nth(6).click();
-    await page.waitForFunction(() => !sourceAnimations().length && !widget.busy); await settle();
+    await page.waitForFunction(() => !widget.sourceLoad && !sourceAnimations().length && !widget.busy); await settle();
     assert.ok(Math.abs(await strip.evaluate(element => element.scrollLeft) - scrolledBefore) <= 1, "Selecting an off-origin card preserves horizontal scroll");
     assert.deepEqual(await page.locator("[data-source-choice]").evaluateAll(elements => elements.map(element => element.dataset.sourceChoice)), originalOrder);
     await page.locator('[data-scroll-source="-1"]').click();
@@ -390,12 +390,12 @@ try {
     await page.locator("[data-source-choice]").first().click();
     await page.waitForFunction(() => sourceAnimations().length > 0);
     await page.locator("[data-source-choice]").nth(1).click();
-    await page.waitForFunction(() => !sourceAnimations().length && !widget.busy);
+    await page.waitForFunction(() => !widget.sourceLoad && !sourceAnimations().length && !widget.busy);
     assert.equal(await page.locator(".bg-source-motion").count(), 0);
     assert.equal(await page.locator('[data-model-source]').evaluate(image => getComputedStyle(image).visibility), "visible");
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.locator("[data-source-choice]").first().click();
-    await page.waitForFunction(() => !widget.busy);
+    await page.waitForFunction(() => !widget.sourceLoad && !widget.busy);
     assert.equal(await page.evaluate(() => sourceAnimations().length), 0);
     assert.equal(await page.locator(".bg-source-motion").count(), 0);
     await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -423,7 +423,7 @@ try {
         for (let index = 1; index < motionRects.from.length; index++)
             assert.equal(motionRects.to[index][key], motionRects.from[index][key], "Every variant card keeps its bounds: " + key);
     }
-    await page.waitForFunction(() => !sourceAnimations().length);
+    await page.waitForFunction(() => !widget.sourceLoad && !sourceAnimations().length);
     await page.evaluate(() => { document.querySelector("#host").style.transform = ""; });
     scenarios.push({ name: "source-fade-stationary-at-graph-scale", rectangles: motionRects });
 
@@ -647,10 +647,11 @@ try {
     await page.getByRole("button", { name: `Select ${sourceVariant.name} background variant`, exact: true }).click(); await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.getByRole("button", { name: `Select ${sourceVariant.name} background variant`, exact: true }).getAttribute("aria-pressed"), "true", "Chosen variant remains selected in its fixed card");
     assert.deepEqual(await page.evaluate(() => widget.state.selected_variant), sourceVariant);
+    await page.waitForFunction(expected => document.querySelector('[data-model-source]')?.getAttribute('src')?.includes(expected), `/sets/${setId}/1`);
     assert.match(await page.locator("[data-model-source]").getAttribute("src"), new RegExp(`/sets/${setId}/1`));
     assert.equal(await page.locator("[data-save-view]").isDisabled(), true);
     const backgroundFrameBeforePreview = await page.locator(".bg-viewport").boundingBox();
-    await page.locator("[data-enlarge]").click(); await page.getByRole("dialog").waitFor();
+    await page.locator("[data-enlarge]").click(); await page.locator('.bg-image-preview').waitFor();
     await page.waitForFunction(() => document.querySelector("[data-large-preview]")?.naturalWidth > 0);
     assert.match(await page.locator("[data-large-preview]").getAttribute("src"), new RegExp(`/sets/${setId}/1`));
     const backgroundPreview = page.locator('.bg-viewport .bg-image-preview');
