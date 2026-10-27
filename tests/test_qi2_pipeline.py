@@ -353,15 +353,14 @@ def test_qi2_decode_uses_standard_vae_decode(monkeypatch):
     assert calls == [("VAEDecode", {"samples": "samples", "vae": "vae"})]
 
 
-def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch):
+@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("publish_each", [False, True])
+def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch, native, publish_each):
     calls = []
     pose = torch.zeros(1, 640, 384, 3)
-    character = torch.ones(1, 640, 384, 3)
-    decoded = torch.full((1, 640, 384, 3), 0.5)
-
-    class MaskExtractor:
-        def fill_alpha_with_color(self, image):
-            return (image,)
+    character = torch.ones(1, 640, 384, 4)
+    character[..., 3] = 0.25
+    decoded = torch.full((1, 640, 384, 4), 0.5)
 
     class Generator(cg.VNCCS_CharacterGenerator):
         def _extract_pipe(self, _pipe):
@@ -389,11 +388,12 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
         return outputs[name]
 
     pipe = type("Pipe", (), {"lora_entries": [], "lora_states": []})()
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", MaskExtractor)
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
 
     result = Generator()._run_pose_generation(
         pose, character, pipe, "pose prompt", {"target_size": 1024},
+        bg_remove_settings={"preset": "Native" if native else "balanced"},
+        publish_each=publish_each,
     )
 
     assert torch.equal(result, decoded)
@@ -409,5 +409,10 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
     assert encoder["resolution"] == 1024
     assert torch.equal(encoder["images"]["image_1"], pose)
     assert torch.equal(encoder["images"]["image_2"], character)
+    if native:
+        assert encoder["prompt"].endswith(cg.NATIVE_BACKGROUND_PROMPT)
+        assert "green" not in encoder["prompt"].lower()
+    else:
+        assert encoder["prompt"].endswith("Change background to solid Green color")
     assert calls[1][1]["megapixels"] == 1.0
     assert calls[-1][1] == {"samples": "sampled latent", "vae": "vae"}

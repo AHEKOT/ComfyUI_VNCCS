@@ -929,6 +929,15 @@ test("random seed activation changes and crossfades the seed; disabling freezes 
     assert.equal(JSON.parse(saved).gen_settings.seed, 8811); assert.equal(draws, 1);
 });
 
+test("catalog refresh ignores header animation clones outside their picker", () => {
+    const h = setup(), picker = new h.Element("div"), head = new h.Element("div");
+    picker.dataset.sakuraPicker = "true"; picker.dataset.mode = "anima";
+    head.dataset.sakuraPickerHead = "true";
+    picker.appendChild(head); h.root.appendChild(picker); h.root.appendChild(head.cloneNode(true));
+    const view = h.ui.captureView();
+    assert.equal(view.heads.size, 1); assert.equal(view.heads.get("anima").element, head);
+});
+
 test("every persistent Creator scroll region keeps both axes through catalog replacement", () => {
     const h = setup(), regions = [];
     for (const name of ["characters", "traits", "generation", "model-picker-qi2", "model-picker-anima", "model-picker-illustrious"]) {

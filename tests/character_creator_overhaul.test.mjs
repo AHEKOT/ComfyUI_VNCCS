@@ -51,6 +51,7 @@ function setup(saved) {
         ccRelPath: entry => entry.local_path.replace(/^models\/loras\//, ""),
         cardStatusLabel: status => status,
         ccDownloadEntry: (cat, entry) => downloads.push([cat, entry.name]),
+        openCcDownload: (cat, entry, download) => download(cat, entry),
         localAssetRelSet: names => new Set(names || []), localAssets: { loras: [] },
         setCcTurboMode() {}, setCcAgeLora() {},
     });
@@ -171,8 +172,8 @@ for (const downloadStatus of ["queued", "downloading"]) {
             assert.equal(card.classes.has("is-selected"), false);
             assert.equal(walk(card).some(element => element.type === "checkbox"), false);
             const status = walk(card).find(element => element.className.startsWith("vnccs-creator-model-card-status"));
-            assert.equal(status.textContent, downloadStatus);
-            assert.equal(walk(card).find(element => element.className === "vnccs-creator-model-card-download").disabled, true);
+            assert.equal(status.textContent, "missing");
+            assert.equal(walk(card).find(element => element.className === "vnccs-creator-model-card-download").disabled, false);
         }
     });
 }

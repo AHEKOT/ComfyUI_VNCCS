@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
-import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, showModelDownloadDialog, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
 const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
@@ -3458,11 +3458,28 @@ class CharacterGeneratorWidget {
         }, 2000);
     }
 
+    openSeedvrDownload(entry) {
+        this.closeModal();
+        const dialog = showModelDownloadDialog(this.node, (title, content, buttons) => showCommonModal(this.root, title, content, buttons),
+            () => [["models", entry], ...((this.seedvrAssets?.vae || []).map(vae => ["vae", vae]))].map(([category, file]) => {
+                const current = (this.seedvrAssets?.[category] || []).find(item => item.name === file.name) || file;
+                return { name: file.name, ...(current.status === "installed" ? { status: "installed" }
+                    : { status: "missing", ...this.seedvrDownloads[`${category}:${file.name}`] }) };
+            }), () => this.downloadSeedvrAsset("models", entry));
+        dialog.overlay.className = "vnccs-pipe-modal-backdrop";
+        dialog.modal.className = "vnccs-pipe-modal";
+        dialog.title.className = "vnccs-pipe-modal-title";
+        dialog.content.className = "vnccs-pipe-modal-body";
+        dialog.actions.className = "vnccs-pipe-modal-actions";
+        dialog.buttons.forEach(button => button.className = "vnccs-pipe-modal-btn");
+        this.modalEl = dialog.overlay;
+    }
+
     buildSeedvrCard(entry, { pickerHead = false } = {}) {
         const rel = this.seedvrRelativePath(entry);
         const key = `models:${entry.name}`;
         const download = this.seedvrDownloads[key] || {};
-        const status = ["queued", "downloading", "error"].includes(download.status) ? download.status : entry.status;
+        const status = entry.status === "installed" ? "installed" : "missing";
         const installed = status === "installed";
         const ready = installed;
         const selected = this.data.upscaler.model === rel;
@@ -3510,14 +3527,14 @@ class CharacterGeneratorWidget {
         } else {
             const button = document.createElement("button");
             button.className = "vnccs-seedvr-download";
-            button.textContent = status === "error" ? (download.message || "Retry") : (["queued", "downloading"].includes(status) ? (download.message || "Downloading…") : "Install / Download");
+            button.textContent = "Install / Download";
             button.ariaLabel = button.textContent;
             setHelpText(button, button.textContent);
             setHelpText(card, button.textContent);
             button.disabled = ["queued", "downloading"].includes(status);
             button.onclick = event => {
                 event.stopPropagation();
-                this.downloadSeedvrAsset("models", entry);
+                this.openSeedvrDownload(entry);
             };
             card.appendChild(button);
         }

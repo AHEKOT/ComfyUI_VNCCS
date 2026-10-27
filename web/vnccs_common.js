@@ -421,6 +421,47 @@ export function createControlCenterClient(repoId, hasRequiredFamilies, state, re
     return { fetchConfig, startPolling, stopPolling };
 }
 
+export function showModelDownloadDialog(node, show, readFiles, download, start = true) {
+    const body = document.createElement("div");
+    const message = document.createElement("div");
+    const files = document.createElement("div");
+    Object.assign(files.style, { whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "220px", overflowY: "auto", margin: "12px 0" });
+    const progress = document.createElement("progress");
+    progress.max = 100;
+    progress.ariaLabel = "Model download progress";
+    progress.style.width = "100%";
+    progress.style.accentColor = "var(--accent-pink, #ff8fa3)";
+    body.append(message, files, progress);
+    let submitting = false;
+    const blocked = () => submitting || readFiles().some(file => ["queued", "downloading"].includes(file.status))
+        || readFiles().every(file => file.status === "installed");
+    const dialog = show("Model files", () => body, [{ text: "Install Missing Files", class: "primary", disabled: blocked,
+        action: async () => {
+            if (blocked()) return true;
+            submitting = true; update();
+            try { await download(); }
+            finally { submitting = false; if (dialog.overlay.isConnected) update(); }
+            return true;
+        } }, { text: "Close" }]);
+    const update = () => {
+        const items = readFiles();
+        const ready = items.every(file => file.status === "installed");
+        message.textContent = ready ? "All model files are installed." : "The model needs the files below. Install missing files to continue. You can close this window during download.";
+        files.textContent = items.map(file => `${file.name}: ${file.message || file.status}`).join("\n");
+        if (items.some(file => file.status === "downloading" && file.progress == null)) progress.removeAttribute("value");
+        else progress.value = items.reduce((sum, file) => sum + (file.status === "installed" ? 100 : Math.min(99, Number(file.progress) || 0)), 0) / Math.max(1, items.length);
+        dialog.buttons[0].disabled = blocked();
+    };
+    const timer = setInterval(() => {
+        if (dialog.overlay.isConnected) update();
+        else clearInterval(timer);
+    }, 1000);
+    registerCleanup(node, () => { clearInterval(timer); dialog.overlay.remove(); });
+    update();
+    if (start) dialog.buttons[0].click();
+    return dialog;
+}
+
 // Each widget owns its dialog styling; model preparation and polling are shared.
 export function createQwenVLModelLoader(node, showModal, createProgressModal, vision = true) {
     let disposed = false;
@@ -1398,7 +1439,7 @@ export function showModal(container, title, contentFunc, buttons) {
                     if (!keepOpen) overlay.remove();
                 } catch (error) {
                     showMessage(m, error.message || String(error), true);
-                } finally { btn.disabled = false; }
+                } finally { btn.disabled = b.disabled?.() || false; }
             } else {
                 overlay.remove();
             }

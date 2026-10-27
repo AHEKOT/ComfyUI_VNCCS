@@ -169,3 +169,24 @@ test("unknown or failed queue state keeps preview disabled until authoritative s
     h.status(0);
     assert.equal(h.button.disabled, false);
 });
+
+for (const mode of ['anima', 'qi2', 'illustrious']) {
+    test(`${mode} missing model opens its installer instead of a blocking alert`, async () => {
+        const h = setup(), opened = [];
+        h.status(0); h.state.gen_settings.generation_mode = mode; h.state.gen_settings.ckpt_name = 'model';
+        const entry = { name: 'Selected model', kind: mode === 'illustrious' ? 'SDXL' : mode,
+            type: mode === 'illustrious' ? 'checkpoint' : 'unet', local_path: 'model' };
+        Object.assign(h.context, {
+            isSelectedCcAssetInstalled: () => false,
+            ccEntries: (_section, _family, predicate) => predicate(entry) ? [entry] : [],
+            ccKind: value => value.kind.toLowerCase(), ccType: value => value.type, ccRelPath: value => value.local_path,
+            ccDownloadEntry() {}, downloadAnimaBundle() {}, downloadQi2Bundle() {},
+            openCcDownload: (...args) => opened.push(args),
+        });
+        const requests = h.requests.length;
+        await h.context.generate();
+        assert.equal(opened.length, 1); assert.equal(opened[0][1], entry);
+        assert.equal(opened[0][3], false, 'Generation explains missing files before installing');
+        assert.equal(h.requests.length, requests, 'No generation starts with missing files');
+    });
+}
