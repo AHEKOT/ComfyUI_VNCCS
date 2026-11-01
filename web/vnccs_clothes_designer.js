@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, refreshPreviewImage, watchConnection, workflowScope } from "./vnccs_transport.js";
-import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
+import { createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, registerCleanup, injectStyles, showModal as showCommonModal, showMessage, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, requestWizard, animateWizardRows, resolutionScaleMegapixels, resolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 const STYLE = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -916,6 +916,7 @@ app.registerExtension({
                 }
 
                 const els = {};
+                node._vnccsClothesWorkflowBusy = true;
                 node._vnccsCostumeDraft = saved.costume_info ? { character: state.character, costume: state.costume } : null;
                 let spritePreviewNavigator = null;
                 const beginPreviewRequest = createRequestGuard(node);
@@ -1007,12 +1008,18 @@ app.registerExtension({
                 };
 
                 const syncCostumeEditControls = () => {
-                    const busy = !!node._vnccsClothesSelectionPending || !!node._vnccsClothesPreviewRunning;
+                    const busy = !!node._vnccsClothesWorkflowBusy || !!node._vnccsClothesSelectionPending || !!node._vnccsClothesPreviewRunning;
                     const canEdit = !busy && hasSelectedEditableCostume();
                     const needsCostume = !!state.character && !hasSelectedEditableCostume();
                     if (els.charSelect) els.charSelect.disabled = busy;
                     if (els.btnNew) els.btnNew.disabled = busy || !state.character;
-                    if (els.btnGen) els.btnGen.disabled = !canEdit;
+                    if (els.btnGen) {
+                        els.btnGen.disabled = !canEdit;
+                        els.btnGen.innerText = node._vnccsClothesPreviewRunning ? "GENERATING..."
+                            : node._vnccsClothesWorkflowBusy ? "WORKFLOW BUSY..." : "GENERATE PREVIEW / SAVE";
+                        els.btnGen.title = node._vnccsClothesWorkflowBusy
+                            ? "Preview is unavailable while a workflow is queued or running." : "";
+                    }
                     if (els.btnDel) els.btnDel.disabled = !canEdit;
                     if (els.costSel) els.costSel.disabled = busy || !els.costSel.options.length;
                     for (const tab of els.tabBar?.children || []) tab.disabled = busy;
@@ -1146,11 +1153,8 @@ app.registerExtension({
                                     if (!await ensureQwenVLReady()) return isCurrent();
                                     if (!isCurrent()) return false;
                                     btn.innerText = "THINKING...";
-                                    const r = await api.fetchApi("/vnccs/clothes_wizard", {
-                                        method: "POST",
-                                        headers: { "Content-Type": "application/json" },
-                                        body: JSON.stringify({ description, node_id: node.id })
-                                    });
+                                    const r = await requestWizard(node, "/vnccs/clothes_wizard", { description }, isCurrent,
+                                        label => { btn.innerText = label; });
                                     if (!isCurrent()) return false;
                                     if (!r.ok) {
                                         let err = null;
@@ -1975,6 +1979,7 @@ app.registerExtension({
                 charRow.innerHTML = '<div class="vnccs-clothes-label">CHARACTER</div>';
                 const charSel = document.createElement("select"); charSel.className = "vnccs-clothes-select";
                 charSel.onchange = async (e) => {
+                    if (node._vnccsClothesWorkflowBusy) return;
                     els.cancelPreviewGeneration?.(true);
                     beginClothesUploadRequest();
                     const character = e.target.value;
@@ -2008,6 +2013,7 @@ app.registerExtension({
                 costRow.innerHTML = '<div class="vnccs-clothes-label">COSTUME (Select to Edit)</div>';
                 const costSel = document.createElement("select"); costSel.className = "vnccs-clothes-select";
                 costSel.onchange = async (e) => {
+                    if (node._vnccsClothesWorkflowBusy) return;
                     els.cancelPreviewGeneration?.(true);
                     beginClothesUploadRequest();
                     const costume = e.target.value;
@@ -2042,7 +2048,7 @@ app.registerExtension({
                 btnNewCostume.innerText = "NEW";
                 btnNewCostume.style.fontSize = "10px";
                 btnNewCostume.onclick = () => {
-                    if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return;
+                    if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending || node._vnccsClothesWorkflowBusy) return;
                     const character = state.character;
                     const currentRequest = beginClothesUploadRequest();
                     showModal("New Costume Name", () => {
@@ -2050,9 +2056,9 @@ app.registerExtension({
                         return inp;
                     }, [{ text: "Cancel" }, {
                         text: "CREATE", class: "vnccs-clothes-btn-primary", action: async (ol, btn) => {
-                            if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending) return true;
+                            if (node._vnccsStateRestoreError || node._vnccsClothesSelectionPending || node._vnccsClothesWorkflowBusy) return true;
                             const isCurrent = () => currentRequest() && ol.isConnected
-                                && !node._vnccsStateRestoreError && !node._vnccsClothesSelectionPending
+                                && !node._vnccsStateRestoreError && !node._vnccsClothesSelectionPending && !node._vnccsClothesWorkflowBusy
                                 && state.character === character;
                             if (!isCurrent()) return false;
                             const n = ol.querySelector("input").value.trim();
@@ -2092,7 +2098,7 @@ app.registerExtension({
                         return;
                     }
                     if (els.btnGen?.disabled) {
-                        showInfo("Warning", "Wait for preview generation to finish before deleting a costume.");
+                        showInfo("Warning", "Wait for generation to finish before deleting a costume.");
                         return;
                     }
                     const character = state.character;
@@ -2110,7 +2116,7 @@ app.registerExtension({
                                 if (!isCurrent()) return false;
                                 beginClothesUploadRequest();
                                 if (els.btnGen?.disabled) {
-                                    showInfo("Warning", "Wait for preview generation to finish before deleting a costume.");
+                                    showInfo("Warning", "Wait for generation to finish before deleting a costume.");
                                     return true;
                                 }
                                 beginClothesWizardRequest();
@@ -2123,12 +2129,14 @@ app.registerExtension({
                                     // Finish any earlier field saves before deleting their costume.
                                     await Promise.allSettled([...pendingCostumeSaves]);
                                     if (!isCurrent()) return false;
+                                    if (node._vnccsClothesWorkflowBusy) return true;
                                     deletion = await checkedJSON("/vnccs/delete_costume", {
                                         method: "POST",
                                         body: JSON.stringify({ character, costume })
                                     });
                                 } finally {
                                     controls.forEach((control, index) => { control.disabled = disabled[index]; });
+                                    syncCostumeEditControls();
                                 }
                                 if (!isCurrent()) return false;
                                 const currentSelection = beginSelectionRequest();
@@ -2230,7 +2238,7 @@ app.registerExtension({
                         <path d="M16 12h16M12 20l4-8h16l4 8v20H12V20z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
                         <path d="M20 40V28h8v12" stroke="currentColor" stroke-width="2"/>
                     </svg>
-                    No Preview
+                    <span class="vnccs-common-ui-placeholder-hint" role="status">No Preview</span>
                 </div>`;
                 const pImg = document.createElement("img"); pImg.className = "vnccs-clothes-preview-img"; pImg.style.display = "none";
                 const previewAura = document.createElement("div");
@@ -2294,7 +2302,6 @@ app.registerExtension({
                     const visiblePreview = els.previewImg?.style?.display !== "none" && els.previewImg?.getAttribute?.("src");
                     if (restorePlaceholder && !visiblePreview && els.placeholder) els.placeholder.style.display = "flex";
                     node._vnccsClothesPreviewRunning = false;
-                    if (els.btnGen) els.btnGen.innerText = "GENERATE PREVIEW / SAVE";
                     syncCostumeEditControls();
                 };
                 const startClothesPreviewGeneration = () => {
@@ -2524,7 +2531,7 @@ app.registerExtension({
                     t.className = "cd-tab" + (state.activeTab === id ? " active" : "");
                     t.innerText = label;
                     t.onclick = () => {
-                        if (node._vnccsClothesSelectionPending || node._vnccsClothesPreviewRunning) return;
+                        if (node._vnccsClothesWorkflowBusy || node._vnccsClothesSelectionPending || node._vnccsClothesPreviewRunning) return;
                         els.cancelPreviewGeneration?.(true);
                         beginClothesUploadRequest();
                         state.activeTab = id;
@@ -2727,7 +2734,7 @@ app.registerExtension({
                         } else {
                             if (els.btnGen) els.btnGen.disabled = true;
                             if (els.btnDel) els.btnDel.disabled = true;
-                            if (els.costSel) els.costSel.disabled = false;
+                            if (els.costSel) els.costSel.disabled = !!node._vnccsClothesWorkflowBusy;
 
                             // Select default if current is Naked or invalid
                             if (state.costume === "Naked" || !displayList.includes(state.costume)) {
@@ -2815,12 +2822,8 @@ app.registerExtension({
 
                 const updatePreviewImage = async (forceCache = false) => {
                     els.cancelPreviewGeneration?.(true);
-                    const currentRequest = beginPreviewRequest();
+                    beginPreviewRequest();
                     const character = state.character;
-                    const costume = state.costume;
-                    const info = state.costume_info;
-                    const isCurrent = () => currentRequest() && state.character === character && state.costume === costume
-                        && state.costume_info === info;
                     spritePreviewNavigator?.invalidate?.();
                     if (!state.character) return;
                     const ts = Date.now();
@@ -2835,22 +2838,7 @@ app.registerExtension({
                         saveState();
                     }
 
-                    // Check validity first to show message
-                    try {
-                        const r = await api.fetchApi(url);
-                        if (!isCurrent()) return;
-                        if (!r.ok) {
-                            els._ui.emptyPreview(els.previewImg, els.placeholder, character, "No preview available");
-                            spritePreviewNavigator?.hideNav();
-                            state.selected_preview_sprite = null;
-                            saveState();
-                            return;
-                        }
-                    } catch (e) {
-                        if (!isCurrent()) return;
-                        console.warn("[VNCCS] ClothesDesigner: Error in preview update", e);
-                    }
-
+                    // Load the image directly; an unread fetch response can occupy an HTTP connection.
                     if (forceCache) {
                         spritePreviewNavigator?.showFallback(mediaURL(url), { character, costume: previewCostume });
                     } else {
@@ -2877,7 +2865,49 @@ app.registerExtension({
                 };
                 api.addEventListener("vnccs.preview.updated", onPreviewUpdated);
                 registerCleanup(node, () => api.removeEventListener("vnccs.preview.updated", onPreviewUpdated));
-                watchConnection(node, () => { if (!btnGen.disabled) refreshPreviewImage(els.previewImg); }, registerCleanup);
+                const beginWorkflowStatusRequest = createRequestGuard(node);
+                const refreshWorkflowBusy = async () => {
+                    const current = beginWorkflowStatusRequest();
+                    try {
+                        const response = await api.fetchApi("/queue");
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        const queue = await response.json();
+                        if (!Array.isArray(queue.queue_running) || !Array.isArray(queue.queue_pending)) throw new Error("Invalid queue response");
+                        if (!current()) return;
+                        node._vnccsClothesWorkflowBusy = Boolean(queue.queue_running.length || queue.queue_pending.length);
+                        syncCostumeEditControls();
+                    } catch (error) {
+                        if (!current()) return;
+                        node._vnccsClothesWorkflowBusy = true;
+                        syncCostumeEditControls();
+                        console.warn("[VNCCS] Could not refresh workflow status", error);
+                    }
+                };
+                const setWorkflowBusy = busy => {
+                    beginWorkflowStatusRequest();
+                    node._vnccsClothesWorkflowBusy = busy;
+                    syncCostumeEditControls();
+                };
+                const workflowStatusHandler = event => {
+                    const remaining = event.detail?.exec_info?.queue_remaining;
+                    if (typeof remaining === "number" && Number.isFinite(remaining)) setWorkflowBusy(remaining > 0);
+                    else if (event.detail == null) setWorkflowBusy(true);
+                };
+                const workflowStartHandler = () => setWorkflowBusy(true);
+                api.addEventListener("status", workflowStatusHandler);
+                api.addEventListener("execution_start", workflowStartHandler);
+                api.addEventListener("reconnecting", workflowStartHandler);
+                registerCleanup(node, () => {
+                    api.removeEventListener("status", workflowStatusHandler);
+                    api.removeEventListener("execution_start", workflowStartHandler);
+                    api.removeEventListener("reconnecting", workflowStartHandler);
+                });
+                syncCostumeEditControls();
+                refreshWorkflowBusy();
+                watchConnection(node, async () => {
+                    await refreshWorkflowBusy();
+                    if (state.character && !els.btnGen?.disabled) refreshPreviewImage(els.previewImg);
+                }, registerCleanup);
 
                 enableMiddleMouseCanvasPan(container);
                 attachHelpTooltips(container);

@@ -81,7 +81,7 @@ test("events from other nodes do not alter this widget; removal cleans up the li
     assert.equal(widget.stageState.pose_generation.status, "waiting");
     assert.equal(widget.renders, 0);
     cleanups.forEach(callback => callback());
-    assert.equal(listeners.size, 0);
+    assert.deepEqual([...listeners.keys()], ['vnccs.wizard.stage']);
 });
 
 test("progress for another character or an empty source cannot restore old cards", async () => {

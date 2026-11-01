@@ -189,7 +189,7 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
     monkeypatch.setattr(node, '_extract_pipe', lambda *a: values)
     monkeypatch.setattr(node, '_apply_pose_lora_to_model', lambda model, *a: model)
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image, background_color="Green": (image,))}))
     seen = []
     class EncodingVerified(Exception):
         pass

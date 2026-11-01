@@ -320,7 +320,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
     calls = {}
 
     class FakeMaskExtractor:
-        def fill_alpha_with_color(self, image):
+        def fill_alpha_with_color(self, image, background_color="Green"):
             return (image,)
 
     class TestGenerator(cg.VNCCS_CharacterGenerator):
@@ -900,7 +900,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     decoded = torch.rand(1, 1584, 664, 3)
 
     class FakeMaskExtractor:
-        def fill_alpha_with_color(self, image):
+        def fill_alpha_with_color(self, image, background_color="Green"):
             return (image,)
 
     class TestGenerator(cg.VNCCS_CharacterGenerator):
@@ -972,7 +972,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
     character = torch.rand(2, 64, 64, 3)
 
     class FakeMaskExtractor:
-        def fill_alpha_with_color(self, image):
+        def fill_alpha_with_color(self, image, background_color="Green"):
             return (image,)
 
     class TestGenerator(cg.VNCCS_CharacterGenerator):

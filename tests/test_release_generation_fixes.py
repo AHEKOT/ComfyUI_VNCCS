@@ -13,6 +13,64 @@ from _vnccs.nodes import character_generator as cg
 from _vnccs.nodes import clothes_designer as cd
 
 
+@pytest.mark.parametrize("kind", ["qi2", "klein9b", "minimaxh3"])
+@pytest.mark.parametrize("background,rgb", [
+    ("Green", (0.0, 1.0, 0.0)),
+    ("Blue", (0.0, 0.0, 1.0)),
+    ("White", (1.0, 1.0, 1.0)),
+])
+@pytest.mark.parametrize("publish_each", [False, True])
+def test_pose_reference_background_matches_creator_except_qi2(monkeypatch, kind, background, rgb, publish_each):
+    node = cg.VNCCS_CharacterGenerator()
+    pose = torch.zeros(1, 32, 32, 3)
+    character = torch.full((1, 32, 3, 4), 0.25)
+    character[..., 3] = torch.tensor([0.0, 0.5, 1.0])
+    original = character.clone()
+    pipe = SimpleNamespace(lora_entries=[], lora_states=[])
+    values = {
+        "model": "model", "clip": "clip", "vae": "vae", "audio_vae": "audio",
+        "model_kind": kind, "seed": 1, "steps": 4, "cfg": 1.0,
+        "sampler": "euler", "scheduler": "simple",
+    }
+    monkeypatch.setattr(node, "_extract_pipe", lambda pipe: values)
+    monkeypatch.setattr(node, "_apply_pose_lora_to_model", lambda model, *args: model)
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    references = []
+
+    class EncodingReached(Exception):
+        pass
+
+    def capture(name, **kwargs):
+        if name == "ImageScaleToTotalPixels":
+            return (kwargs["image"],)
+        if name in {"QwenImage21Cache", "KSamplerSelect", "BasicScheduler"}:
+            return ("prepared",)
+        if name == "TextEncodeQwenImage21":
+            references.append(kwargs["images"]["image_2"])
+        elif name == "VNCCS_Flux_Klein_Encoder":
+            references.append(kwargs["image2"])
+        elif name == "MiniMaxH3ReferenceToVideo":
+            references.append(kwargs["ref_images"]["ref_image_2"])
+        else:
+            raise AssertionError(name)
+        raise EncodingReached()
+
+    monkeypatch.setattr(cg, "_call_comfy_node", capture)
+    with pytest.raises(EncodingReached):
+        node._run_pose_generation(
+            pose, character, pipe, "Pose prompt", {}, background=background,
+            publish_each=publish_each,
+        )
+
+    assert len(references) == 1
+    expected = original if kind == "qi2" else (
+        original[..., :3] * original[..., 3:4]
+        + torch.tensor(rgb) * (1.0 - original[..., 3:4])
+    )
+    torch.testing.assert_close(references[0], expected)
+    assert torch.equal(character, original)
+
+
 def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch):
     node = cg.VNCCS_CharacterGenerator()
     image = torch.zeros(1, 96, 64, 3)

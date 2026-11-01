@@ -336,7 +336,7 @@ def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
 
 # --- Guided Filter Helper ---
 class VNCCS_MaskExtractor:
-    """Fill alpha channel with bright green color."""
+    """Fill alpha with the selected background color, defaulting to bright green."""
     
     @classmethod
     def INPUT_TYPES(cls):
@@ -351,7 +351,7 @@ class VNCCS_MaskExtractor:
     FUNCTION = "fill_alpha_with_color"
     CATEGORY = "VNCCS"
 
-    def fill_alpha_with_color(self, image):
+    def fill_alpha_with_color(self, image, background_color="Green"):
         if image is None:
             raise ValueError("No image provided")
         img = _ensure_float01(image)
@@ -367,7 +367,11 @@ class VNCCS_MaskExtractor:
         if alpha.ndim == 4 and alpha.shape[1] == 1:
             alpha = alpha.squeeze(1)
         alpha = alpha.clamp(0.0, 1.0)
-        r, g, b = 0.0, 1.0, 0.0
+        r, g, b = {
+            "green": (0.0, 1.0, 0.0),
+            "blue": (0.0, 0.0, 1.0),
+            "white": (1.0, 1.0, 1.0),
+        }.get(str(background_color or "Green").strip().lower(), (0.0, 1.0, 0.0))
         device = rgb.device
         dtype = rgb.dtype
         bg = torch.tensor([r, g, b], dtype=dtype, device=device).view(1, 1, 1, 3)

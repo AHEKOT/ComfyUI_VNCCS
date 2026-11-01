@@ -165,7 +165,7 @@ def test_qi2_enhancement_toggle_controls_only_creator_text_generation(creator, m
     monkeypatch.setattr(creator.server.PromptServer, "instance", prompt_server)
 
     def dispatch(name, **values):
-        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        assert not hasattr(prompt_server, "last_prompt_id")
         calls.append((name, values))
         if name == "TextGenerate":
             return ('{"rewritten_prompt":"One character with black hair with fine strands.","wh_ratio":"2:3"}',)

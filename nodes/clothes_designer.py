@@ -491,10 +491,6 @@ class ClothesDesigner:
     @logged_operation("ClothesDesigner", "preview")
     @serialized_generator
     def process(self, pipe=None, widget_data="{}", unique_id=None):
-        # CRITICAL FIX: Ensure PromptServer has last_prompt_id for preview system
-        if not hasattr(server.PromptServer.instance, "last_prompt_id"):
-             server.PromptServer.instance.last_prompt_id = "vnccs_api_preview"
-
         try:
             if isinstance(widget_data, str):
                 data = json.loads(widget_data)

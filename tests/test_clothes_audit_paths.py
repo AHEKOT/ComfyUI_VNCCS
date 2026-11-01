@@ -221,6 +221,26 @@ def test_clothes_preview_cache_is_bound_to_requested_costume(
         assert preview.getpixel((0, 0)) == Image.new("RGB", (1, 1), expected).getpixel((0, 0))
 
 
+def test_new_costume_preview_returns_base_sprite_not_previous_outfit(clothes_paths, monkeypatch):
+    root = Path(utils.character_dir("Alice"))
+    for costume, color in (("Naked", "green"), ("Casual", "blue")):
+        directory = root / "Sprites" / costume / "Neutral"
+        directory.mkdir(parents=True)
+        Image.new("RGBA", (2, 3), color).save(directory / "pose.png")
+    utils.save_costume_info("Alice", "Shelter", {})
+    monkeypatch.setattr(clothes_paths.web, "Response", lambda status=200, **kwargs:
+        types.SimpleNamespace(status=status, **kwargs), raising=False)
+    request = types.SimpleNamespace(rel_url=types.SimpleNamespace(query={
+        "character": "Alice", "costume": "Shelter",
+    }))
+    response = asyncio.run(clothes_paths.vnccs_get_preview(request))
+    assert response.status == 200
+    assert response.body == (root / "Sprites" / "Naked" / "Neutral" / "pose.png").read_bytes()
+    assert utils.list_pose_preview_files("Alice", costume="Shelter") == [
+        str(root / "Sprites" / "Naked" / "Neutral" / "pose.png"),
+    ]
+
+
 def test_clothes_cache_route_waits_for_complete_owner_publication(clothes_paths, monkeypatch):
     base = Path(utils.character_dir("Alice")) / "Sprites" / "Naked" / "Neutral"
     base.mkdir(parents=True)

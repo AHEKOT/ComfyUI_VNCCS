@@ -344,7 +344,8 @@ test('connection listeners serialize refreshes and are removed with the widget',
     documentEvents.get('visibilitychange')(); assert.equal(calls, 2);
     const late = windowEvents.get('online'); cleanup[0](); late();
     assert.equal(calls, 2);
-    assert.equal(events.size + windowEvents.size + documentEvents.size, 0);
+    assert.deepEqual([...events.keys()], ['vnccs.wizard.stage']);
+    assert.equal(windowEvents.size + documentEvents.size, 0);
     finish();
 });
 

@@ -3,6 +3,7 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from threading import get_ident
 from .runtime_cleanup import inference_lock
 from ..operation_logger import log_event
 
@@ -13,7 +14,26 @@ _preview_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vnccs-
 def _run_preview_job(callback, *args, **kwargs):
     # Hold the same lock as workflow generation, without merging stage cleanup.
     with inference_lock:
-        return callback(*args, **kwargs)
+        import comfy.utils
+
+        workflow_hook = getattr(comfy.utils, "PROGRESS_BAR_HOOK", None)
+        if workflow_hook is None:
+            return callback(*args, **kwargs)
+        worker = get_ident()
+
+        def preview_progress(*values, **options):
+            if get_ident() != worker:
+                return workflow_hook(*values, **options)
+            # Standalone jobs have no queued prompt; keep cancellation, not its progress stream.
+            from comfy.model_management import throw_exception_if_processing_interrupted
+            throw_exception_if_processing_interrupted()
+
+        comfy.utils.set_progress_bar_global_hook(preview_progress)
+        try:
+            return callback(*args, **kwargs)
+        finally:
+            if comfy.utils.PROGRESS_BAR_HOOK is preview_progress:
+                comfy.utils.set_progress_bar_global_hook(workflow_hook)
 
 
 async def run_preview_job(callback, *args, **kwargs):

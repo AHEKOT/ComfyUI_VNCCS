@@ -153,7 +153,8 @@ test("reconnect refreshes queue and removal discards pending snapshots and liste
     h.requests[2].resolve(response({ queue_running: [{}], queue_pending: [] }));
     await pending;
     assert.equal(h.button.disabled, false);
-    assert.ok([...h.listeners.values()].every(callbacks => callbacks.size === 0));
+    assert.deepEqual([...h.listeners].filter(([, callbacks]) => callbacks.size)
+        .map(([name, callbacks]) => [name, callbacks.size]), [['vnccs.wizard.stage', 1]]);
 });
 
 test("unknown or failed queue state keeps preview disabled until authoritative status arrives", async () => {

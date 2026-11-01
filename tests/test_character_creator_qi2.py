@@ -228,13 +228,17 @@ def test_qi2_prompt_rewriter_has_builtin_fallback(monkeypatch):
     assert '"fields"' in prompt
 
 
-def test_generate_text_initializes_preview_progress_context(monkeypatch):
+@pytest.mark.parametrize("prompt_id", [None, "queued-workflow"])
+def test_generate_text_preserves_workflow_progress_context(monkeypatch, prompt_id):
     prompt_server = creator.server.PromptServer.instance
-    monkeypatch.delattr(prompt_server, "last_prompt_id", raising=False)
+    if prompt_id is None:
+        monkeypatch.delattr(prompt_server, "last_prompt_id", raising=False)
+    else:
+        monkeypatch.setattr(prompt_server, "last_prompt_id", prompt_id, raising=False)
 
     def fake_node(name, **_kwargs):
         assert name == "TextGenerate"
-        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        assert getattr(prompt_server, "last_prompt_id", None) == prompt_id
         return (json.dumps({"rewritten_prompt": "Character portrait."}),)
 
     monkeypatch.setattr(generator, "_call_comfy_node", fake_node)

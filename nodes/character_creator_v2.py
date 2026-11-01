@@ -1006,12 +1006,6 @@ def _qi2_prompt_rewriter_system_prompt():
     return QI2_PROMPT_REWRITER_FALLBACK
 
 
-def _ensure_prompt_server_progress_context():
-    prompt_server = getattr(getattr(server, "PromptServer", None), "instance", None)
-    if prompt_server is not None and not hasattr(prompt_server, "last_prompt_id"):
-        prompt_server.last_prompt_id = "vnccs_character_creator_v2"
-
-
 def _qi2_json_result(generated_text):
     """Read the final response object, excluding any legacy thinking section."""
     text = str(generated_text or "").strip()
@@ -1236,7 +1230,6 @@ def generate_qi2_prompt(clip, character_prompt, style_reference="", character_in
     """Rewrite a style-free character body, then append the reference verbatim."""
     from .character_generator import _call_comfy_node
 
-    _ensure_prompt_server_progress_context()
     system_prompt = _qi2_prompt_rewriter_system_prompt()
     if style_reference:
         system_prompt = f"{system_prompt}\n\n{QI2_STYLE_REWRITE_RULES}"
@@ -1270,7 +1263,6 @@ def generate_qi2_prompt(clip, character_prompt, style_reference="", character_in
 
 def generate_creator_qi2_prompt(clip, character_prompt, style_reference="", character_info=None, enhance=True):
     """Temporarily use Qwen's official text-to-image master prompt."""
-    _ensure_prompt_server_progress_context()
     log_event("prompt_enhancement", component="Creator", enabled=enhance)
     fields = _character_prompt_fields(character_info, "qi2") if character_info is not None else None
     if fields is not None:
@@ -1883,7 +1875,6 @@ Example:
     @logged_operation("Creator", "preview")
     def _generate_preview_response(data, style_preview=None):
         try:
-            _ensure_prompt_server_progress_context()
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             if style_preview is not None:

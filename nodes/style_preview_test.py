@@ -22,7 +22,6 @@ from .character_creator_v2 import (
     QI2_STYLE_REFERENCE_HEADING,
     QI2_STYLE_REWRITE_RULES,
     _character_style_prompt,
-    _ensure_prompt_server_progress_context,
     _qi2_character_fields,
     _qi2_expanded_field_prompt,
     _qi2_json_result,
@@ -199,7 +198,6 @@ def _rewrite_preview_output(clip, info, style_reference):
     """Use the shared field rewriter while keeping observed adult body traits exact."""
     from .character_generator import _call_comfy_node
 
-    _ensure_prompt_server_progress_context()
     fields = _qi2_character_fields(info)
     pe_fields = {key: value for key, value in fields.items() if key not in {"aesthetics", "lora_prompt"}}
     system_prompt = _qi2_prompt_rewriter_system_prompt()
@@ -248,7 +246,6 @@ def _analyze_breast_size(image):
     analysis_settings = normalize_gen_settings(QI2_DEFAULTS)
     analysis_settings["clip_type"] = "stable_diffusion"
     clip = load_generation_clip(analysis_settings)
-    _ensure_prompt_server_progress_context()
     generated = _call_comfy_node(
         "TextGenerate", clip=clip, prompt=_BREAST_SIZE_ANALYSIS_PROMPT, image=rgb,
         **{
