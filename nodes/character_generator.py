@@ -1440,6 +1440,9 @@ class VNCCS_CharacterGenerator:
         for index, image in enumerate(images, start=1):
             if image is None:
                 continue
+            if torch.is_tensor(image) and image.ndim in {3, 4} and image.shape[-1] >= 4:
+                # Flatten before resizing so hidden RGB cannot bleed into the reference edges.
+                image = VNCCS_MaskExtractor().fill_alpha_with_color(image, background_color="White")[0]
             if output_width is None:
                 scaled_output = _call_comfy_node(
                     "ImageScaleToTotalPixels",
@@ -1704,6 +1707,7 @@ class VNCCS_CharacterGenerator:
             return image, image, empty_mask
 
         aligned_crop, crop_padding = self._pad_image_to_square_multiple(crop, multiple=32)
+        aligned_crop = VNCCS_MaskExtractor().fill_alpha_with_color(aligned_crop, background_color="White")[0]
 
         target_size = _resolution_scale_value(configured.get("target_size", 2048))
         scaled_crop = _call_comfy_node(
@@ -2391,7 +2395,9 @@ class VNCCS_CharacterGenerator:
         )
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
-        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(
+            character, background_color="White" if self._is_qi2_pipe(pipe_values) else "Green",
+        )[0]
 
         encoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Encoding source character", lora_info)
         sampling_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Sampling source character", lora_info)

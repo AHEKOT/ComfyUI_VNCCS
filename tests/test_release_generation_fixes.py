@@ -20,12 +20,14 @@ from _vnccs.nodes import clothes_designer as cd
     ("White", (1.0, 1.0, 1.0)),
 ])
 @pytest.mark.parametrize("publish_each", [False, True])
-def test_pose_reference_background_matches_creator_except_qi2(monkeypatch, kind, background, rgb, publish_each):
+def test_pose_references_use_white_for_qi2_and_selected_background_for_other_models(monkeypatch, kind, background, rgb, publish_each):
     node = cg.VNCCS_CharacterGenerator()
     pose = torch.zeros(1, 32, 32, 3)
     character = torch.full((1, 32, 3, 4), 0.25)
     character[..., 3] = torch.tensor([0.0, 0.5, 1.0])
     original = character.clone()
+    if kind == "qi2":
+        pose = character.clone()
     pipe = SimpleNamespace(lora_entries=[], lora_states=[])
     values = {
         "model": "model", "clip": "clip", "vae": "vae", "audio_vae": "audio",
@@ -46,6 +48,8 @@ def test_pose_reference_background_matches_creator_except_qi2(monkeypatch, kind,
         if name in {"QwenImage21Cache", "KSamplerSelect", "BasicScheduler"}:
             return ("prepared",)
         if name == "TextEncodeQwenImage21":
+            torch.testing.assert_close(kwargs["images"]["image_1"],
+                                       original[..., :3] * original[..., 3:4] + 1.0 - original[..., 3:4])
             references.append(kwargs["images"]["image_2"])
         elif name == "VNCCS_Flux_Klein_Encoder":
             references.append(kwargs["image2"])
@@ -63,12 +67,38 @@ def test_pose_reference_background_matches_creator_except_qi2(monkeypatch, kind,
         )
 
     assert len(references) == 1
-    expected = original if kind == "qi2" else (
+    expected = (
         original[..., :3] * original[..., 3:4]
-        + torch.tensor(rgb) * (1.0 - original[..., 3:4])
+        + torch.tensor((1.0, 1.0, 1.0) if kind == "qi2" else rgb) * (1.0 - original[..., 3:4])
     )
     torch.testing.assert_close(references[0], expected)
     assert torch.equal(character, original)
+
+
+@pytest.mark.parametrize("kind,background", [("qi2", (1.0, 1.0, 1.0)), ("klein9b", (0.0, 1.0, 0.0))])
+def test_remove_clothes_prepares_white_reference_only_for_qi2(monkeypatch, kind, background):
+    node = cg.VNCCS_CharacterGenerator()
+    image = torch.full((1, 32, 3, 4), 0.25)
+    image[..., 3] = torch.tensor([0.0, 0.5, 1.0])
+    original = image.clone()
+    monkeypatch.setattr(node, "_extract_pipe", lambda _pipe: {
+        "model_kind": kind, "seed": 1, "steps": 8, "cfg": 1.0,
+        "sampler": "euler", "scheduler": "simple",
+    })
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+
+    class EncodingReached(Exception):
+        pass
+
+    def encode(_pipe_values, _prompt, image1, **kwargs):
+        expected = original[..., :3] * original[..., 3:4] + torch.tensor(background) * (1.0 - original[..., 3:4])
+        torch.testing.assert_close(image1, expected)
+        raise EncodingReached()
+
+    monkeypatch.setattr(node, "_encoder_call", encode)
+    with pytest.raises(EncodingReached):
+        node._run_remove_clothes(image, object(), {"prompt": "Keep the character"})
+    assert torch.equal(image, original)
 
 
 def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch):
@@ -91,7 +121,7 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, clip, pipe, lora, stage:
                         applied.append((lora, stage)) or clothes_model)
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda x: (x,))}))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda x, background_color="Green": (x,))}))
 
     def call(name, **kwargs):
         calls.append((name, kwargs))

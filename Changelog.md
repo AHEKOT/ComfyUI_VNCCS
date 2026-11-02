@@ -1,3 +1,34 @@
+# VNCCS 3.3.3 Changelog
+
+This patch release corrects reference-image preparation, saves upscaler results as reusable PNGs, and improves preview reliability and generation diagnostics. The changes below describe the final release compared with `main` (`3.3.2`).
+
+## Reference Images and Clothing Generation
+
+- Transparent QI2 references are composited onto white and passed to the native encoder as RGB, so its vision and VAE inputs receive the same background. This applies to Clothes Designer previews and cloning, Character, Clone, Clothes, and Emotions Generators, and the Remove Clothes stage.
+- QI2 Clothes Designer and Clothes Generator retain the source reference resolution independently of the requested output resolution. Reference and output dimensions are aligned to multiples of 32 pixels.
+- Clothes Designer and Clothes Generator also align reference dimensions for Flux Klein and MiniMax H3. H3 references are resized to the calculated generation dimensions before encoding.
+- Non-QI2 pose generation now composites transparent character references onto the selected Green, Blue, or White background before encoding.
+- Clothes Designer preview cache keys include the updated reference preparation and alignment settings, preventing reuse of previews generated with the previous behavior.
+
+## Upscaler Results and Regeneration
+
+- Character, Clone, and Clothes Generators save full-resolution upscaler results as PNGs in separate stage folders, including the Clothes Generator source-upscaler stage, without duplicate upscaler tensor caches.
+- Galleries display the saved PNGs, and later stages and single-image regeneration reload those same files. Existing PNGs stored directly in the workflow cache remain readable.
+- New runs archive the previous upscaler stage folders alongside other preview images. PNG publication preserves complete batches if saving fails.
+
+## Previews, Wizards, and Runtime
+
+- Standalone previews no longer send progress updates into the last queued workflow. Cancellation remains available, and the workflow progress hook is restored after completion or failure.
+- Clothes Designer locks character and costume selection, costume creation and deletion, mode switching, and preview generation while a workflow is queued or running. Queue status is refreshed after reconnecting.
+- Character Wizard, Clothes Wizard, and Cloner image analysis display request-specific waiting, running, applying, and failure states. Events from another request or node cannot replace the active status.
+- Sprite previews load independently of navigation metadata, cancel obsolete image loads, and show a retry message after a loading failure or timeout. Clothes Designer no longer makes a redundant image-validation request before displaying a preview.
+- Clothes Designer unloads the preview model and its clones after an error or interruption. Temporary-file cleanup failures are logged without masking the original operation error.
+
+## Diagnostics
+
+- Added untruncated INFO-level logging of the exact prompts sent to generation encoders, prompt enhancement, character and clothes wizards, Cloner image analysis, and SAM3 recovery segmentation, including empty negative prompts.
+- QI2 encoder diagnostics report reference dimensions, encoder resolution, and output dimensions separately.
+
 # VNCCS 3.3.2 Changelog
 
 This patch release fixes incomplete model installations from node cards and removes automatic green compositing of character references before pose generation.
