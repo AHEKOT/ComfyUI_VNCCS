@@ -1,6 +1,7 @@
 """Flux Klein conditioning encoder assembled from native ComfyUI nodes."""
 
 import inspect
+from ..operation_logger import log_prompts
 
 try:
     import nodes as comfy_nodes
@@ -157,6 +158,7 @@ class VNCCS_Flux_Klein_Encoder:
         empty_height=1024,
         batch_size=1,
     ):
+        log_prompts("Flux Klein conditioning", positive=prompt)
         positive = _call_comfy_node("CLIPTextEncode", clip=clip, text=prompt)[0]
         negative = _call_comfy_node("ConditioningZeroOut", conditioning=positive)[0]
 

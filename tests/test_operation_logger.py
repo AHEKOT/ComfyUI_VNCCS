@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from _vnccs.operation_logger import log_event, log_stage, logged_operation
+from _vnccs.operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 
 def summaries(caplog):
@@ -99,6 +99,25 @@ def test_readable_blocks_keep_real_line_breaks_and_complete_text(caplog):
     assert prompt in message
     assert "\\n" not in message and "positive=" not in message and "truncate=" not in message
     assert summaries(caplog)[0]["positive"] == prompt
+
+
+def test_model_prompt_blocks_are_complete_scoped_and_visible_at_info(caplog):
+    positive = "Tailored coat\n" + "silver embroidery " * 400
+
+    @logged_operation("ClothesDesigner", "preview")
+    def generate(unique_id):
+        log_prompts("QI2 conditioning", positive=positive, negative="", system=None)
+
+    with caplog.at_level(logging.INFO, logger="VNCCS"):
+        generate("753")
+    record = next(record for record in caplog.records if record.vnccs["event"] == "prompts")
+    assert record.levelno == logging.INFO
+    assert record.vnccs["positive"] == positive
+    assert record.vnccs["negative"] == ""
+    assert "system" not in record.vnccs
+    assert record.vnccs["component"] == "ClothesDesigner" and record.vnccs["node_id"] == "753"
+    assert positive in record.getMessage() and "Negative prompt:\n" in record.getMessage()
+    assert record.vnccs["operation"] == summaries(caplog)[0]["operation"]
 
 
 def test_concurrent_and_nested_jobs_keep_separate_contexts(caplog):

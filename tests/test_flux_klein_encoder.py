@@ -119,6 +119,22 @@ def test_no_images_skips_every_reference_processing_block(monkeypatch):
     ]
 
 
+def test_full_prompt_is_logged_before_encoder_failure(monkeypatch, caplog):
+    prompt = "A tailored winter coat\n" + "fine wool texture " * 300
+
+    def fail(name, **kwargs):
+        assert name == "CLIPTextEncode" and kwargs["text"] == prompt
+        record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
+        assert record.vnccs["positive"] == prompt
+        assert prompt in record.getMessage()
+        assert "negative" not in record.vnccs
+        raise RuntimeError("encoder failed")
+
+    monkeypatch.setattr(encoder_module, "_call_comfy_node", fail)
+    with pytest.raises(RuntimeError, match="encoder failed"):
+        VNCCS_Flux_Klein_Encoder().encode("clip", prompt, "vae")
+
+
 @pytest.mark.parametrize("image_key", ["image1", "image2", "image3"])
 def test_sparse_image_inputs_only_run_their_own_blocks(monkeypatch, image_key):
     calls = _install_fake_nodes(monkeypatch)

@@ -373,12 +373,15 @@ def test_empty_custom_style_does_not_create_an_empty_reference_block(monkeypatch
 
 
 @pytest.mark.parametrize("mode", ["illustrious", "anima"])
-def test_non_qi2_conditioning_keeps_direct_style_prompt(monkeypatch, mode):
+def test_non_qi2_conditioning_keeps_direct_style_prompt(monkeypatch, caplog, mode):
     info = {"style": "fortiche_arcane", "age": 30, "eyes": "blue eyes"}
     positive, negative = creator.CharacterCreatorV2.construct_prompt(info, mode)
     encoded = []
 
     def encode(_clip, text, _settings):
+        record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
+        assert record.vnccs["positive"] == positive and record.vnccs["negative"] == negative
+        assert text in record.getMessage()
         encoded.append(text)
         return text
 

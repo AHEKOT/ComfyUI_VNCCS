@@ -269,7 +269,7 @@ class TestEditableCostumeValidation:
 ])
 @pytest.mark.parametrize("clone", [False, True])
 @pytest.mark.parametrize("cfg", [None, 0.0])
-def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, size, expected, clone, cfg):
+def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog, kind, size, expected, clone, cfg):
     from _vnccs.nodes import clothes_designer as cd
     from _vnccs.nodes import character_generator as cg
     from PIL import Image
@@ -334,8 +334,17 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
         if name in ("VAEDecodeTiled", "VAEDecode"):
             return (torch.zeros((1, 96, 64, 3)),)
         return (object(),)
-    monkeypatch.setattr(cd, "_call_comfy_node", call)
-    monkeypatch.setattr(cg, "_call_comfy_node", call)
+    def node_class(name):
+        return type(name, (), {"FUNCTION": "run", "run": staticmethod(lambda **kwargs: call(name, **kwargs))})
+
+    mappings = {name: node_class(name) for name in (
+        "TextGenerate", "VNCCS_Flux_Klein_Encoder", "ImageScale", "ImageScaleToTotalPixels",
+        "TextEncodeQwenImage21", "EmptyLatentImage", "MiniMaxH3ReferenceToVideo",
+        "KSampler", "SamplerCustomAdvanced", "VAEDecodeTiled", "VAEDecode", "QwenImage21Cache",
+        "BasicScheduler", "BasicGuider", "RandomNoise", "KSamplerSelect", "LoraLoaderModelOnly",
+    )}
+    monkeypatch.setattr(cg, "comfy_nodes", types.SimpleNamespace(NODE_CLASS_MAPPINGS=mappings))
+    monkeypatch.setattr(cd, "_call_comfy_node", cg._call_comfy_node)
     monkeypatch.setattr(cd, "_find_model_on_disk", lambda path: (path, True))
     monkeypatch.setattr(cd, "_apply_lora_standard", lambda model, clip, path, strength: (
         call("LoraLoaderModelOnly", model=model, lora_name=path, strength_model=strength)[0], clip,
@@ -434,6 +443,22 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, kind, s
     node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
     assert call_names.count(encoder_name) == 1
     assert call_names.count("TextGenerate") == (1 if kind == "QI2" and not clone else 0)
+    if kind in {"QI2", "MiniMaxH3"}:
+        records = [record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts"]
+        encoded = [record for record in records if record.vnccs["context"] == encoder_name]
+        assert len(encoded) == 1, "A cache hit must not pretend to generate another image."
+        assert encoded[0].vnccs["positive"] == calls[encoder_name]["prompt"]
+        assert calls[encoder_name]["prompt"] in encoded[0].getMessage()
+        assert encoded[0].vnccs["component"] == "ClothesDesigner"
+        assert encoded[0].vnccs["node_id"] == "123"
+        if kind == "QI2":
+            assert encoded[0].vnccs["negative"] == calls[encoder_name]["negative_prompt"]
+            if not clone:
+                rewrite = next(record for record in records if record.vnccs["context"] == "Text generation")
+                assert rewrite.vnccs["user"] == calls["TextGenerate"]["prompt"]
+                assert rewrite.vnccs["user"] in rewrite.getMessage()
+        else:
+            assert "negative" not in encoded[0].vnccs
     if clone:
         monkeypatch.setattr(cd, "resolve_comfy_image_path", lambda *args, **kwargs: str(clone_path))
         old_signature = node.IS_CHANGED(widget_data=json.dumps(data))

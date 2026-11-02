@@ -45,7 +45,7 @@ def test_encoder_leaves_rgb_untouched():
 
 @pytest.mark.parametrize("slots", [(2,), (3,), (1, 3), (1, 2, 3), ()])
 @pytest.mark.parametrize("selected", [1, 2, 3])
-def test_sparse_image_slots_keep_their_weights_and_selected_latent(monkeypatch, slots, selected):
+def test_sparse_image_slots_keep_their_weights_and_selected_latent(monkeypatch, caplog, slots, selected):
     from types import SimpleNamespace
     from nodes import vnccs_qwen_encoder as module
 
@@ -68,6 +68,9 @@ def test_sparse_image_slots_keep_their_weights_and_selected_latent(monkeypatch, 
     assert len(references) == len(expected)
     assert all(torch.equal(actual, wanted) for actual, wanted in zip(references, expected))
     assert len(tokenized[0][1]["images"]) == len(slots)
+    record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
+    assert record.vnccs["positive"] == tokenized[0][0]
+    assert record.vnccs["system"] in tokenized[0][1]["llama_template"]
     assert [f"Picture {slot}" for slot in slots] == [name for name in ("Picture 1", "Picture 2", "Picture 3") if name in tokenized[0][0]]
     assert torch.count_nonzero(negative[0][0]) == 0
     if selected in images:

@@ -1,4 +1,4 @@
-from ..operation_logger import log_event, log_stage, logged_operation
+from ..operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 from .preview_runtime import run_preview_job, run_wizard_job
 
@@ -1337,6 +1337,8 @@ def encode_generation_conditioning(
             images={},
         )
         return positive, negative, rewritten_prompt
+    log_prompts(f"{gen_settings.get('generation_mode', 'illustrious')} conditioning",
+                positive=positive_text, negative=negative_text)
     return (
         encode_generation_prompt(clip, positive_text, gen_settings),
         encode_generation_prompt(clip, negative_text, gen_settings),
@@ -1830,6 +1832,7 @@ Example:
 
             configure_qwen_text_chat(llm)
             log_stage("generating_description")
+            log_prompts("Character Wizard", system=system_prompt, user=user_prompt)
             response = llm.create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1976,13 +1979,6 @@ Example:
                     style_reference=_character_style_prompt(char_info),
                     character_info=char_info, creator_prompt=True,
                 )
-                if generation_mode == "qi2":
-                    CharacterCreatorV2.log_generation_prompts(
-                        "QI2 encoded preview",
-                        encoded_positive_text,
-                        negative_text,
-                        framing=char_info.get("image_type") or char_info.get("framing"),
-                    )
                 if generation_mode == "anima":
                     validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
 
@@ -2548,13 +2544,6 @@ class CharacterCreatorV2:
                     style_reference=_character_style_prompt(info),
                     character_info=info, creator_prompt=True,
                 )
-                if generation_mode == "qi2":
-                    self.log_generation_prompts(
-                        "QI2 encoded workflow",
-                        encoded_positive_prompt,
-                        negative_prompt,
-                        framing=info.get("framing"),
-                    )
                 if generation_mode == "anima":
                     validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
 

@@ -4,7 +4,7 @@ Replacement node for the Step 1 Pose Generation -> Upscaler -> BG Remove
 subgraph chain. It executes the same processing stages internally and exposes a
 DOM widget for stage previews/settings.
 """
-from ..operation_logger import log_event, log_stage, logged_operation
+from ..operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 from .generator_context import _LIVE_GENERATOR_CONTEXTS, _generator_context_key, _remember_generator_context, _get_generator_context, scoped_cache_dir, _forget_generator_context, generator_execution_lock, serialized_generator
 from .progress_state import begin_progress, record_progress, progress_snapshot, PROGRESS_EPOCH
@@ -291,6 +291,10 @@ def _call_comfy_node(class_name, **kwargs):
     signature = inspect.signature(method)
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
     accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+    if class_name in {"TextEncodeQwenImage21", "MiniMaxH3ReferenceToVideo"}:
+        log_prompts(class_name, positive=accepted.get("prompt"), negative=accepted.get("negative_prompt"))
+    elif class_name == "TextGenerate":
+        log_prompts("Text generation", system=accepted.get("system_prompt"), user=accepted.get("prompt"))
     try:
         result = method(**accepted)
     except AttributeError as exc:
@@ -4156,8 +4160,8 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 detailer_positive_text += f"\n{NATIVE_BACKGROUND_PROMPT}"
         else:
             detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
-        log_event("emotion_prompt", level="debug", prompt=detailer_positive_text)
         if not is_qi2:
+            log_prompts("Emotion detailer", positive=detailer_positive_text, negative=str(negative_prompt or ""))
             positive = _call_comfy_node(
                 "CLIPTextEncode", clip=pipe_values["clip"], text=detailer_positive_text,
             )[0]

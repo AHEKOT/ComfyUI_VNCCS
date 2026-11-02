@@ -1,4 +1,4 @@
-from ..operation_logger import log_event, log_stage, logged_operation
+from ..operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 from .preview_runtime import run_wizard_job, run_preview_job
 from .generator_context import serialized_generator, forget_character_contexts
@@ -523,272 +523,286 @@ class ClothesDesigner:
         if model is None or clip is None or vae is None:
             raise ValueError("Incoming VNCCS pipe is missing model, clip, or vae.")
         
-        # 0. Validation
-        def has_base_body(c):
-             return bool(
-                 get_latest_sprite_path(c, "Naked")
-                 or get_latest_sprite_path(c, "Original")
-             )
-
-        if not has_base_body(character_name):
-             raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
-
-        model_kind = _entry_kind(getattr(pipe, "model_entry", None))
-        is_h3 = model_kind == "minimaxh3"
-        if is_h3:
-            require_h3_still_support()
-        is_qi2 = model_kind == "qi2"
-        background_color = self._effective_background_color(
-            gen_settings.get("background_color"), model_kind,
-        )
-
-        # 1. Prompt
-        positive_prompt, negative_prompt = self.construct_prompt(data, model_kind=model_kind)
-
-        # 2. Paths
-        sheet_path = sheets_dir(character_name, costume_name, "neutral")
-
-        default_steps = 25 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["steps"]
-        default_cfg = 3.0 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["cfg"]
-        seed_value = gen_settings.get("seed")
-        if seed_value is None or seed_value == "":
-            seed_value = getattr(pipe, "seed_int", getattr(pipe, "seed", None))
-        seed_int = int(WORKFLOW_SAMPLER_DEFAULTS["seed"] if seed_value is None else seed_value)
-        sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or default_steps)
-        cfg_value = getattr(pipe, "cfg", None)
-        cfg = float(default_cfg if cfg_value is None else cfg_value)
-        denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
-        sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
-        scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
-        clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
-        target_size = _clothes_target_size(gen_settings, model_kind)
-        clone_image_path = resolve_comfy_image_path(data["clone_image"]) if active_tab == "clone" else None
-        clone_reference_hash = _clone_reference_digest(clone_image_path) if clone_image_path else None
-        # Resolve the actual selected image before consulting the persistent cache.
-        ref_image = self.get_reference_sprite(character_name, data)
-        if ref_image is None:
-            raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
-        source_reference_hash = hashlib.sha256(
-            ref_image.detach().cpu().contiguous().numpy().tobytes()
-        ).hexdigest()
-        use_qi2_rewriter = (
-            is_qi2
-            and active_tab != "clone"
-            and gen_settings.get("qi2_prompt_enhancement", True) is not False
-        )
-        edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
-
-        # 3. Cache check
-        c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
         try:
-            cache_payload = {
-                "model_cache_key": getattr(pipe, "model_cache_key", None),
-                "widget_data": data,
-                "prompts": {"positive": positive_prompt, "negative": negative_prompt},
-                "clone_reference_sha256": clone_reference_hash,
-                "source_reference": {"sha256": source_reference_hash, "shape": list(ref_image.shape)},
-                "sampler": {
-                    "seed": seed_int,
-                    "steps": sample_steps,
-                    "cfg": cfg,
-                    "denoise": denoise,
-                    "sampler_name": sampler_name,
-                    "scheduler": scheduler,
-                },
-                "clothes_core_lora": clothes_core_lora,
-                "resolution": {"model_kind": model_kind, "target_size": target_size},
-            }
-            if use_qi2_rewriter:
-                from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS
+            # 0. Validation
+            def has_base_body(c):
+                 return bool(
+                     get_latest_sprite_path(c, "Naked")
+                     or get_latest_sprite_path(c, "Original")
+                 )
 
-                cache_payload["qi2_edit_rewriter"] = {
-                    "version": 1,
-                    "system_prompt_sha256": hashlib.sha256(edit_system_prompt.encode("utf-8")).hexdigest(),
-                    "text_generation": QI2_TEXT_GENERATION_DEFAULTS,
+            if not has_base_body(character_name):
+                 raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
+
+            model_kind = _entry_kind(getattr(pipe, "model_entry", None))
+            is_h3 = model_kind == "minimaxh3"
+            if is_h3:
+                require_h3_still_support()
+            is_qi2 = model_kind == "qi2"
+            background_color = self._effective_background_color(
+                gen_settings.get("background_color"), model_kind,
+            )
+
+            # 1. Prompt
+            positive_prompt, negative_prompt = self.construct_prompt(data, model_kind=model_kind)
+
+            # 2. Paths
+            sheet_path = sheets_dir(character_name, costume_name, "neutral")
+
+            default_steps = 25 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["steps"]
+            default_cfg = 3.0 if model_kind == "qi2" else WORKFLOW_SAMPLER_DEFAULTS["cfg"]
+            seed_value = gen_settings.get("seed")
+            if seed_value is None or seed_value == "":
+                seed_value = getattr(pipe, "seed_int", getattr(pipe, "seed", None))
+            seed_int = int(WORKFLOW_SAMPLER_DEFAULTS["seed"] if seed_value is None else seed_value)
+            sample_steps = int(getattr(pipe, "sample_steps", getattr(pipe, "steps", 0)) or default_steps)
+            cfg_value = getattr(pipe, "cfg", None)
+            cfg = float(default_cfg if cfg_value is None else cfg_value)
+            denoise = float(getattr(pipe, "denoise", 0.0) or WORKFLOW_SAMPLER_DEFAULTS["denoise"])
+            sampler_name = getattr(pipe, "sampler_name", None) or WORKFLOW_SAMPLER_DEFAULTS["sampler_name"]
+            scheduler = getattr(pipe, "scheduler", None) or WORKFLOW_SAMPLER_DEFAULTS["scheduler"]
+            clothes_core_lora = _resolve_pipe_clothes_core_lora(pipe)
+            target_size = _clothes_target_size(gen_settings, model_kind)
+            clone_image_path = resolve_comfy_image_path(data["clone_image"]) if active_tab == "clone" else None
+            clone_reference_hash = _clone_reference_digest(clone_image_path) if clone_image_path else None
+            # Resolve the actual selected image before consulting the persistent cache.
+            ref_image = self.get_reference_sprite(character_name, data)
+            if ref_image is None:
+                raise ValueError(f"Character '{character_name}' is incomplete. Missing 'Naked' or 'Original' sprites.")
+            source_reference_hash = hashlib.sha256(
+                ref_image.detach().cpu().contiguous().numpy().tobytes()
+            ).hexdigest()
+            use_qi2_rewriter = (
+                is_qi2
+                and active_tab != "clone"
+                and gen_settings.get("qi2_prompt_enhancement", True) is not False
+            )
+            edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
+
+            # 3. Cache check
+            c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
+            try:
+                cache_payload = {
+                    "model_cache_key": getattr(pipe, "model_cache_key", None),
+                    "widget_data": data,
+                    "prompts": {"positive": positive_prompt, "negative": negative_prompt},
+                    "clone_reference_sha256": clone_reference_hash,
+                    "source_reference": {"sha256": source_reference_hash, "shape": list(ref_image.shape)},
+                    "sampler": {
+                        "seed": seed_int,
+                        "steps": sample_steps,
+                        "cfg": cfg,
+                        "denoise": denoise,
+                        "sampler_name": sampler_name,
+                        "scheduler": scheduler,
+                    },
+                    "clothes_core_lora": clothes_core_lora,
+                    "resolution": {"model_kind": model_kind, "target_size": target_size},
                 }
-            if is_qi2:
-                cache_payload["qi2_cache"] = getattr(pipe, "qi2_cache", {})
-                cache_payload["qi2_turbo"] = sorted(
-                    item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
-                    if item.get("auto_apply") and "viggle" in str(item.get("name", "")).lower()
+                if use_qi2_rewriter:
+                    from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS
+
+                    cache_payload["qi2_edit_rewriter"] = {
+                        "version": 1,
+                        "system_prompt_sha256": hashlib.sha256(edit_system_prompt.encode("utf-8")).hexdigest(),
+                        "text_generation": QI2_TEXT_GENERATION_DEFAULTS,
+                    }
+                if is_qi2:
+                    cache_payload["qi2_cache"] = getattr(pipe, "qi2_cache", {})
+                    cache_payload["qi2_turbo"] = sorted(
+                        item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
+                        if item.get("auto_apply") and "viggle" in str(item.get("name", "")).lower()
+                    )
+                if is_h3:
+                    cache_payload["h3_still_decode"] = 16881
+                canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
+                input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
+                # Custom or externally modified pipes cannot provide a stable asset identity.
+                if cache_payload["model_cache_key"] is None:
+                    input_hash = "INVALID"
+            except Exception:
+                 input_hash = "INVALID"
+
+            if input_hash != "INVALID" and os.path.exists(c_img_path) and os.path.exists(c_info_path):
+                try:
+                    with open(c_info_path, "r", encoding="utf-8") as f:
+                        cache_info = json.load(f)
+                    if cache_info.get("hash") == input_hash:
+                        log_event("preview_cache", component="ClothesDesigner", character=character_name, costume=costume_name, cache="hit")
+                        with Image.open(c_img_path) as img:
+                            image = self._pil_image_tensor(img)
+                        server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
+                        return (image, sheet_path, self._background_output_value(background_color))
+                except Exception as exc:
+                    log_event('fallback', component='ClothesDesigner', level='warning', message=f'Cache read failed, regenerating preview: {exc}', error=str(exc))
+
+            ref_image = self._prepare_reference_background(
+                ref_image, background_color, preserve_transparency=is_qi2,
+            )
+
+            # Load Clone Image. In clone mode it becomes Picture 2 from the reference workflow.
+            clone_image_tensor = None
+            if active_tab == "clone" and data.get("clone_image"):
+                 try:
+                     log_event("diagnostic", component="ClothesDesigner", level="debug", message=f'Clone reference image resolved: {clone_image_path}')
+
+                     with Image.open(clone_image_path) as source_image:
+                         i = self._pil_image_tensor(source_image)
+                     i = self._prepare_reference_background(
+                         i, background_color, preserve_transparency=is_qi2,
+                     )
+
+                     clone_image_tensor = i
+                 except Exception as e:
+                     log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to load clone image for encoder: {e}', error=str(e))
+                     raise
+
+            image2 = clone_image_tensor if active_tab == "clone" and clone_image_tensor is not None else None
+            if use_qi2_rewriter:
+                positive_prompt = _rewrite_qi2_clothes_prompt(
+                    clip, positive_prompt, (ref_image,),
+                    background_color, edit_system_prompt,
+                )
+            log_event("encoder_inputs", component="ClothesDesigner", character=character_name, costume=costume_name,
+                      mode=active_tab, model_family=model_kind, clone_reference=image2 is not None)
+            is_klein = model_kind == "klein9b"
+            if not (is_h3 or is_qi2 or is_klein):
+                raise ValueError(f"Unsupported clothes model family: {model_kind or 'unknown'}")
+            encoder_kwargs = {
+                "clip": clip,
+                "prompt": positive_prompt,
+                "vae": vae,
+                "image1": ref_image,
+                "image2": image2,
+                "image3": None,
+            }
+            if is_klein:
+                encoder_kwargs.update(
+                    upscale_method="lanczos",
+                    megapixels=_resolution_scale_megapixels(target_size),
+                    resolution_steps=1,
                 )
             if is_h3:
-                cache_payload["h3_still_decode"] = 16881
-            canonical_str = json.dumps(cache_payload, sort_keys=True, separators=(',', ':'))
-            input_hash = hashlib.sha256(canonical_str.encode('utf-8')).hexdigest()
-            # Custom or externally modified pipes cannot provide a stable asset identity.
-            if cache_payload["model_cache_key"] is None:
-                input_hash = "INVALID"
-        except Exception:
-             input_hash = "INVALID"
+                audio_vae = getattr(pipe, "audio_vae", None)
+                if audio_vae is None:
+                    raise ValueError("MiniMax H3 requires the audio VAE from VNCCS Control Center.")
+                width, height = VNCCS_CharacterGenerator()._resolution_scale_dimensions(ref_image, target_size)
+                references = {"ref_image_1": ref_image}
+                if image2 is not None:
+                    references["ref_image_2"] = image2
+                pos_cond, empty_latent = _call_comfy_node(
+                    "MiniMaxH3ReferenceToVideo", clip=clip, vae=vae, audio_vae=audio_vae,
+                    prompt=positive_prompt, width=width, height=height, length=H3_FRAME_COUNT,
+                    ref_image_size="match", ref_images=references,
+                )
+                neg_cond = None
+            elif is_qi2:
+                pos_cond, neg_cond, empty_latent = VNCCS_CharacterGenerator()._qi2_encode(
+                    {"clip": clip, "vae": vae}, positive_prompt,
+                    (ref_image, image2), target_size=target_size,
+                    negative_prompt=negative_prompt,
+                )
+            else:
+                pos_cond, neg_cond, empty_latent = _call_comfy_node("VNCCS_Flux_Klein_Encoder", **encoder_kwargs)
 
-        if input_hash != "INVALID" and os.path.exists(c_img_path) and os.path.exists(c_info_path):
-            try:
-                with open(c_info_path, "r", encoding="utf-8") as f:
-                    cache_info = json.load(f)
-                if cache_info.get("hash") == input_hash:
-                    log_event("preview_cache", component="ClothesDesigner", character=character_name, costume=costume_name, cache="hit")
-                    with Image.open(c_img_path) as img:
-                        image = self._pil_image_tensor(img)
-                    server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
-                    return (image, sheet_path, self._background_output_value(background_color))
-            except Exception as exc:
-                log_event('fallback', component='ClothesDesigner', level='warning', message=f'Cache read failed, regenerating preview: {exc}', error=str(exc))
+            sampler_model = model
+            if clothes_core_lora:
+                log_event("lora_applied", component="ClothesDesigner", model=clothes_core_lora, strength=1)
+                lora_path, exists = _find_model_on_disk(f"models/loras/{clothes_core_lora}")
+                if not exists:
+                    raise ValueError(f"VNCCS Clothes Core LoRA is not installed: {clothes_core_lora}")
+                sampler_model = _apply_lora_standard(model, None, lora_path, 1)[0]
+            if is_qi2:
+                qi2_generator = VNCCS_CharacterGenerator()
+                sampler_model, qi2_turbo = qi2_generator._qi2_prepare_model(
+                    sampler_model, pipe, {"qi2_cache": getattr(pipe, "qi2_cache", {})},
+                )
 
-        ref_image = self._prepare_reference_background(
-            ref_image, background_color, preserve_transparency=is_qi2,
-        )
-        
-        # Load Clone Image. In clone mode it becomes Picture 2 from the reference workflow.
-        clone_image_tensor = None
-        if active_tab == "clone" and data.get("clone_image"):
-             try:
-                 log_event("diagnostic", component="ClothesDesigner", level="debug", message=f'Clone reference image resolved: {clone_image_path}')
-                 
-                 with Image.open(clone_image_path) as source_image:
-                     i = self._pil_image_tensor(source_image)
-                 i = self._prepare_reference_background(
-                     i, background_color, preserve_transparency=is_qi2,
-                 )
-                 
-                 clone_image_tensor = i
-             except Exception as e:
-                 log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to load clone image for encoder: {e}', error=str(e))
-                 raise
+            # 4. Sampling using the incoming Control Center pipe configuration
+            log_stage("sampling", component="ClothesDesigner")
+            if is_h3:
+                sampler = _call_comfy_node("KSamplerSelect", sampler_name=sampler_name)[0]
+                sigmas = _call_comfy_node("BasicScheduler", model=sampler_model, scheduler=scheduler, steps=sample_steps, denoise=denoise)[0]
+                guider = _call_comfy_node("BasicGuider", model=sampler_model, conditioning=pos_cond)[0]
+                noise = _call_comfy_node("RandomNoise", noise_seed=seed_int)[0]
+                latent_result = _call_comfy_node(
+                    "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
+                    sigmas=sigmas, latent_image=empty_latent,
+                )[0]
+            elif is_qi2:
+                latent_result = qi2_generator._qi2_sample(
+                    sampler_model, pos_cond, neg_cond, empty_latent,
+                    {"seed": seed_int, "steps": sample_steps,
+                     "cfg": cfg, "sampler_name": sampler_name,
+                     "scheduler": scheduler, "denoise": denoise},
+                    turbo=qi2_turbo,
+                )
+            else:
+                latent_result = _call_comfy_node(
+                    "KSampler",
+                    model=sampler_model, seed=seed_int, steps=sample_steps,
+                    cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
+                    positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=denoise
+                )[0]
 
-        image2 = clone_image_tensor if active_tab == "clone" and clone_image_tensor is not None else None
-        if use_qi2_rewriter:
-            positive_prompt = _rewrite_qi2_clothes_prompt(
-                clip, positive_prompt, (ref_image,),
-                background_color, edit_system_prompt,
-            )
-        log_event("encoder_inputs", component="ClothesDesigner", mode=active_tab, clone_reference=image2 is not None, prompt_chars=len(positive_prompt))
-        is_klein = model_kind == "klein9b"
-        if not (is_h3 or is_qi2 or is_klein):
-            raise ValueError(f"Unsupported clothes model family: {model_kind or 'unknown'}")
-        encoder_kwargs = {
-            "clip": clip,
-            "prompt": positive_prompt,
-            "vae": vae,
-            "image1": ref_image,
-            "image2": image2,
-            "image3": None,
-        }
-        if is_klein:
-            encoder_kwargs.update(
-                upscale_method="lanczos",
-                megapixels=_resolution_scale_megapixels(target_size),
-                resolution_steps=1,
-            )
-        if is_h3:
-            audio_vae = getattr(pipe, "audio_vae", None)
-            if audio_vae is None:
-                raise ValueError("MiniMax H3 requires the audio VAE from VNCCS Control Center.")
-            width, height = VNCCS_CharacterGenerator()._resolution_scale_dimensions(ref_image, target_size)
-            references = {"ref_image_1": ref_image}
-            if image2 is not None:
-                references["ref_image_2"] = image2
-            pos_cond, empty_latent = _call_comfy_node(
-                "MiniMaxH3ReferenceToVideo", clip=clip, vae=vae, audio_vae=audio_vae,
-                prompt=positive_prompt, width=width, height=height, length=H3_FRAME_COUNT,
-                ref_image_size="match", ref_images=references,
-            )
-            neg_cond = None
-        elif is_qi2:
-            pos_cond, neg_cond, empty_latent = VNCCS_CharacterGenerator()._qi2_encode(
-                {"clip": clip, "vae": vae}, positive_prompt,
-                (ref_image, image2), target_size=target_size,
-                negative_prompt=negative_prompt,
-            )
-        else:
-            pos_cond, neg_cond, empty_latent = _call_comfy_node("VNCCS_Flux_Klein_Encoder", **encoder_kwargs)
-        
-        sampler_model = model
-        if clothes_core_lora:
-            log_event("lora_applied", component="ClothesDesigner", model=clothes_core_lora, strength=1)
-            lora_path, exists = _find_model_on_disk(f"models/loras/{clothes_core_lora}")
-            if not exists:
-                raise ValueError(f"VNCCS Clothes Core LoRA is not installed: {clothes_core_lora}")
-            sampler_model = _apply_lora_standard(model, None, lora_path, 1)[0]
-        if is_qi2:
-            qi2_generator = VNCCS_CharacterGenerator()
-            sampler_model, qi2_turbo = qi2_generator._qi2_prepare_model(
-                sampler_model, pipe, {"qi2_cache": getattr(pipe, "qi2_cache", {})},
-            )
+            def normalize_decode_input(value):
+                if torch.is_tensor(value):
+                    return value.detach().clone()
+                if isinstance(value, dict):
+                    return {k: normalize_decode_input(v) for k, v in value.items()}
+                if isinstance(value, list):
+                    return [normalize_decode_input(v) for v in value]
+                if isinstance(value, tuple):
+                    return tuple(normalize_decode_input(v) for v in value)
+                return value
 
-        # 4. Sampling using the incoming Control Center pipe configuration
-        log_stage("sampling", component="ClothesDesigner")
-        if is_h3:
-            sampler = _call_comfy_node("KSamplerSelect", sampler_name=sampler_name)[0]
-            sigmas = _call_comfy_node("BasicScheduler", model=sampler_model, scheduler=scheduler, steps=sample_steps, denoise=denoise)[0]
-            guider = _call_comfy_node("BasicGuider", model=sampler_model, conditioning=pos_cond)[0]
-            noise = _call_comfy_node("RandomNoise", noise_seed=seed_int)[0]
-            latent_result = _call_comfy_node(
-                "SamplerCustomAdvanced", noise=noise, guider=guider, sampler=sampler,
-                sigmas=sigmas, latent_image=empty_latent,
-            )[0]
-        elif is_qi2:
-            latent_result = qi2_generator._qi2_sample(
-                sampler_model, pos_cond, neg_cond, empty_latent,
-                {"seed": seed_int, "steps": sample_steps,
-                 "cfg": cfg, "sampler_name": sampler_name,
-                 "scheduler": scheduler, "denoise": denoise},
-                turbo=qi2_turbo,
-            )
-        else:
-            latent_result = _call_comfy_node(
-                "KSampler",
-                model=sampler_model, seed=seed_int, steps=sample_steps,
-                cfg=cfg, sampler_name=sampler_name, scheduler=scheduler,
-                positive=pos_cond, negative=neg_cond, latent_image=empty_latent, denoise=denoise
-            )[0]
+            latent_for_decode = normalize_decode_input(latent_result)
 
-        def normalize_decode_input(value):
-            if torch.is_tensor(value):
-                return value.detach().clone()
-            if isinstance(value, dict):
-                return {k: normalize_decode_input(v) for k, v in value.items()}
-            if isinstance(value, list):
-                return [normalize_decode_input(v) for v in value]
-            if isinstance(value, tuple):
-                return tuple(normalize_decode_input(v) for v in value)
-            return value
-
-        latent_for_decode = normalize_decode_input(latent_result)
-
-        # 5. Decode
-        log_stage("decoding", component="ClothesDesigner")
-        if is_h3:
-            with torch.inference_mode():
-                image = VNCCS_CharacterGenerator()._h3_decode(latent_for_decode, vae)
-        elif is_qi2:
-            with torch.inference_mode():
-                image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
-        else:
-            try:
+            # 5. Decode
+            log_stage("decoding", component="ClothesDesigner")
+            if is_h3:
                 with torch.inference_mode():
-                    image, = _call_comfy_node(
-                        "VAEDecodeTiled",
-                        vae=vae,
-                        samples=latent_for_decode,
-                        **WORKFLOW_DECODE_DEFAULTS,
-                    )
-            except Exception as e:
-                log_event('fallback', component='ClothesDesigner', level='warning', message=f'VAEDecodeTiled failed ({e}), falling back to VAEDecode...', error=str(e))
+                    image = VNCCS_CharacterGenerator()._h3_decode(latent_for_decode, vae)
+            elif is_qi2:
                 with torch.inference_mode():
                     image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
+            else:
+                try:
+                    with torch.inference_mode():
+                        image, = _call_comfy_node(
+                            "VAEDecodeTiled",
+                            vae=vae,
+                            samples=latent_for_decode,
+                            **WORKFLOW_DECODE_DEFAULTS,
+                        )
+                except Exception as e:
+                    log_event('fallback', component='ClothesDesigner', level='warning', message=f'VAEDecodeTiled failed ({e}), falling back to VAEDecode...', error=str(e))
+                    with torch.inference_mode():
+                        image, = _call_comfy_node("VAEDecode", vae=vae, samples=latent_for_decode)
 
-        # Publish the preview before reporting success to the widget.
-        i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
-        _save_preview_cache(i_pil, c_img_path, c_info_path, {"hash": input_hash, "widget_data": data})
-        try:
-             log_event("diagnostic", component="ClothesDesigner", level="debug", message=f'Sending Preview Update Event: ID={unique_id}, Char={character_name}')
-             server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
-        except Exception as e:
-             log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to send preview update: {e}', error=str(e))
-             log_event('exception', component='ClothesDesigner', level='debug', exc_info=True, message='Operation failed', error=str(e))
+            # Publish the preview before reporting success to the widget.
+            i_pil = Image.fromarray(np.clip(255. * image.cpu().numpy().squeeze(), 0, 255).astype(np.uint8))
+            _save_preview_cache(i_pil, c_img_path, c_info_path, {"hash": input_hash, "widget_data": data})
+            try:
+                 log_event("diagnostic", component="ClothesDesigner", level="debug", message=f'Sending Preview Update Event: ID={unique_id}, Char={character_name}')
+                 server.PromptServer.instance.send_sync("vnccs.preview.updated", {"node_id": str(unique_id), "character": character_name})
+            except Exception as e:
+                 log_event('warning', component='ClothesDesigner', level='warning', message=f'Failed to send preview update: {e}', error=str(e))
+                 log_event('exception', component='ClothesDesigner', level='debug', exc_info=True, message='Operation failed', error=str(e))
 
-        return (image, sheet_path, self._background_output_value(background_color))
+            return (image, sheet_path, self._background_output_value(background_color))
+        except BaseException:
+            # Release loaded clones before an exception traceback can outlive their patchers.
+            try:
+                from comfy import model_management
+                unload = getattr(model_management, "unload_model_and_clones", None)
+                if unload is not None:
+                    unload(model, all_devices=True)
+            except Exception as error:
+                log_event("cleanup_failed", component="ClothesDesigner", level="warning",
+                          message="Could not unload the failed preview model", error=str(error))
+            raise
+
 
 # --- API ---
 
@@ -960,6 +974,7 @@ Example for "Santa Claus costume":
 
         configure_qwen_text_chat(llm)
         log_stage("generating_description")
+        log_prompts("Clothes Wizard", system=system_prompt, user=user_prompt)
         response = llm.create_chat_completion(
             messages=[
                 {"role": "system", "content": system_prompt},
