@@ -2,6 +2,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -198,3 +199,39 @@ def test_three_images_chain_reference_conditioning_in_input_order(monkeypatch):
     assert "GetImageSize" not in [name for name, _ in calls]
     latent_call = next(kwargs for name, kwargs in calls if name == "EmptyFlux2LatentImage")
     assert (latent_call["width"], latent_call["height"]) == (768, 1152)
+
+
+@pytest.mark.parametrize("height,width", [(836, 1254), (2243, 935), (1152, 768)])
+def test_clothes_alignment_applies_after_scaling_image1_only(monkeypatch, height, width):
+    calls = []
+    image1, image2 = object(), object()
+    scaled1 = SimpleNamespace(shape=(1, height, width, 3))
+    scaled2 = SimpleNamespace(shape=(1, 677, 999, 3))
+
+    def call(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "ImageScaleToTotalPixels":
+            assert kwargs["megapixels"] == 1.5
+            return (scaled1 if kwargs["image"] is image1 else scaled2,)
+        if name == "ImageScale":
+            assert kwargs["image"] is scaled1
+            assert kwargs["crop"] == "disabled"
+            return (SimpleNamespace(shape=(1, kwargs["height"], kwargs["width"], 3)),)
+        return (name,)
+
+    monkeypatch.setattr(encoder_module, "_call_comfy_node", call)
+    VNCCS_Flux_Klein_Encoder().encode(
+        "clip", "prompt", "vae", image1, image2, megapixels=1.5, align_image1=True,
+    )
+    pixels = [kwargs["pixels"] for name, kwargs in calls if name == "VAEEncode"]
+    assert pixels[0].shape == (1, height // 32 * 32, width // 32 * 32, 3)
+    assert pixels[1] is scaled2
+    assert dict(calls)["EmptyFlux2LatentImage"] == {
+        "width": width // 32 * 32, "height": height // 32 * 32, "batch_size": 1,
+    }
+    assert sum(name == "ImageScale" for name, _ in calls) == int(width % 32 != 0 or height % 32 != 0)
+
+
+def test_alignment_rejects_a_zero_sized_result():
+    with pytest.raises(ValueError, match="at least 32 pixels"):
+        encoder_module._image_dimensions(SimpleNamespace(shape=(1, 31, 64, 3)), multiple=32)

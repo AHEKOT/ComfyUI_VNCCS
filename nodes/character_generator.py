@@ -56,7 +56,7 @@ except Exception:  # pragma: no cover
 from .runtime_cleanup import inference_stage
 from .h3_still import h3_still_samples, require_h3_still_support
 from .vnccs_pipe import VNCCS_Pipe
-from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
+from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder, _image_dimensions
 from .vnccs_control_center import (
     _apply_lora_standard,
     _find_model_on_disk,
@@ -1433,7 +1433,7 @@ class VNCCS_CharacterGenerator:
             sigmas=sigmas, latent_image=latent,
         )[0]
 
-    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt=""):
+    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt="", align_image1=False):
         target_size = _resolution_scale_value(target_size)
         reference_images = {}
         output_width = output_height = None
@@ -1453,16 +1453,33 @@ class VNCCS_CharacterGenerator:
                     raise ValueError("Qwen Image 2.1 output scaling did not return an IMAGE tensor.")
                 output_height = int(scaled_tensor.shape[-3])
                 output_width = int(scaled_tensor.shape[-2])
-                reference_images[f"image_{index}"] = scaled_output
+                encoder_width, encoder_height = output_width, output_height
+                if align_image1:
+                    output_width, output_height = _image_dimensions(scaled_tensor, multiple=32)
+                    source = _first_tensor(image)
+                    encoder_width, encoder_height = _image_dimensions(source, multiple=32)
+                    if (encoder_width, encoder_height) != _image_dimensions(source):
+                        image = _call_comfy_node(
+                            "ImageScale", image=image, upscale_method="lanczos",
+                            width=encoder_width, height=encoder_height, crop="disabled",
+                        )[0]
+                    reference_images[f"image_{index}"] = image
+                else:
+                    reference_images[f"image_{index}"] = scaled_output
             else:
                 reference_images[f"image_{index}"] = image
         if not reference_images:
             raise ValueError("Qwen Image 2.1 generation requires a reference image.")
+        resolution = min(encoder_width, encoder_height) if align_image1 else 1024
+        log_event("encoder_resolution", encoder="TextEncodeQwenImage21", resolution=resolution,
+                  image1_width=encoder_width, image1_height=encoder_height,
+                  generation_width=output_width, generation_height=output_height)
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=pipe_values["clip"], vae=pipe_values["vae"],
             prompt=str(prompt or ""), negative_prompt=str(negative_prompt or ""),
-            resolution=1024, images=reference_images,
+            resolution=resolution,
+            images=reference_images,
         )
         latent = _call_comfy_node(
             "EmptyLatentImage", width=output_width, height=output_height, batch_size=1,
@@ -2001,7 +2018,7 @@ class VNCCS_CharacterGenerator:
                     values.clear()
         return tuple(outputs or [])
 
-    def _resolution_scale_dimensions(self, image, target_size, multiple=32):
+    def _resolution_scale_dimensions(self, image, target_size, multiple=32, round_down=False):
         image = _first_tensor(image)
         if not torch.is_tensor(image) or image.ndim not in {3, 4}:
             raise ValueError("Resolution scaling requires an IMAGE tensor with B,H,W,C shape.")
@@ -2011,6 +2028,12 @@ class VNCCS_CharacterGenerator:
             raise ValueError(f"Resolution scaling received invalid dimensions: {width}x{height}.")
         target_size = _resolution_scale_value(target_size)
         scale = math.sqrt(float(target_size * 1024) / float(width * height))
+        if round_down:
+            target_width = round(width * scale) // multiple * multiple
+            target_height = round(height * scale) // multiple * multiple
+            if target_width == 0 or target_height == 0:
+                raise ValueError(f"Scaled reference image must be at least {multiple} pixels on each side.")
+            return target_width, target_height
         target_width = max(int(multiple), round(width * scale / multiple) * multiple)
         target_height = max(int(multiple), round(height * scale / multiple) * multiple)
         return int(target_width), int(target_height)
@@ -2042,6 +2065,7 @@ class VNCCS_CharacterGenerator:
         stage="pose_generation",
         progress_start=0,
         progress_total=None,
+        align_image1=False,
     ):
         require_h3_still_support()
         audio_vae = pipe_values.get("audio_vae")
@@ -2094,7 +2118,14 @@ class VNCCS_CharacterGenerator:
             prompts = self._pose_prompts(prompt, total)
             for pose_index, pose in enumerate(pose_parts):
                 pose_reference = self._image_list(pose)[0]
-                width, height = self._resolution_scale_dimensions(pose_reference, target_size, multiple=32)
+                width, height = self._resolution_scale_dimensions(
+                    pose_reference, target_size, multiple=32, round_down=align_image1,
+                )
+                if align_image1 and (width, height) != _image_dimensions(pose_reference):
+                    pose_reference = _call_comfy_node(
+                        "ImageScale", image=pose_reference, upscale_method="lanczos",
+                        width=width, height=height, crop="disabled",
+                    )[0]
                 positive, latent = _call_comfy_node(
                     "MiniMaxH3ReferenceToVideo",
                     clip=pipe_values["clip"],
@@ -2113,7 +2144,9 @@ class VNCCS_CharacterGenerator:
 
             sampling_progress(0, total)
             for index, (positive, latent) in enumerate(encoded_items):
-                width, height = self._resolution_scale_dimensions(pose_parts[index], target_size, multiple=32)
+                width, height = self._resolution_scale_dimensions(
+                    pose_parts[index], target_size, multiple=32, round_down=align_image1,
+                )
                 self._log_stage(
                     unique_id, stage,
                     f"H3 pose {progress_start + index + 1}/{overall_total}: {width}x{height}, {sampler['steps']} steps"
@@ -2178,6 +2211,7 @@ class VNCCS_CharacterGenerator:
         preview_cache_dir=None,
         progress_start=0,
         progress_total=None,
+        align_image1=False,
     ):
         pose_parts = self._image_list(poses)
         if publish_each and pose_parts:
@@ -2200,6 +2234,7 @@ class VNCCS_CharacterGenerator:
                     bg_remove_settings=bg_remove_settings,
                     unique_id=unique_id, stage=stage,
                     progress_start=index, progress_total=total,
+                    align_image1=align_image1,
                 )
                 generated.append(image)
                 self._emit(
@@ -2234,6 +2269,7 @@ class VNCCS_CharacterGenerator:
                 stage=stage,
                 progress_start=progress_start,
                 progress_total=progress_total,
+                align_image1=align_image1,
             )
         prompts = [
             self._prompt_with_solid_background(value, background, bg_remove_settings)
@@ -2267,6 +2303,7 @@ class VNCCS_CharacterGenerator:
                         "Replace the pose of <image 2> with the pose of <image 1>. "
                         "Keep the character of <image 2>. " + prompts[index - 1],
                         (pose, character), target_size=qwen_settings["target_size"],
+                        align_image1=align_image1,
                     )
                     encode_progress(index, total, index - 1)
                     samples = self._qi2_sample(
@@ -2292,6 +2329,7 @@ class VNCCS_CharacterGenerator:
                 upscale_method="lanczos",
                 megapixels=_resolution_scale_megapixels(qwen_settings["target_size"]),
                 resolution_steps=1,
+                align_image1=align_image1,
             )
         else:
             encoder_kwargs.update(qwen_settings)
@@ -3322,6 +3360,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     unique_id=unique_id,
                     publish_each=regenerate_index is None,
                     preview_cache_dir=cache_dir,
+                    align_image1=True,
                 )
                 if regenerate_index is not None:
                     pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)

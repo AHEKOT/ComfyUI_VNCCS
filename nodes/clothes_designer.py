@@ -103,8 +103,10 @@ def _qi2_edit_image_batch(references):
     for reference in references:
         if reference.ndim != 4 or reference.shape[0] != 1 or reference.shape[-1] not in (3, 4):
             raise ValueError("QI2 edit references must contain exactly one RGB or RGBA image each.")
-        # Prepared RGBA references already have their RGB composited over white.
         rgb = reference[..., :3].to(device=target.device, dtype=target.dtype)
+        if reference.shape[-1] == 4:
+            alpha = reference[..., 3:4].to(device=target.device, dtype=target.dtype).clamp(0.0, 1.0)
+            rgb = rgb * alpha + (1.0 - alpha)
         ref_height, ref_width = rgb.shape[1:3]
         fit = min(height / ref_height, width / ref_width)
         fit_height = max(1, min(height, round(ref_height * fit)))
@@ -375,21 +377,19 @@ class ClothesDesigner:
         return torch.from_numpy(array.copy()).unsqueeze(0)
 
     @staticmethod
-    def _prepare_reference_background(image, background_color, preserve_transparency=False):
+    def _prepare_reference_background(image, background_color, white_background=False):
         if not torch.is_tensor(image) or image.ndim not in {3, 4} or image.shape[-1] < 4:
             return image
         batch = image.unsqueeze(0) if image.ndim == 3 else image
         rgb = batch[..., :3]
         alpha = batch[..., 3:4].clamp(0.0, 1.0)
-        if background_color == TRANSPARENT_BACKGROUND and preserve_transparency:
-            # Qwen's vision tower composites alpha over white while its VAE keeps
-            # all four channels. Clean hidden RGB so both paths see the same plate.
-            clean_rgb = rgb * alpha + (1.0 - alpha)
-            prepared = torch.cat([clean_rgb, alpha], dim=-1)
-        else:
-            color = BACKGROUND_RGB.get(background_color, BACKGROUND_RGB["Green"])
-            plate = torch.tensor(color, dtype=rgb.dtype, device=rgb.device).view(1, 1, 1, 3)
-            prepared = rgb * alpha + plate * (1.0 - alpha)
+        # Flatten before QI2 encoding so both the vision tower and VAE receive the white plate.
+        color = (
+            (1.0, 1.0, 1.0) if background_color == TRANSPARENT_BACKGROUND and white_background
+            else BACKGROUND_RGB.get(background_color, BACKGROUND_RGB["Green"])
+        )
+        plate = torch.tensor(color, dtype=rgb.dtype, device=rgb.device).view(1, 1, 1, 3)
+        prepared = rgb * alpha + plate * (1.0 - alpha)
         return prepared[0] if image.ndim == 3 else prepared
 
     @staticmethod
@@ -597,7 +597,7 @@ class ClothesDesigner:
                         "scheduler": scheduler,
                     },
                     "clothes_core_lora": clothes_core_lora,
-                    "resolution": {"model_kind": model_kind, "target_size": target_size},
+                    "resolution": {"model_kind": model_kind, "target_size": target_size, "image1_multiple": 32},
                 }
                 if use_qi2_rewriter:
                     from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS
@@ -608,6 +608,8 @@ class ClothesDesigner:
                         "text_generation": QI2_TEXT_GENERATION_DEFAULTS,
                     }
                 if is_qi2:
+                    cache_payload["qi2_reference_alpha"] = "white_rgb"
+                    cache_payload["resolution"]["encoder_image1"] = "source"
                     cache_payload["qi2_cache"] = getattr(pipe, "qi2_cache", {})
                     cache_payload["qi2_turbo"] = sorted(
                         item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
@@ -637,7 +639,7 @@ class ClothesDesigner:
                     log_event('fallback', component='ClothesDesigner', level='warning', message=f'Cache read failed, regenerating preview: {exc}', error=str(exc))
 
             ref_image = self._prepare_reference_background(
-                ref_image, background_color, preserve_transparency=is_qi2,
+                ref_image, background_color, white_background=is_qi2,
             )
 
             # Load Clone Image. In clone mode it becomes Picture 2 from the reference workflow.
@@ -649,7 +651,7 @@ class ClothesDesigner:
                      with Image.open(clone_image_path) as source_image:
                          i = self._pil_image_tensor(source_image)
                      i = self._prepare_reference_background(
-                         i, background_color, preserve_transparency=is_qi2,
+                         i, background_color, white_background=is_qi2,
                      )
 
                      clone_image_tensor = i
@@ -681,12 +683,20 @@ class ClothesDesigner:
                     upscale_method="lanczos",
                     megapixels=_resolution_scale_megapixels(target_size),
                     resolution_steps=1,
+                    align_image1=True,
                 )
             if is_h3:
                 audio_vae = getattr(pipe, "audio_vae", None)
                 if audio_vae is None:
                     raise ValueError("MiniMax H3 requires the audio VAE from VNCCS Control Center.")
-                width, height = VNCCS_CharacterGenerator()._resolution_scale_dimensions(ref_image, target_size)
+                width, height = VNCCS_CharacterGenerator()._resolution_scale_dimensions(
+                    ref_image, target_size, round_down=True,
+                )
+                if (width, height) != (int(ref_image.shape[-2]), int(ref_image.shape[-3])):
+                    ref_image = _call_comfy_node(
+                        "ImageScale", image=ref_image, upscale_method="lanczos",
+                        width=width, height=height, crop="disabled",
+                    )[0]
                 references = {"ref_image_1": ref_image}
                 if image2 is not None:
                     references["ref_image_2"] = image2
@@ -701,6 +711,7 @@ class ClothesDesigner:
                     {"clip": clip, "vae": vae}, positive_prompt,
                     (ref_image, image2), target_size=target_size,
                     negative_prompt=negative_prompt,
+                    align_image1=True,
                 )
             else:
                 pos_cond, neg_cond, empty_latent = _call_comfy_node("VNCCS_Flux_Klein_Encoder", **encoder_kwargs)

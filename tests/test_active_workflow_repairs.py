@@ -142,6 +142,7 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
         pass
     def inspect(*args, **kwargs):
         seen.append(args[3])
+        assert kwargs.get('align_image1', False) is (node_name == 'VNCCS_ClothesGenerator')
         raise ReachedEncoder()
     monkeypatch.setattr(cg, '_character_cache_dir_from_sheets_path', lambda *a: None)
     monkeypatch.setattr(cg, '_save_run_inputs', lambda *a, **k: cached.append(k))
@@ -181,7 +182,8 @@ def test_emotion_regeneration_preserves_supplied_shifted_seed(runtime, monkeypat
 
 
 @pytest.mark.parametrize('kind', ['qi2', 'klein9b', 'minimaxh3'])
-def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
+@pytest.mark.parametrize('align_image1', [False, True])
+def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind, align_image1):
     cg = runtime.generator
     node = cg.VNCCS_CharacterGenerator()
     values = {'model': object(), 'clip': object(), 'vae': object(), 'audio_vae': object(),
@@ -195,6 +197,12 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
         pass
     def capture(name, **kwargs):
         if name in {'TextEncodeQwenImage21', "VNCCS_Flux_Klein_Encoder", 'MiniMaxH3ReferenceToVideo'}:
+            if kind == 'klein9b':
+                assert kwargs['align_image1'] is align_image1
+            elif kind == 'qi2':
+                assert kwargs['resolution'] == (32 if align_image1 else 1024)
+            elif align_image1:
+                assert kwargs['ref_images']['ref_image_1'].shape[1:3] == (kwargs['height'], kwargs['width'])
             seen.append(kwargs['prompt'])
             if len(seen) == 2:
                 raise EncodingVerified()
@@ -203,13 +211,15 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind):
             return 'positive', 'negative', 'latent'
         if name == 'ImageScaleToTotalPixels':
             return (kwargs['image'],)
+        if name == 'ImageScale':
+            return (torch.zeros(1, kwargs['height'], kwargs['width'], 3),)
         if name == 'VAEDecode':
             return (torch.ones(1, 32, 32, 3),)
         return ('result',)
     monkeypatch.setattr(cg, '_call_comfy_node', capture)
     with pytest.raises(EncodingVerified):
         node._run_pose_generation(torch.ones(2, 32, 32, 3), torch.ones(1, 32, 32, 3),
-                                  SimpleNamespace(), ['front light', 'back light'], {})
+                                  SimpleNamespace(), ['front light', 'back light'], {}, align_image1=align_image1)
     assert 'front light' in seen[0] and 'back light' not in seen[0]
     assert 'back light' in seen[1] and 'front light' not in seen[1]
 

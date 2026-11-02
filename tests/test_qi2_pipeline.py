@@ -93,6 +93,63 @@ def test_qi2_2048_setting_means_two_megapixels_not_2048_squared(monkeypatch):
     assert empty == {"width": 935, "height": 2243, "batch_size": 1}
 
 
+@pytest.mark.parametrize("height,width,target_size", [
+    (97, 65, 1024), (97, 65, 2048), (65, 97, 2048),
+    (3840, 1590, 2048), (96, 64, 1024),
+])
+@pytest.mark.parametrize("channels", [3, 4])
+def test_clothes_qi2_keeps_source_encoder_size_separate_from_generation_size(monkeypatch, caplog, height, width, target_size, channels):
+    calls = []
+    source = torch.full((1, 1, 1, channels), 0.5).expand(1, height, width, channels)
+    scale = (target_size * 1024 / (width * height)) ** 0.5
+    scaled_height, scaled_width = round(height * scale), round(width * scale)
+    scaled = torch.full((1, 1, 1, channels), 0.25).expand(1, scaled_height, scaled_width, channels)
+    donor = torch.ones(1, 73, 151, channels)
+    expected_height, expected_width = height // 32 * 32, width // 32 * 32
+    generation_height, generation_width = scaled_height // 32 * 32, scaled_width // 32 * 32
+
+    def call(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "ImageScaleToTotalPixels":
+            assert kwargs["image"] is source
+            assert kwargs["megapixels"] == target_size / 1024
+            return (scaled,)
+        if name == "ImageScale":
+            assert kwargs["image"] is source
+            assert kwargs["crop"] == "disabled"
+            assert (kwargs["height"], kwargs["width"]) == (expected_height, expected_width)
+            return (torch.nn.functional.interpolate(
+                source.movedim(-1, 1), size=(expected_height, expected_width), mode="nearest",
+            ).movedim(1, -1),)
+        if name == "TextEncodeQwenImage21":
+            event = next(record.vnccs for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "encoder_resolution")
+            assert event["resolution"] == min(expected_width, expected_height)
+            assert (event["image1_width"], event["image1_height"]) == (expected_width, expected_height)
+            assert (event["generation_width"], event["generation_height"]) == (generation_width, generation_height)
+            return "positive", "negative", "unused encoder latent"
+        if name == "EmptyLatentImage":
+            return ("sampling latent",)
+        raise AssertionError(name)
+
+    monkeypatch.setattr(cg, "_call_comfy_node", call)
+    result = cg.VNCCS_CharacterGenerator()._qi2_encode(
+        {"clip": "clip", "vae": "vae"}, "outfit prompt", (source, donor),
+        target_size=target_size, negative_prompt="negative prompt", align_image1=True,
+    )
+    assert result == ("positive", "negative", "sampling latent")
+    encoder = dict(calls)["TextEncodeQwenImage21"]
+    assert encoder["images"]["image_1"].shape == (1, expected_height, expected_width, channels)
+    assert torch.all(encoder["images"]["image_1"] == 0.5)
+    assert encoder["images"]["image_2"] is donor
+    assert encoder["resolution"] == min(expected_width, expected_height)
+    assert encoder["prompt"] == "outfit prompt"
+    assert encoder["negative_prompt"] == "negative prompt"
+    assert dict(calls)["EmptyLatentImage"] == {
+        "width": generation_width, "height": generation_height, "batch_size": 1,
+    }
+    assert sum(name == "ImageScale" for name, _ in calls) == int((height, width) != (expected_height, expected_width))
+
+
 def test_viggle_turbo_uses_native_lora_cache_and_latent_dependent_sigmas(monkeypatch):
     calls = []
 
@@ -355,10 +412,12 @@ def test_qi2_decode_uses_standard_vae_decode(monkeypatch):
 
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("publish_each", [False, True])
-def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch, native, publish_each):
+@pytest.mark.parametrize("align_image1", [False, True])
+def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch, native, publish_each, align_image1):
     calls = []
     pose = torch.zeros(1, 640, 384, 3)
-    character = torch.ones(1, 640, 384, 4)
+    scaled_pose = torch.zeros(1, 800, 480, 3)
+    character = torch.ones(1, 736, 512, 4)
     character[..., 3] = 0.25
     decoded = torch.full((1, 640, 384, 4), 0.5)
 
@@ -378,7 +437,7 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
     def fake_node(name, **kwargs):
         calls.append((name, kwargs))
         outputs = {
-            "ImageScaleToTotalPixels": (kwargs.get("image"),),
+            "ImageScaleToTotalPixels": (scaled_pose,),
             "TextEncodeQwenImage21": ("positive", "negative", "encoder latent"),
             "EmptyLatentImage": ("empty latent",),
             "QwenImage21Cache": ("cached model",),
@@ -394,6 +453,7 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
         pose, character, pipe, "pose prompt", {"target_size": 1024},
         bg_remove_settings={"preset": "Native" if native else "balanced"},
         publish_each=publish_each,
+        align_image1=align_image1,
     )
 
     assert torch.equal(result, decoded)
@@ -406,9 +466,11 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
         "VAEDecode",
     ]
     encoder = calls[2][1]
-    assert encoder["resolution"] == 1024
-    assert torch.equal(encoder["images"]["image_1"], pose)
+    assert encoder["resolution"] == (384 if align_image1 else 1024)
+    assert torch.equal(encoder["images"]["image_1"], pose if align_image1 else scaled_pose)
     assert torch.equal(encoder["images"]["image_2"], character)
+    assert dict(calls)["EmptyLatentImage"] == {"width": 480, "height": 800, "batch_size": 1}
+    assert dict(calls)["KSampler"]["seed"] == 7
     if native:
         assert encoder["prompt"].endswith(cg.NATIVE_BACKGROUND_PROMPT)
         assert "green" not in encoder["prompt"].lower()

@@ -181,6 +181,66 @@ def test_legacy_clothes_without_seed_inherits_pipe(designer_run):
     assert seeds == [77]
 
 
+def test_clothes_qi2_encoder_receives_white_rgb_target_and_donor(designer_run, monkeypatch):
+    node, pipe, data, _ = designer_run
+    data["gen_settings"]["background_color"] = "Transparent"
+    target = torch.full((1, 32, 32, 4), 0.2)
+    target[..., 3] = 0.5
+    original = target.clone()
+    monkeypatch.setattr(node, "get_reference_sprite", lambda *args: target)
+    donor_path = cd.resolve_comfy_image_path(data["clone_image"])
+    Image.new("RGBA", (32, 32), (51, 102, 153, 128)).save(donor_path)
+    references = []
+
+    def encode(self, pipe_values, prompt, images, **kwargs):
+        references.extend(images)
+        return None, None, {}
+
+    monkeypatch.setattr(cg.VNCCS_CharacterGenerator, "_qi2_encode", encode)
+    node.process(pipe=pipe, widget_data=json.dumps(data))
+    assert references[0].shape == references[1].shape == (1, 32, 32, 3)
+    torch.testing.assert_close(references[0], torch.full((1, 32, 32, 3), 0.6))
+    expected_donor = torch.tensor([51, 102, 153]) / 255 * (128 / 255) + (1 - 128 / 255)
+    torch.testing.assert_close(references[1][0, 0, 0], expected_donor)
+    assert torch.equal(target, original)
+
+
+def test_clothes_rebuilds_preview_cached_with_transparent_rgba(designer_run, monkeypatch):
+    node, pipe, data, seeds = designer_run
+    dumps = json.dumps
+
+    def legacy_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and "source_reference" in value:
+            value = copy.deepcopy(value)
+            value["qi2_reference_alpha"] = "straight"
+        return dumps(value, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cd.json, "dumps", legacy_dumps)
+        node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    assert seeds == [123, 123]
+
+
+def test_clothes_rebuilds_preview_cached_before_image_alignment(designer_run, monkeypatch):
+    node, pipe, data, seeds = designer_run
+    dumps = json.dumps
+
+    def legacy_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and "source_reference" in value:
+            value = copy.deepcopy(value)
+            value["resolution"].pop("image1_multiple")
+        return dumps(value, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cd.json, "dumps", legacy_dumps)
+        node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    assert seeds == [123, 123]
+
+
 @pytest.mark.parametrize("change", ["model", "lora_states", "custom"])
 def test_preview_cache_reuses_only_unchanged_model_assets(designer_run, change):
     node, pipe, data, seeds = designer_run
