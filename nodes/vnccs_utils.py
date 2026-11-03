@@ -1,5 +1,5 @@
 """Shared image processing and the standalone VNCCS Chroma Key node."""
-from ..operation_logger import log_event, log_stage
+from ..operation_logger import log_event, log_stage, log_prompts
 
 import os
 import inspect
@@ -336,7 +336,7 @@ def _normalize_mask_batch(value, target_hw, batch_size, stage="mask"):
 
 # --- Guided Filter Helper ---
 class VNCCS_MaskExtractor:
-    """Fill alpha channel with bright green color."""
+    """Fill alpha with the selected background color, defaulting to bright green."""
     
     @classmethod
     def INPUT_TYPES(cls):
@@ -351,7 +351,7 @@ class VNCCS_MaskExtractor:
     FUNCTION = "fill_alpha_with_color"
     CATEGORY = "VNCCS"
 
-    def fill_alpha_with_color(self, image):
+    def fill_alpha_with_color(self, image, background_color="Green"):
         if image is None:
             raise ValueError("No image provided")
         img = _ensure_float01(image)
@@ -367,7 +367,11 @@ class VNCCS_MaskExtractor:
         if alpha.ndim == 4 and alpha.shape[1] == 1:
             alpha = alpha.squeeze(1)
         alpha = alpha.clamp(0.0, 1.0)
-        r, g, b = 0.0, 1.0, 0.0
+        r, g, b = {
+            "green": (0.0, 1.0, 0.0),
+            "blue": (0.0, 0.0, 1.0),
+            "white": (1.0, 1.0, 1.0),
+        }.get(str(background_color or "Green").strip().lower(), (0.0, 1.0, 0.0))
         device = rgb.device
         dtype = rgb.dtype
         bg = torch.tensor([r, g, b], dtype=dtype, device=device).view(1, 1, 1, 3)
@@ -586,6 +590,8 @@ class VNCCSChromaKey:
         )
         batch_size = int(image.shape[0])
         recovery_candidates = []
+        prompt = str(settings.get("sam3_prompt", "face, clothes, accessories, hat, boots, eyes"))
+        log_prompts("SAM3 recovery segmentation", positive=prompt)
         # Older Easy-SAM3 releases stack variable-length detection boxes across
         # a batch. Segment frames individually while keeping the model loaded.
         for index in range(batch_size):
@@ -594,7 +600,7 @@ class VNCCSChromaKey:
                 method_names=("segment", "segment_image", "process", "execute"),
                 sam3_model=sam3_model,
                 images=image[index:index + 1, ..., :3],
-                prompt=str(settings.get("sam3_prompt", "face, clothes, accessories, hat, boots, eyes")),
+                prompt=prompt,
                 threshold=float(settings.get("sam3_threshold", 0.40)),
                 keep_model_loaded=index < batch_size - 1,
                 add_background=str(settings.get("sam3_add_background", "none") or "none"),

@@ -815,6 +815,23 @@ class TestEnsureFloat01:
 
 
 class TestAlphaFill:
+    @pytest.mark.parametrize("background,rgb", [
+        ("Green", (0.0, 1.0, 0.0)),
+        (" blue ", (0.0, 0.0, 1.0)),
+        ("White", (1.0, 1.0, 1.0)),
+        ("Alpha", (0.0, 1.0, 0.0)),
+    ])
+    @pytest.mark.parametrize("batched", [False, True])
+    def test_fills_transparency_without_changing_opaque_pixels(self, background, rgb, batched):
+        image = torch.tensor([[[0.2, 0.4, 0.6, 0.0], [0.2, 0.4, 0.6, 0.5], [0.2, 0.4, 0.6, 1.0]]])
+        if batched:
+            image = image.unsqueeze(0)
+        original = image.clone()
+        result, = VNCCS_MaskExtractor().fill_alpha_with_color(image, background_color=background)
+        expected = image[..., :3] * image[..., 3:4] + torch.tensor(rgb) * (1.0 - image[..., 3:4])
+        torch.testing.assert_close(result, expected)
+        assert torch.equal(image, original)
+
     def test_rgba_extracts_rgb(self):
         image = torch.rand(1, 8, 8, 4)
         result, = VNCCS_MaskExtractor().fill_alpha_with_color(image)

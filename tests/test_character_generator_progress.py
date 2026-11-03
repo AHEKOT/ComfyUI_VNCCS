@@ -22,7 +22,7 @@ def generator(monkeypatch):
     monkeypatch.setattr(node, "_apply_pose_lora_to_model", lambda model, *args: model)
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, *args: model)
     monkeypatch.setattr(node, "_validate_conditioning_for_model", lambda *args: None)
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image, background_color="Green": (image,))}))
     events = []
 
     def capture(name, payload):
@@ -255,7 +255,7 @@ def test_entry_points_forward_node_stage_and_actual_pose_count(monkeypatch, tmp_
     monkeypatch.setattr(cg, "_load_run_inputs", lambda *args: {})
     monkeypatch.setattr(cg, "_tensor_to_preview_urls", lambda *args, **kwargs: [])
     monkeypatch.setattr(node, "_save_stage", lambda *args: None)
-    monkeypatch.setattr(node, "_load_cached_stage", lambda *args: None)
+    monkeypatch.setattr(node, "_load_cached_stage", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_extract_pipe", lambda *args: {"seed": 42})
     monkeypatch.setattr(node, "_find_pose_lora", lambda *args: {})
     monkeypatch.setattr(cg.server.PromptServer.instance, "send_sync", lambda name, payload: events.append(payload), raising=False)

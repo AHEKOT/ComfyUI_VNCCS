@@ -2,6 +2,8 @@
 
 import asyncio
 import threading
+import sys
+from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 
@@ -9,6 +11,103 @@ import pytest
 
 from nodes.preview_runtime import run_preview_job
 from runtime_cleanup_helpers import dynamic_runtime
+
+
+@pytest.fixture
+def progress_runtime(monkeypatch):
+    import comfy.utils
+
+    events, interruptions = [], []
+
+    def workflow_hook(*args, **kwargs):
+        events.append((args, kwargs))
+
+    def check_interrupt():
+        interruptions.append(threading.get_ident())
+
+    monkeypatch.setattr(comfy.utils, "PROGRESS_BAR_HOOK", workflow_hook, raising=False)
+    monkeypatch.setattr(comfy.utils, "set_progress_bar_global_hook",
+                        lambda hook: setattr(comfy.utils, "PROGRESS_BAR_HOOK", hook), raising=False)
+    monkeypatch.setitem(sys.modules, "comfy.model_management",
+                        SimpleNamespace(throw_exception_if_processing_interrupted=check_interrupt))
+
+    class ProgressBar:
+        # ComfyUI bars capture the global hook when constructed.
+        def __init__(self):
+            self.hook = comfy.utils.PROGRESS_BAR_HOOK
+
+        def update(self, value, **kwargs):
+            self.hook(value, 10, None, **kwargs)
+
+    return comfy.utils, workflow_hook, ProgressBar, events, interruptions
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_standalone_progress_does_not_enter_workflow_stream(progress_runtime, fail):
+    utils, workflow_hook, ProgressBar, events, interruptions = progress_runtime
+    started, release = threading.Event(), threading.Event()
+    existing_bar = ProgressBar()
+    owner = []
+
+    def preview():
+        owner.append(threading.get_ident())
+        bar = ProgressBar()
+        bar.update(1)
+        bar.update(2, node_id="preview-node")
+        started.set()
+        assert release.wait(3)
+        if fail:
+            raise RuntimeError("sampler failed")
+        return "image"
+
+    async def scenario():
+        job = asyncio.create_task(run_preview_job(preview))
+        try:
+            for _ in range(1000):
+                if started.is_set():
+                    break
+                await asyncio.sleep(.001)
+            assert started.is_set()
+            assert events == [], "Standalone progress must not be assigned to the last workflow"
+            existing_bar.update(3)
+            concurrent_bar = ProgressBar()
+            concurrent_bar.update(4, node_id="workflow-node")
+        finally:
+            release.set()
+            if fail:
+                with pytest.raises(RuntimeError, match="sampler failed"):
+                    await job
+            else:
+                assert await job == "image"
+        assert utils.PROGRESS_BAR_HOOK is workflow_hook
+        concurrent_bar.update(5)
+        ProgressBar().update(6)
+
+    asyncio.run(scenario())
+    assert events == [((3, 10, None), {}), ((4, 10, None), {"node_id": "workflow-node"}),
+                      ((5, 10, None), {}), ((6, 10, None), {})]
+    assert interruptions == owner * 2
+
+
+def test_standalone_progress_preserves_interrupt_and_restores_hook(progress_runtime, monkeypatch):
+    utils, workflow_hook, ProgressBar, _, _ = progress_runtime
+    failure = RuntimeError("processing interrupted")
+
+    def interrupt():
+        raise failure
+
+    monkeypatch.setattr(sys.modules["comfy.model_management"], "throw_exception_if_processing_interrupted", interrupt)
+    with pytest.raises(RuntimeError) as caught:
+        asyncio.run(run_preview_job(lambda: ProgressBar().update(1)))
+    assert caught.value is failure
+    assert utils.PROGRESS_BAR_HOOK is workflow_hook
+
+
+def test_preview_cleanup_does_not_overwrite_a_new_hook(progress_runtime):
+    utils, _, _, _, _ = progress_runtime
+    replacement = lambda *args, **kwargs: None
+    asyncio.run(run_preview_job(lambda: utils.set_progress_bar_global_hook(replacement)))
+    assert utils.PROGRESS_BAR_HOOK is replacement
 
 
 def test_preview_worker_keeps_event_loop_responsive_and_serializes_jobs():

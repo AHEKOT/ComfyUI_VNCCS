@@ -96,6 +96,7 @@ window.ready=true;
 </script>`;
 const mutations = [];
 let previewJob = null;
+let previousDocument;
 const server = createServer(async (request, response) => {
     try {
         const url = new URL(request.url, "http://localhost");
@@ -145,6 +146,7 @@ const server = createServer(async (request, response) => {
             if(request.method==='POST'){
                 let raw='';for await(const chunk of request)raw+=chunk;
                 const payload=JSON.parse(raw);mutations.push(payload);
+                previousDocument=document;
                 document={schema_version:2,background_id:'8'.repeat(32),name:payload.name,revision:1,editor:payload.editor,selected_image_id:'',images:[]};
                 content=JSON.stringify(document);
             }else content = JSON.stringify({ backgrounds: [document] });
@@ -176,6 +178,7 @@ const server = createServer(async (request, response) => {
             content = request.method === "DELETE"
                 ? JSON.stringify({ ok: true, name: document.name, background_id: document.background_id, deleted: true })
                 : JSON.stringify(document);
+            if (request.method === "DELETE") document = previousDocument;
         }
         else if (url.pathname === "/queue") content = JSON.stringify({queue_running:[],queue_pending:[]});
         else if (url.pathname === "/vnccs/control_center/check") content = JSON.stringify(catalog);
@@ -823,7 +826,8 @@ try {
     await page.getByRole('button',{name:'Back to library',exact:true}).click();
     const beforeCovers=await page.evaluate(()=>widget.node.widgets.find(item=>item.name==='background_data').value);
     await page.evaluate(()=>{widget.styleInfo.custom_style='';});
-    await page.getByRole('button',{name:'Generate all previews',exact:true}).click();
+    assert.equal(await page.getByRole('button',{name:'Generate all previews',exact:true}).count(),0,'Background keeps batch preview generation out of its toolbar');
+    await page.evaluate(()=>widget.stylePicker.generatePreviews());
     await page.waitForFunction(expected=>document.querySelector('.vnccs-style-status')?.textContent===`Saved all ${expected} style previews.`,expectedStyleCount);
     assert.equal(coverRequests.length,expectedStyleCount);
     assert.equal(new Set(coverRequests.map(payload=>payload.style_id)).size,expectedStyleCount);

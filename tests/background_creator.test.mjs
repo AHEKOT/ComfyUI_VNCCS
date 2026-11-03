@@ -5,7 +5,7 @@ import vm from "node:vm";
 import { presetSelection } from "../web/character_presets.mjs";
 const common = fs.readFileSync(new URL("../web/vnccs_common.js", import.meta.url), "utf8");
 const resolutionSource = common.slice(common.indexOf("const RESOLUTION_SCALE_BASE"), common.indexOf("export function normalizeUploadFile")).replaceAll("export ", "");
-const traitSource = common.slice(common.indexOf("export function createTraitInput"), common.indexOf("// ── Debounce")).replace("export ", "");
+const traitSource = common.slice(common.indexOf("export function createTraitInput"), common.indexOf("const wizardRequests")).replace("export ", "");
 const messageSource = common.slice(common.indexOf("export function showMessage"), common.indexOf("export function createLoadingOverlay")).replace("export ", "");
 const cleanupSource = common.slice(common.indexOf("export function registerCleanup"), common.indexOf("// Each loader owns a guard")).replace("export ", "");
 const guardSource = common.slice(common.indexOf("export function createRequestGuard"), common.indexOf("// ── DOM Widget Width Sync")).replace("export ", "");

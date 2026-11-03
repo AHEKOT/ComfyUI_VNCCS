@@ -1,3 +1,87 @@
+# VNCCS 3.3.4 Changelog
+
+## Control Center updates
+
+- Control Center now checks Comfy Registry for newer downloadable versions of VNCCS and VNCCS Utils. A newer release appears once in the module badge as `VNCCS v<installed version> is outdated`. Hover over the badge to see the target version. The refresh button checks module versions again.
+- Click the badge to update that module through ComfyUI-Manager. The badge queues the exact version shown in the tooltip and disables repeat clicks while the update runs. After the update succeeds, Control Center offers to restart ComfyUI.
+
+## Node registration
+
+- A missing `character_presets_v2.json`, `character_styles.json`, or `anima_styles.json` no longer prevents VNCCS from loading. All 16 nodes register, and the startup log identifies the missing catalog. Character Creator can still use free-form traits and style prompts saved in workflows.
+- Style Preview Test keeps its default traits when a preset group is unavailable and can generate a preview without a bundled style when the style catalog is missing.
+
+## Package size
+
+- Resized all 868 bundled style previews from 1024 × 1024 to 720 × 720 pixels. Their combined size fell from 84.5 MB to 46.8 MB.
+- The Registry ZIP excludes the root `images/` directory used for repository artwork. With the smaller previews, the package is about 56 MB. The release check now measures the ZIP built by `comfy node pack` and blocks publication if it exceeds 100 MiB.
+
+# VNCCS 3.3.3 Changelog
+
+## Qwen Image 2.1
+
+- Clothes Designer and the pose generators pass each reference to the QI2 encoder at its original dimensions. Transparent pixels are composited over white and the alpha channel is removed. A separate branch uses the first reference's aspect ratio and the selected megapixel scale to size the empty sampling latent.
+- All QI2 image generation uses `resolution scale` to set the encoder's `resolution`. This applies to both Clothes Designer modes, pose generation, clothing removal, Character Creator, style previews and face crops in Emotions Generator. The encoder resolution is the square root of the target pixel count rounded to the nearest multiple of 32. In Pose Generation, a manual value takes effect only when **Override encoder resolution** is enabled.
+- The pose generators use the prompt from Pose Studio for each pose and append the selected background instruction once. Clothes Generator uses the pose as image 1 and the original dressed character as image 2, even when source upscaling is enabled.
+- Regenerating a single pose preserves its original reference dimensions when the saved poses have different sizes.
+- Character Creator returns QI2 character sheets at their decoded dimensions and checks the preview's cache key before reusing it. Style Preview Test passes the full-resolution QI2 image to its analysis step.
+
+## Clothing and upscaling
+
+- Clothes Designer refreshes cached previews when reference preparation, encoder resolution or latent sizing changes. It releases the preview model after a failed run and disables costume editing, deletion and preview generation while a workflow is queued or running.
+- In **Clone Clothes**, the character and clothing donor previews fit within their panels when switching modes or resizing the node. The **Replace Image** button and sprite navigation stay visible.
+- Flux Klein and MiniMax H3 clothing workflows align the first reference to the sampling canvas in multiples of 32 and keep secondary references at their original dimensions.
+- Character, Clone and Clothes generators save each upscaler stage as a batch of PNGs in the workflow cache. Regenerating one sprite reuses the other saved images. If a batch write fails, the previous complete batch remains available.
+
+## Control Center, previews and logs
+
+- Control Center resolves the catalog's model or LoRA file when several versions are installed. It can fall back to the recorded installed version when the requested file is missing.
+- The Character Creator, Character Cloner and Clothes Designer wizards show progress for the request that started them. Standalone previews keep their progress separate from the queued workflow. Sprite previews show a retry message when an image fails to load.
+- In Character Creator and Clothes Designer previews, the bright center of the scan line reaches the bottom edge at any supported node size.
+- Generation and wizard logs include the full prompts sent to the model. QI2 reference-generation logs also show encoder resolution, target megapixels and sampling dimensions.
+
+# VNCCS 3.3.2 Changelog
+
+This patch release fixes incomplete model installations from node cards and removes automatic green compositing of character references before pose generation.
+
+## Model Cards and Downloads
+
+- Anima and Qwen Image 2.1 cards in Character Creator and Emotion Studio now check the complete selection: diffusion model, text encoder, and VAE. Downloads use the selected auxiliary models from the existing catalog and generation profile.
+- Incomplete installations keep the existing **Missing** card appearance and download button until every required file is installed. Download status and progress are shown in a separate dialog without changing the card layout.
+- Replaced Character Creator's missing-model alerts with a dialog listing the required files and an **Install Missing Files** action. Download dialogs show progress and errors and can be closed while downloads continue.
+- Bundle downloads skip installed files and protect existing files from being overwritten during installation, including concurrent downloads.
+- SeedVR model cards now download the required VAE alongside the diffusion model and show **Installed** only when both files are present.
+- Fixed model-card animation updates failing when a card is displayed outside a picker.
+
+## Pose Generation
+
+- Removed the forced green background fill from the shared pose-generation path used by Character, Clone, and Clothes Generators. The original character reference, including its alpha channel, is passed to the generation encoder.
+- Added regression coverage for RGBA reference preservation and Native transparency instructions in both batch and sequential pose generation.
+
+# VNCCS 3.3.1 Changelog
+
+This patch release fixes Qwen runtime installation, conflicting clothes preview actions, and sprite archive preservation. The changes below are relative to `main` (`3.3.0`).
+
+## Qwen Runtime Installation
+
+- Added `install.py` to install the JamePeng `llama-cpp-python` fork. Removed the plain PyPI requirement, which could not resolve the required fork version on a fresh installation.
+- The installer selects a published wheel matching the operating system, Python version, and CUDA version reported by the existing PyTorch. Compatible JamePeng installations are preserved.
+
+## Clothes Designer
+
+- Locked the Generate Clothes and Clone Clothes tabs while a preview is running or a character/costume selection is loading. Switching modes can no longer clear the busy state and queue an extra preview.
+- Prevented older preview responses from resetting the button label or unlocking controls belonging to a newer preview, restored workflow, or replacement job.
+- Removed the unused clothing description scanner and redundant sampling-settings wrapper. Sampling uses the same resolved settings directly; node outputs and saved workflow fields remain unchanged.
+
+## Control Center
+
+- Moved catalog loading for listing and adding custom LoRAs off the HTTP event loop, keeping other requests and progress updates responsive during remote catalog downloads.
+- Custom LoRA additions now refresh the registry after a catalog lookup finishes, preserving duplicate-path rejection and unique names during concurrent additions.
+
+## Sprite Storage
+
+- Fixed archive numbering on case-insensitive filesystems. Existing lowercase archives such as `v1` are preserved when a new generation creates its next numbered archive, preventing earlier sprites from being discarded.
+
+
 # VNCCS 3.3.0 Changelog
 
 This release modernizes the active VNCCS 3.2 pipeline, expands model-aware character styling, and hardens generation, previews, storage, and sprite selection. The changes below are relative to `main` (`3.2.5`).
