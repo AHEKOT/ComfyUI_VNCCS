@@ -1,4 +1,4 @@
-from ..operation_logger import log_event, log_stage, logged_operation
+from ..operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 from .preview_runtime import run_preview_job, run_wizard_job
 
@@ -281,6 +281,9 @@ def _load_character_style_catalog(path=CHARACTER_STYLE_CATALOG_PATH):
     try:
         with open(path, "r", encoding="utf-8") as catalog_file:
             catalog = json.load(catalog_file)
+    except FileNotFoundError:
+        log_event("warning", component="Creator", level="warning", message=f"Bundled styles unavailable: {path}")
+        return {"groups": [], "aliases": {}, "default_style": "none"}, {}, {}, "none"
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Failed to load character style catalog '{path}': {exc}") from exc
 
@@ -435,7 +438,7 @@ def _extract_character_tag_options(tags_data):
     }
 
 
-SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"]["skin_color"]]
+SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"].get("skin_color", [])]
 
 SKIN_COLOR_HINT_RE = re.compile(
     r"\b(skin|complexion|[a-z]+[- ]skinned)\b",
@@ -521,7 +524,7 @@ def _character_style_prompt(info, *, include_secondary=False):
             return match["prompt"]
     if style_key not in ALL_CHARACTER_STYLE_PROMPTS and info.get("style_prompt"):
         return str(info["style_prompt"])[:16000].strip()
-    return ALL_CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS[DEFAULT_CHARACTER_STYLE])
+    return ALL_CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS.get(DEFAULT_CHARACTER_STYLE, ""))
 
 
 def _infer_skin_color_from_description(description):
@@ -743,6 +746,8 @@ def _preview_cache_key(info, gen_settings):
         "style": _character_style_prompt(info),
         "files": _generation_file_signatures(settings),
     }
+    if settings["generation_mode"] == "qi2":
+        payload["encoder_resolution"] = "from_target_size"
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -1006,12 +1011,6 @@ def _qi2_prompt_rewriter_system_prompt():
     return QI2_PROMPT_REWRITER_FALLBACK
 
 
-def _ensure_prompt_server_progress_context():
-    prompt_server = getattr(getattr(server, "PromptServer", None), "instance", None)
-    if prompt_server is not None and not hasattr(prompt_server, "last_prompt_id"):
-        prompt_server.last_prompt_id = "vnccs_character_creator_v2"
-
-
 def _qi2_json_result(generated_text):
     """Read the final response object, excluding any legacy thinking section."""
     text = str(generated_text or "").strip()
@@ -1236,7 +1235,6 @@ def generate_qi2_prompt(clip, character_prompt, style_reference="", character_in
     """Rewrite a style-free character body, then append the reference verbatim."""
     from .character_generator import _call_comfy_node
 
-    _ensure_prompt_server_progress_context()
     system_prompt = _qi2_prompt_rewriter_system_prompt()
     if style_reference:
         system_prompt = f"{system_prompt}\n\n{QI2_STYLE_REWRITE_RULES}"
@@ -1270,7 +1268,6 @@ def generate_qi2_prompt(clip, character_prompt, style_reference="", character_in
 
 def generate_creator_qi2_prompt(clip, character_prompt, style_reference="", character_info=None, enhance=True):
     """Temporarily use Qwen's official text-to-image master prompt."""
-    _ensure_prompt_server_progress_context()
     log_event("prompt_enhancement", component="Creator", enabled=enhance)
     fields = _character_prompt_fields(character_info, "qi2") if character_info is not None else None
     if fields is not None:
@@ -1324,7 +1321,7 @@ def encode_generation_conditioning(
     """QI2 callers supply a style-free body and the selected reference separately."""
     log_stage("encoding the character prompt")
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
-        from .character_generator import _call_comfy_node
+        from .character_generator import _call_comfy_node, _qi2_scale
 
         if creator_prompt:
             rewritten_prompt = generate_creator_qi2_prompt(
@@ -1335,16 +1332,19 @@ def encode_generation_conditioning(
             rewritten_prompt = generate_qi2_prompt(
                 clip, positive_text, style_reference=style_reference, character_info=character_info,
             )
+        _, resolution = _qi2_scale(gen_settings.get("target_size", 1024))
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=clip,
             vae=vae,
             prompt=rewritten_prompt,
             negative_prompt=str(negative_text or ""),
-            resolution=1024,
+            resolution=resolution,
             images={},
         )
         return positive, negative, rewritten_prompt
+    log_prompts(f"{gen_settings.get('generation_mode', 'illustrious')} conditioning",
+                positive=positive_text, negative=negative_text)
     return (
         encode_generation_prompt(clip, positive_text, gen_settings),
         encode_generation_prompt(clip, negative_text, gen_settings),
@@ -1838,6 +1838,7 @@ Example:
 
             configure_qwen_text_chat(llm)
             log_stage("generating_description")
+            log_prompts("Character Wizard", system=system_prompt, user=user_prompt)
             response = llm.create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -1883,7 +1884,6 @@ Example:
     @logged_operation("Creator", "preview")
     def _generate_preview_response(data, style_preview=None):
         try:
-            _ensure_prompt_server_progress_context()
             gen_settings = normalize_gen_settings(data.get("gen_settings", {}))
             char_info = data.get("character_info", {})
             if style_preview is not None:
@@ -1985,13 +1985,6 @@ Example:
                     style_reference=_character_style_prompt(char_info),
                     character_info=char_info, creator_prompt=True,
                 )
-                if generation_mode == "qi2":
-                    CharacterCreatorV2.log_generation_prompts(
-                        "QI2 encoded preview",
-                        encoded_positive_text,
-                        negative_text,
-                        framing=char_info.get("image_type") or char_info.get("framing"),
-                    )
                 if generation_mode == "anima":
                     validate_anima_conditioning(positive_cond, negative_cond, gen_settings.get("clip_name", ""))
 
@@ -2458,7 +2451,7 @@ class CharacterCreatorV2:
                      with Image.open(cache_path) as cached:
                          saved_key = cached.info.get("vnccs_preview_key")
                          # shortcut: legacy PNGs trust preview_valid until a new preview records its inputs.
-                         if saved_key is None or saved_key == cache_key:
+                         if saved_key == cache_key or (saved_key is None and generation_mode != "qi2"):
                              image = pil2tensor(cached)
                              log_event("preview_cache", component="Creator", character=character_name, cache="hit")
                          else:
@@ -2557,13 +2550,6 @@ class CharacterCreatorV2:
                     style_reference=_character_style_prompt(info),
                     character_info=info, creator_prompt=True,
                 )
-                if generation_mode == "qi2":
-                    self.log_generation_prompts(
-                        "QI2 encoded workflow",
-                        encoded_positive_prompt,
-                        negative_prompt,
-                        framing=info.get("framing"),
-                    )
                 if generation_mode == "anima":
                     validate_anima_conditioning(conditioning_pos, conditioning_neg, gen_settings.get("clip_name", ""))
 
@@ -2620,7 +2606,7 @@ class CharacterCreatorV2:
             background_color = "Alpha"
 
         # Resize full sheet (1024x3072) to single character size (512x1536)
-        if torch.is_tensor(image) and image.shape[1] == 3072 and image.shape[2] == 1024:
+        if generation_mode != "qi2" and torch.is_tensor(image) and image.shape[1] == 3072 and image.shape[2] == 1024:
             pil_img = tensor2pil(image)
             pil_img = pil_img.resize((512, 1536), Image.LANCZOS)
             image = pil2tensor(pil_img)

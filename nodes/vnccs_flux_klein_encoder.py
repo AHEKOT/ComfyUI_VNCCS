@@ -1,6 +1,7 @@
 """Flux Klein conditioning encoder assembled from native ComfyUI nodes."""
 
 import inspect
+from ..operation_logger import log_prompts
 
 try:
     import nodes as comfy_nodes
@@ -48,7 +49,7 @@ def _call_comfy_node(class_name, **kwargs):
     raise RuntimeError(f"Node '{class_name}' has no callable FUNCTION")
 
 
-def _image_dimensions(image):
+def _image_dimensions(image, multiple=1):
     shape = getattr(image, "shape", None)
     if shape is None or len(shape) < 3:
         raise RuntimeError("Scaled reference image has no valid B,H,W,C shape.")
@@ -56,6 +57,9 @@ def _image_dimensions(image):
     width = int(shape[-2])
     if width <= 0 or height <= 0:
         raise RuntimeError(f"Scaled reference image has invalid dimensions: {width}x{height}.")
+    width, height = width // multiple * multiple, height // multiple * multiple
+    if width == 0 or height == 0:
+        raise ValueError(f"Scaled reference image must be at least {multiple} pixels on each side.")
     return width, height
 
 
@@ -156,7 +160,9 @@ class VNCCS_Flux_Klein_Encoder:
         empty_width=1024,
         empty_height=1024,
         batch_size=1,
+        align_image1=False,
     ):
+        log_prompts("Flux Klein conditioning", positive=prompt)
         positive = _call_comfy_node("CLIPTextEncode", clip=clip, text=prompt)[0]
         negative = _call_comfy_node("ConditioningZeroOut", conditioning=positive)[0]
 
@@ -166,13 +172,22 @@ class VNCCS_Flux_Klein_Encoder:
             if image is None:
                 continue
 
-            scaled = _call_comfy_node(
-                "ImageScaleToTotalPixels",
-                image=image,
-                upscale_method=upscale_method,
-                megapixels=float(megapixels),
-                resolution_steps=int(resolution_steps),
-            )[0]
+            scaled = image
+            if not align_image1 or first_scaled_image is None:
+                scaled = _call_comfy_node(
+                    "ImageScaleToTotalPixels",
+                    image=image,
+                    upscale_method=upscale_method,
+                    megapixels=float(megapixels),
+                    resolution_steps=int(resolution_steps),
+                )[0]
+            if align_image1 and first_scaled_image is None:
+                width, height = _image_dimensions(scaled, multiple=32)
+                if (width, height) != _image_dimensions(scaled):
+                    scaled = _call_comfy_node(
+                        "ImageScale", image=scaled, upscale_method=upscale_method,
+                        width=width, height=height, crop="disabled",
+                    )[0]
             latent = _call_comfy_node("VAEEncode", pixels=scaled, vae=vae)[0]
             conditioned = _call_comfy_node(
                 "ReferenceLatent",

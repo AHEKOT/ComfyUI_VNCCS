@@ -162,7 +162,7 @@ def test_other_pose_families_release_resources_and_consumed_tensors(dynamic_runt
     }.items():
         mappings[name] = type(name, (), {'FUNCTION': 'run', 'run': staticmethod(method)})
     monkeypatch.setattr(cg, 'comfy_nodes', types.SimpleNamespace(NODE_CLASS_MAPPINGS=mappings))
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image: (image,))}))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda image, background_color="Green": (image,))}))
     monkeypatch.setattr(cg, 'viggle_turbo_sigmas', lambda latent: torch.ones(7))
     monkeypatch.setattr(generator, '_extract_pipe', lambda pipe: {
         'model': object(), 'clip': object(), 'vae': object(), 'model_kind': kind,

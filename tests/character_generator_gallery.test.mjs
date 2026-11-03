@@ -51,6 +51,14 @@ for (const scenario of [
     });
 }
 
+test('gallery retains the previous image aspect while the next stage waits for images', () => {
+    const { widget, grid } = gallery();
+    grid.children.forEach(tile => { tile._previewAspect = 640 / 1536; });
+    widget.layoutPreviewGrid(grid);
+    const frame = grid.children[0].style;
+    assert.ok(Math.abs(parseFloat(frame.width) / parseFloat(frame.height) - 640 / 1536) < 1e-9);
+});
+
 function backgroundWidget() {
     const context = createWidgetContext({ app: { registerExtension() {} } });
     vm.runInContext(source + '\nthis.Widget = CharacterGeneratorWidget; this.defaults = DEFAULT_DATA;', context);

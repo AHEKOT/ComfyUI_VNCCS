@@ -7,7 +7,7 @@ const transport = readFileSync(new URL('../web/vnccs_transport.js', import.meta.
 const common = readFileSync(new URL('../web/vnccs_common.js', import.meta.url), 'utf8');
 const interactions = readFileSync(new URL('../web/sakura_interactions.mjs', import.meta.url), 'utf8').replaceAll('export ', '');
 const shared = common.slice(common.indexOf('// ── Shared Input Normalization'), common.indexOf('// ── Debounce'));
-const sharedNames = [...shared.matchAll(/export (?:const|function) (\w+)/g)].map(match => match[1]);
+const sharedNames = [...shared.matchAll(/export (?:async )?(?:const|function) (\w+)/g)].map(match => match[1]);
 
 // Source-level widget tests still execute the real shared transport helpers.
 export function createWidgetContext(sandbox = {}) {
@@ -26,6 +26,7 @@ export function createWidgetContext(sandbox = {}) {
     api.removeEventListener ||= () => {};
     const context = vm.createContext({
         Headers, CustomEvent, crypto: webcrypto, setInterval: () => 0, clearInterval() {},
+        setTimeout: () => 0, clearTimeout() {},
         window: { addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
         document: { visibilityState: 'hidden', addEventListener() {}, removeEventListener() {} },
         ...sandbox, api,

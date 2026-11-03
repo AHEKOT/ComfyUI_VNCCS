@@ -10,7 +10,7 @@ Class: VNCCS_QWEN_Encoder
 
 This file relies on runtime objects provided by ComfyUI (clip, vae, comfy.utils, node_helpers).
 """
-from ..operation_logger import log_event
+from ..operation_logger import log_event, log_prompts
 
 import math
 
@@ -228,6 +228,7 @@ class VNCCS_QWEN_Encoder:
                 # Add special tokens for this image
                 image_prompt += "{}: <|vision_start|><|image_pad|><|vision_end|>".format(names[i])
                 
+        log_prompts("Qwen conditioning", system=instruction_content, positive=image_prompt + prompt)
         tokens = clip.tokenize(image_prompt + prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
 

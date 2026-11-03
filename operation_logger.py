@@ -72,6 +72,15 @@ def log_stage(stage, status="running", *, current=None, total=None, **fields):
               duration_s=elapsed, level="error" if status == "error" else "info", **fields)
 
 
+def log_prompts(context, **prompts):
+    """Show the exact text sent to a model at INFO, including empty negatives."""
+    prompts = {role: text for role, text in prompts.items() if text is not None}
+    component = (_current_operation.get() or {}).get("component", "Generation")
+    log_event("prompts", component=component, context=context, truncate=False,
+              display_text="\n\n".join(f"{role.capitalize()} prompt:\n{text}" for role, text in prompts.items()),
+              **prompts)
+
+
 def logged_operation(component, action):
     """Keep synchronous jobs correlated, including nested jobs and failures."""
     def decorate(callback):

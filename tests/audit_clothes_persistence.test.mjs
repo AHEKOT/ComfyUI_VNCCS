@@ -77,6 +77,8 @@ function setup({ contexts, metadata, save, nativeCharacterSelect = false, disk =
         .replace('};\n                loadCharList();', '})();\n                loadCharList();');
     vm.runInContext(`${guards}
         ${between(source, '// State\n', '// Modal Helper')}
+        // Persistence-only fixtures run with an already confirmed idle queue.
+        node._vnccsClothesWorkflowBusy = false;
         Object.assign(els, controls);
         ${between(source, 'const beginCharacterInfoRequest =', '// UI Builders')}
         ${between(source, 'const hasSelectedEditableCostume =', 'const showCreateCostumeRequired =')}
@@ -251,19 +253,23 @@ for (const phase of ['confirmation', 'response']) {
     });
 }
 
-test('Clothes restoration discards a preview check started for the previous workflow', async () => {
+test('Clothes restoration discards an image started for the previous workflow', async () => {
     const h = setup();
     h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'Alice silk' } });
     await h.context.initialLoad;
-    const pending = deferred(), previews = [];
-    h.context.api.fetchApi = () => pending.promise;
-    h.context.newNavigator = { invalidate() {}, showFallback: (...args) => previews.push(args) };
-    vm.runInContext(`spritePreviewNavigator = newNavigator;
+    const images = [], previews = [];
+    h.context.Image = class { constructor() { images.push(this); } };
+    h.context.onPreviewLoaded = url => previews.push(url);
+    const navigatorCode = between(common, 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
+    vm.runInContext(`${navigatorCode}
+        spritePreviewNavigator = createSpritePreviewNavigator({ node, onLoaded: onPreviewLoaded });
         ${between(source, 'const updatePreviewImage =', 'const onPreviewUpdated =')}
         globalThis.refreshPreview = updatePreviewImage;`, h.context);
     const operation = h.context.refreshPreview(true);
+    assert.equal(images.length, 1, 'Image loading starts without a preliminary fetch');
+    const oldImage = images[0];
     h.configure({ character: 'Alice', costume: 'Dress', costume_info: { top: 'new workflow wool' } });
-    pending.resolve(response({}));
+    oldImage.onload();
     await operation;
     assert.deepEqual(previews, []);
 });

@@ -2,3 +2,4 @@
 # the Comfy Registry runtime archive.
 tests/
 scripts/
+/images/

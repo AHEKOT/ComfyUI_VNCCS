@@ -397,13 +397,14 @@ def generator_module(monkeypatch):
     tensor.nn.functional = module('torch.nn.functional')
     prefix = package + '.nodes.'
     from nodes import runtime_cleanup
-    from nodes.vnccs_control_center import _model_file_signature, _resolve_model_download_path, _validate_downloaded_model_file
+    from nodes.vnccs_control_center import _model_file_signature, _resolve_model_download_path, _validate_downloaded_model_file, _create_download_staging_file
     monkeypatch.setitem(sys.modules, prefix + 'runtime_cleanup', runtime_cleanup)
     module(prefix + 'vnccs_control_center', _apply_lora_standard=lambda *a: None,
            _find_model_on_disk=lambda *a: None, _rel_within_folder=lambda *a: None,
            _entry_kind=lambda entry: '', _model_file_signature=_model_file_signature,
            _resolve_model_download_path=_resolve_model_download_path,
-           _validate_downloaded_model_file=_validate_downloaded_model_file)
+           _validate_downloaded_model_file=_validate_downloaded_model_file,
+           _create_download_staging_file=_create_download_staging_file)
     module(prefix + 'qi2_viggle', apply_viggle_turbo_lora=lambda *a: None, viggle_turbo_sigmas=lambda *a: None)
     module('cv2')
     spec = importlib.util.spec_from_file_location(prefix + 'vnccs_utils', root / 'nodes/vnccs_utils.py')

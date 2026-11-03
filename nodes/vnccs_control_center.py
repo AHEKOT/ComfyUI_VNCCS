@@ -13,6 +13,8 @@ import queue
 import threading
 import time
 import inspect
+import asyncio
+import sys
 import re
 import platform
 import tempfile
@@ -938,11 +940,16 @@ def _enrich_config_entries(entries, category, installed=None):
         active_ver = installed.get(key)
         _, on_disk = _find_model_on_disk(entry["local_path"])
         target_ver = entry.get("version", "")
+        if on_disk and active_ver and active_ver != target_ver:
+            active_path = _find_active_installed_local_path(entry, active_ver)
+            if active_path and active_path != entry["local_path"].replace("\\", "/"):
+                active_ver = target_ver
         if on_disk and not active_ver:
             active_ver = target_ver
         status = "missing"
         if on_disk:
-            status = "outdated" if active_ver and target_ver and active_ver != target_ver else "installed"
+            older = active_ver and target_ver and _version_sort_key(active_ver) < _version_sort_key(target_ver)
+            status = "outdated" if older else "installed"
         result.append({
             **entry,
             "status": status,
@@ -1060,6 +1067,7 @@ def _find_model_on_disk(local_path):
 
 def _entry_family_stem(local_path):
     stem = os.path.splitext(os.path.basename(str(local_path or "").replace("\\", "/")))[0]
+    stem = re.sub(r"(?<=[a-z0-9])v\d+(?:[._]\d+)*$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[-_](?:RC|V)?\d+(?:[._]\d+)*$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[-_]V\d+[-_]\d+$", "", stem, flags=re.IGNORECASE)
     return stem.lower()
@@ -1126,7 +1134,8 @@ def _apply_active_installed_paths(config):
                 continue
             key = f"cc_{category}_{entry.get('name', '')}"
             active_version = installed.get(key)
-            if active_version and active_version != entry.get("version"):
+            if (active_version and active_version != entry.get("version")
+                    and not _find_model_on_disk(entry.get("local_path", ""))[1]):
                 active_path = _find_active_installed_local_path(entry, active_version)
                 if active_path:
                     entry = {**entry, "local_path": active_path, "version": active_version}
@@ -1689,6 +1698,12 @@ def _download_worker_loop():
             _DOWNLOAD_STATUS[model_key] = {"status": "downloading", "message": "Initializing..."}
             log_event("download_started", component="ControlCenter", model=model_key, repository=download_repo_id)
             target_abs_path = _resolve_model_download_path(target_model["local_path"])
+            if target_model.get("skip_existing"):
+                existing, installed = _find_model_on_disk(target_model["local_path"])
+                if installed:
+                    _validate_downloaded_model_file(existing, os.path.basename(existing))
+                    _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Already installed"}
+                    continue
             if target_model.get("url"):
                 raise ValueError("Direct URL downloads are disabled; use hf_repo and hf_path")
 
@@ -1735,7 +1750,11 @@ def _download_worker_loop():
             _DOWNLOAD_STATUS[model_key]["message"] = "Validating..."
             _validate_downloaded_model_file(temp_path, os.path.basename(target_abs_path))
             _DOWNLOAD_STATUS[model_key]["message"] = "Installing..."
-            os.replace(temp_path, target_abs_path)
+            if target_model.get("skip_existing"):
+                os.link(temp_path, target_abs_path)
+                os.remove(temp_path)
+            else:
+                os.replace(temp_path, target_abs_path)
             update_installed_version(model_key, target_model.get("version", ""))
             _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Installed"}
             log_event("download_completed", component="ControlCenter", model=model_key, bytes=total_size,
@@ -2391,6 +2410,8 @@ async def cc_download(request):
             return web.json_response(dict(current))
         _DOWNLOAD_TARGETS[key] = target
         _DOWNLOAD_STATUS[key] = {"status": "queued", "message": "Queued..."}
+        if data.get("skip_existing") is True:
+            entry = {**entry, "skip_existing": True}
         _DOWNLOAD_QUEUE.put((repo_id, key, entry))
     return web.json_response({"status": "queued", "message": f"Download queued for {name}"})
 
@@ -2436,6 +2457,31 @@ async def vnccs_manager_enable_personal_cloud(request):
         return web.json_response({"error": str(exc)}, status=409)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
+
+
+@server.PromptServer.instance.routes.get("/vnccs/module_versions/{package}")
+async def vnccs_module_versions(request):
+    package = request.match_info["package"]
+    if package not in {"vnccs", "vnccs-utils"}:
+        return web.json_response({"error": "Unknown module"}, status=404)
+    try:
+        manager = sys.modules.get("comfyui_manager.common.manager_util") or sys.modules.get("manager_util")
+        if manager is None or _get_manager_install_policy()["network_mode"] not in {"public", "personal_cloud"}:
+            return web.json_response({"error": "Registry lookup unavailable"}, status=503)
+        # Manager's version picker can omit releases that are still under review.
+        versions = await asyncio.wait_for(manager.get_data(
+            f"https://api.comfy.org/nodes/{package}/versions", silent=True,
+        ), timeout=7)
+        if not isinstance(versions, list):
+            raise ValueError("Invalid Registry version list")
+        return web.json_response([
+            {"version": item.get("version")}
+            for item in versions if isinstance(item, dict) and not item.get("deprecated")
+            and isinstance(item.get("downloadUrl"), str) and item["downloadUrl"].strip()
+        ])
+    except Exception as exc:
+        log_event("warning", component="ControlCenter", level="warning", message=f"Registry lookup failed for {package}: {exc}")
+        return web.json_response({"error": "Registry lookup unavailable"}, status=503)
 
 
 @server.PromptServer.instance.routes.get("/vnccs/module_status")

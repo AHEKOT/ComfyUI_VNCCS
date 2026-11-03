@@ -10,6 +10,53 @@ import utils
 from nodes.preview_runtime import run_wizard_job
 
 
+@pytest.mark.parametrize("phase", ["write", "replace"])
+@pytest.mark.parametrize("cleanup_error", [None, PermissionError("File is in use"), OSError("Cleanup I/O failure")])
+def test_atomic_output_preserves_original_failure(tmp_path, monkeypatch, caplog, phase, cleanup_error):
+    target = tmp_path / "cache.pt"
+    target.write_bytes(b"previous")
+    original_error = RuntimeError("Tensor serialization failed") if phase == "write" else OSError("Atomic replacement failed")
+
+    def fail_replace(source, destination):
+        raise original_error
+
+    def fail_cleanup(path):
+        raise cleanup_error
+
+    if phase == "replace":
+        monkeypatch.setattr(utils.os, "replace", fail_replace)
+    if cleanup_error is not None:
+        monkeypatch.setattr(utils.os, "unlink", fail_cleanup)
+
+    with pytest.raises(type(original_error)) as raised:
+        with utils.atomic_output_path(target) as temporary:
+            Path(temporary).write_bytes(b"partial")
+            if phase == "write":
+                raise original_error
+
+    assert raised.value is original_error
+    assert target.read_bytes() == b"previous"
+    assert Path(temporary).exists() == (cleanup_error is not None)
+    warnings = [record.vnccs for record in caplog.records if record.name == "VNCCS"]
+    if cleanup_error is None:
+        assert not warnings
+    else:
+        assert len(warnings) == 1
+        assert warnings[0]["event"] == "cleanup_warning"
+        assert warnings[0]["path"] == temporary
+        assert warnings[0]["error"] == str(cleanup_error)
+
+
+def test_atomic_output_publishes_completed_file_without_residue(tmp_path):
+    target = tmp_path / "cache.pt"
+    target.write_bytes(b"previous")
+    with utils.atomic_output_path(target) as temporary:
+        Path(temporary).write_bytes(b"complete")
+        assert target.read_bytes() == b"previous"
+    assert target.read_bytes() == b"complete"
+    assert list(tmp_path.iterdir()) == [target]
+
+
 def test_paths_reject_symlink_escape_and_portable_traversal(tmp_path):
     root, outside = tmp_path / "root", tmp_path / "outside"
     root.mkdir()

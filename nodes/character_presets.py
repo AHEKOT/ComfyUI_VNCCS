@@ -4,13 +4,19 @@ import json
 import os
 import re
 
+from ..operation_logger import log_event
 
 CHARACTER_PRESETS_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "character_template", "character_presets_v2.json",
 )
-with open(CHARACTER_PRESETS_PATH, encoding="utf-8") as preset_file:
-    CHARACTER_PRESETS = json.load(preset_file)
+try:
+    with open(CHARACTER_PRESETS_PATH, encoding="utf-8") as preset_file:
+        CHARACTER_PRESETS = json.load(preset_file)
+except FileNotFoundError:
+    log_event("warning", component="Creator", level="warning",
+              message=f"Character presets unavailable: {CHARACTER_PRESETS_PATH}")
+    CHARACTER_PRESETS = {"tags": {}}
 
 
 def preset_key(value):
@@ -18,7 +24,7 @@ def preset_key(value):
 
 
 RACE_PRESETS = {}
-for preset in CHARACTER_PRESETS["tags"]["races"]:
+for preset in CHARACTER_PRESETS["tags"].get("races", []):
     for alias in (preset["tag"], preset["label"], *preset.get("synonyms", [])):
         RACE_PRESETS[preset_key(alias)] = preset
 

@@ -655,31 +655,48 @@ def test_seedvr_download_publishes_valid_weights_to_the_configured_folder(
 ):
     import folder_paths
     import huggingface_hub
+    from nodes import vnccs_control_center as cc
     installed = tmp_path / "external" / "diffusion_models"
     monkeypatch.setattr(folder_paths, "get_folder_paths", lambda category: [str(installed)])
+    monkeypatch.setattr(generator_module, "_find_model_on_disk", cc._find_model_on_disk)
     name = generator_module.SEEDVR_MODEL_FILES[0]
     target = installed / name
     target.parent.mkdir(parents=True)
-    original = b"original installed model"
-    target.write_bytes(original)
     cache = tmp_path / "download.safetensors"
     header = json.dumps({"weight": {"dtype": "U8", "shape": [1024], "data_offsets": [0, 1024]}}).encode()
     contents = len(header).to_bytes(8, "little") + header + b"\0" * 1024
     cache.write_bytes(contents if valid else b"invalid downloaded model")
+    calls = []
     def download(**options):
         assert options["token"] is False
         assert options["revision"] == generator_module.SEEDVR_HF_REVISION
         assert options["filename"] == f"diffusion_models/{name}"
+        calls.append(options)
         return str(cache)
     monkeypatch.setattr(huggingface_hub, "hf_hub_download", download)
     if valid:
         assert generator_module._download_seedvr_file("models", name) == str(target)
         assert target.read_bytes() == contents
+        before = target.stat().st_mtime_ns
+        assert generator_module._download_seedvr_file("models", name) == str(target)
+        assert target.read_bytes() == contents and target.stat().st_mtime_ns == before
+        assert len(calls) == 1
+        assert list(installed.iterdir()) == [target]
     else:
         with pytest.raises(ValueError):
             generator_module._download_seedvr_file("models", name)
-        assert target.read_bytes() == original
-    assert list(installed.iterdir()) == [target]
+        assert list(installed.iterdir()) == []
+
+
+def test_seedvr_missing_vae_keeps_model_missing_and_downloads_the_complete_bundle(generator_module, monkeypatch):
+    name = generator_module.SEEDVR_MODEL_FILES[0]
+    monkeypatch.setattr(generator_module, "_find_model_on_disk", lambda path: (path, "diffusion_models" in path))
+    assert generator_module._seedvr_catalog()["models"][0]["status"] == "missing"
+    calls = []
+    monkeypatch.setattr(generator_module, "_download_seedvr_file", lambda category, name: calls.append((category, name)))
+    generator_module._seedvr_download_worker("models", name)
+    assert calls == [("models", name), ("vae", generator_module.SEEDVR_VAE_FILES[0])]
+    assert generator_module._SEEDVR_DOWNLOAD_STATUS[f"models:{name}"]["status"] == "installed"
 
 
 @pytest.mark.parametrize("route", ["vnccs_character_generator_seedvr_download", "vnccs_character_generator_regenerate"])

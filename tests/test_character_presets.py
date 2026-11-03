@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import importlib.util
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,18 @@ def creator():
 def test_breast_presets_remain_identical_to_legacy_catalog():
     legacy = json.loads((ROOT / "character_template/character_tags.json").read_text())
     assert TAGS["breast_size"] == legacy["tags"]["breast_size"]
+
+
+def test_missing_catalog_keeps_freeform_input(tmp_path, caplog):
+    path = tmp_path / "nodes" / "character_presets.py"
+    path.parent.mkdir()
+    path.write_bytes(Path(presets.__file__).read_bytes())
+    spec = importlib.util.spec_from_file_location("_vnccs.nodes.missing_presets", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.CHARACTER_PRESETS == {"tags": {}}
+    assert module.race_prompt("elf, custom markings") == "elf, custom markings"
+    assert "character_presets_v2.json" in caplog.text
 
 
 def test_catalog_has_distinct_choices_and_unambiguous_aliases():

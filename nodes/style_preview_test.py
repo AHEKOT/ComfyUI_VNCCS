@@ -22,7 +22,6 @@ from .character_creator_v2 import (
     QI2_STYLE_REFERENCE_HEADING,
     QI2_STYLE_REWRITE_RULES,
     _character_style_prompt,
-    _ensure_prompt_server_progress_context,
     _qi2_character_fields,
     _qi2_expanded_field_prompt,
     _qi2_json_result,
@@ -165,16 +164,21 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
         for group in groups:
             if group == "breast_size" and (info["sex"] != "female" or info["age"] < 18):
                 continue
-            options = [item["tag"] for item in tags[group]]
+            options = [item["tag"] for item in tags.get(group, [])]
+            if not options:
+                continue
             # Identity groups have one choice; decorative details can form a set.
             count = random.randint(1, min(3, len(options))) if group in {"details", "face_details", "eye_features"} else 1
             selected.extend(random.sample(options, count))
-        info[field] = ", ".join(selected)
+        if selected:
+            info[field] = ", ".join(selected)
     styles = [style for group in CHARACTER_STYLE_CATALOG["groups"] for style in group["styles"]]
     if mode == "anima" and anima_style_override:
         artist = random.choice(_ANIMA_ARTISTS) if randomize.get("style", True) else _ANIMA_ARTISTS[0]
         info.update(style="custom", custom_style=f"@{artist}")
         style_id = "artist_" + re.sub(r"[^a-z0-9]+", "_", artist.lower()).strip("_")
+    elif not styles:
+        info["style"] = style_id = "none"
     else:
         style = random.choice(styles) if randomize.get("style", True) else next(
             style for style in styles if style["id"] == CHARACTER_STYLE_CATALOG["default_style"]
@@ -186,7 +190,7 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
 def _set_observed_breast_size(info, size):
     """Replace provisional size tags inside body, retaining other body traits."""
     size_tags = {
-        item["tag"] for item in CHARACTER_PRESETS["tags"]["breast_size"]
+        item["tag"] for item in CHARACTER_PRESETS["tags"].get("breast_size", [])
         if item["tag"] != "mole_on_breast"
     }
     body = [tag.strip() for tag in info["body"].split(",") if tag.strip()]
@@ -199,7 +203,6 @@ def _rewrite_preview_output(clip, info, style_reference):
     """Use the shared field rewriter while keeping observed adult body traits exact."""
     from .character_generator import _call_comfy_node
 
-    _ensure_prompt_server_progress_context()
     fields = _qi2_character_fields(info)
     pe_fields = {key: value for key, value in fields.items() if key not in {"aesthetics", "lora_prompt"}}
     system_prompt = _qi2_prompt_rewriter_system_prompt()
@@ -228,18 +231,15 @@ def _rewrite_preview_output(clip, info, style_reference):
     return prompt
 
 
-def _analyze_breast_size(image):
-    from .character_generator import _call_comfy_node
+def _analyze_breast_size(image, mode):
+    from .character_generator import _call_comfy_node, _qi2_reference_image
 
     if image.ndim != 4 or image.shape[0] != 1 or image.shape[-1] not in (3, 4):
         raise ValueError("Breast size analysis requires exactly one RGB or RGBA image")
-    rgb = image[..., :3]
-    if image.shape[-1] == 4:
-        alpha = image[..., 3:4]
-        rgb = rgb * alpha + (1 - alpha)
+    rgb = _qi2_reference_image(image)
     height, width = rgb.shape[1:3]
-    scale = min(1.0, 1024 / max(height, width))
-    if scale < 1.0:
+    if mode == "anima" and max(height, width) > 1024:
+        scale = 1024 / max(height, width)
         rgb = torch.nn.functional.interpolate(
             rgb.movedim(-1, 1), size=(max(1, round(height * scale)), max(1, round(width * scale))),
             mode="bilinear", align_corners=False,
@@ -248,7 +248,6 @@ def _analyze_breast_size(image):
     analysis_settings = normalize_gen_settings(QI2_DEFAULTS)
     analysis_settings["clip_type"] = "stable_diffusion"
     clip = load_generation_clip(analysis_settings)
-    _ensure_prompt_server_progress_context()
     generated = _call_comfy_node(
         "TextGenerate", clip=clip, prompt=_BREAST_SIZE_ANALYSIS_PROMPT, image=rgb,
         **{
@@ -274,11 +273,10 @@ def _select_diffusion_model(mode):
     raise ValueError(f"No {mode.upper()} diffusion model found in ComfyUI diffusion_models")
 
 
-def _square_side(scale):
+def _preview_target_size(scale):
     scale = max(1.0, min(4.0, float(scale)))
     stepped = round(scale, 1)
-    target_size = {1.3: 1344, 1.5: 1536}.get(stepped, round(stepped * 1024))
-    return max(8, round(math.sqrt(target_size * 1024) / 8) * 8)
+    return {1.3: 1344, 1.5: 1536}.get(stepped, round(stepped * 1024))
 
 
 def _next_output_path(output_dir, mode, style_id):
@@ -362,10 +360,10 @@ class VNCCSStylePreviewTest:
         else:
             positive_text, negative_text = CharacterCreatorV2.construct_prompt(info, mode, include_style=False)
 
-        side = _square_side(scale_mp)
         settings = normalize_gen_settings({
             **(ANIMA_DEFAULTS if mode == "anima" else QI2_DEFAULTS),
             "generation_mode": mode,
+            "target_size": _preview_target_size(scale_mp),
             "diffusion_model_name": _select_diffusion_model(mode),
             "turbo_enabled": bool(turbo_enabled),
             "lora_stack": [],
@@ -392,6 +390,7 @@ class VNCCSStylePreviewTest:
         )
         if mode == "anima":
             validate_anima_conditioning(positive, negative, settings["clip_name"])
+        side = round(math.sqrt(settings["target_size"] * 1024) / 8) * 8
         latent = create_generation_latent(diffusion_model, side, side, settings)
         sampled = sample_generation_latent(
             model=diffusion_model,
@@ -416,7 +415,7 @@ class VNCCSStylePreviewTest:
         tensor2pil(image).save(path)
         log_event("preview_saved", component="StylePreview", file=os.path.basename(path))
         if info["age"] >= 18:
-            breast_size = _analyze_breast_size(image)
+            breast_size = _analyze_breast_size(image, mode)
             _set_observed_breast_size(info, breast_size)
             log_event("body_analysis", component="StylePreview", breast_size=breast_size)
         if mode == "anima" or info["age"] >= 18:

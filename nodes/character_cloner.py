@@ -1,4 +1,4 @@
-from ..operation_logger import log_event, log_stage, logged_operation
+from ..operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 import os
 import json
@@ -354,6 +354,7 @@ Return all keys in a raw JSON object. Do not output the word 'tag' as a value.""
                 ]
                 
                 log_stage("describing_reference", component="Cloner")
+                log_prompts("Character reference description", system=messages[0]["content"], user=prompt_instruction)
                 response = llm.create_chat_completion(
                     messages=messages,
                     max_tokens=1024,

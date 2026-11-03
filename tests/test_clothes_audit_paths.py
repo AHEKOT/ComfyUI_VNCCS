@@ -19,7 +19,7 @@ import utils
 def clothes_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
     generator = types.ModuleType("_vnccs.nodes.character_generator")
-    for name in ("_call_comfy_node", "_resolution_scale_megapixels", "_resolution_scale_value", "VNCCS_CharacterGenerator"):
+    for name in ("_call_comfy_node", "_qi2_scale", "_resolution_scale_megapixels", "_resolution_scale_value", "VNCCS_CharacterGenerator"):
         setattr(generator, name, lambda *args, **kwargs: pytest.fail("Preview path lookup must not run generation"))
     generator.H3_FRAME_COUNT = 1
     generator.NATIVE_BACKGROUND_PROMPT = "transparent background"
@@ -219,6 +219,26 @@ def test_clothes_preview_cache_is_bound_to_requested_costume(
     assert response.status == 200
     with Image.open(io.BytesIO(response.body)) as preview:
         assert preview.getpixel((0, 0)) == Image.new("RGB", (1, 1), expected).getpixel((0, 0))
+
+
+def test_new_costume_preview_returns_base_sprite_not_previous_outfit(clothes_paths, monkeypatch):
+    root = Path(utils.character_dir("Alice"))
+    for costume, color in (("Naked", "green"), ("Casual", "blue")):
+        directory = root / "Sprites" / costume / "Neutral"
+        directory.mkdir(parents=True)
+        Image.new("RGBA", (2, 3), color).save(directory / "pose.png")
+    utils.save_costume_info("Alice", "Shelter", {})
+    monkeypatch.setattr(clothes_paths.web, "Response", lambda status=200, **kwargs:
+        types.SimpleNamespace(status=status, **kwargs), raising=False)
+    request = types.SimpleNamespace(rel_url=types.SimpleNamespace(query={
+        "character": "Alice", "costume": "Shelter",
+    }))
+    response = asyncio.run(clothes_paths.vnccs_get_preview(request))
+    assert response.status == 200
+    assert response.body == (root / "Sprites" / "Naked" / "Neutral" / "pose.png").read_bytes()
+    assert utils.list_pose_preview_files("Alice", costume="Shelter") == [
+        str(root / "Sprites" / "Naked" / "Neutral" / "pose.png"),
+    ]
 
 
 def test_clothes_cache_route_waits_for_complete_owner_publication(clothes_paths, monkeypatch):

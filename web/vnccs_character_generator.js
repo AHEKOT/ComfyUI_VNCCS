@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
-import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
+import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, showModelDownloadDialog, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
 
 const CHARACTER_MANNEQUIN_URL = new URL("./assets/VNCCS_Character_Mannequin.png", import.meta.url).href;
 const CHARACTER_MANNEQUIN_MALE_URL = new URL("./assets/VNCCS_Character_Mannequin_Male.png", import.meta.url).href;
@@ -21,6 +21,8 @@ const DEFAULT_DATA = {
     },
     pose_generation: {
         target_size: 1024,
+        override_resolution: false,
+        resolution: 1024,
         upscale_method: "lanczos",
         crop_method: "disabled",
         image1_name: "image 1",
@@ -1795,6 +1797,11 @@ class CharacterGeneratorWidget {
                 fields: isQI2 ? [
                     resolutionScale(poseTargetSection),
                     select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
+                    number("pose_generation", "resolution", "resolution", 0, 4096, 32, {
+                        snapToStep: true,
+                        help: "Follows resolution scale unless overridden. A manual value of 0 keeps each reference's dimensions rounded to multiples of 32.",
+                    }),
+                    check("pose_generation", "override_resolution", "Override encoder resolution"),
                 ] : [
                     resolutionScale(poseTargetSection),
                     select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
@@ -2102,7 +2109,8 @@ class CharacterGeneratorWidget {
                 const text = String(input.value).trim().replace(",", ".");
                 const value = Number(text);
                 if (!text || !Number.isFinite(value) || (field.step >= 1 && !Number.isInteger(value))) return;
-                draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, value));
+                const stepped = field.snapToStep ? Math.round(value / field.step) * field.step : value;
+                draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, stepped));
             };
             if (field.type === "number") {
                 input.onblur = () => { input.value = String(draft[field.section][field.key] ?? ""); };
@@ -2111,6 +2119,7 @@ class CharacterGeneratorWidget {
         }
         input.dataset.focusKey = `advanced-${field.section}-${field.key}`;
         input.ariaLabel = field.label;
+        if (field.help) setHelpText(wrap, field.help);
         this.protectNativeControl(input);
         return wrap;
     }
@@ -2148,6 +2157,19 @@ class CharacterGeneratorWidget {
                 fields.className = "vnccs-pipe-settings-group-fields";
                 for (const field of group.fields) {
                     fields.appendChild(this.createGeneratorSettingsField(field, draft));
+                }
+                if (group.fields.some(field => field.key === "override_resolution")) {
+                    const scale = fields.querySelector(`[data-focus-key="advanced-${this.isClone ? "common" : "pose_generation"}-target_size"]`);
+                    const override = fields.querySelector('[data-focus-key="advanced-pose_generation-override_resolution"]');
+                    const resolution = fields.querySelector('[data-focus-key="advanced-pose_generation-resolution"]');
+                    const syncResolution = () => {
+                        resolution.disabled = !override.checked;
+                        resolution.value = override.checked ? draft.pose_generation.resolution
+                            : 32 * Math.round(32 * Math.sqrt(Number(scale.value)));
+                    };
+                    scale.addEventListener("input", syncResolution);
+                    override.addEventListener("change", syncResolution);
+                    syncResolution();
                 }
                 if (group.note) {
                     const note = document.createElement("div");
@@ -3507,11 +3529,28 @@ class CharacterGeneratorWidget {
         }, 2000);
     }
 
+    openSeedvrDownload(entry) {
+        this.closeModal();
+        const dialog = showModelDownloadDialog(this.node, (title, content, buttons) => showCommonModal(this.root, title, content, buttons),
+            () => [["models", entry], ...((this.seedvrAssets?.vae || []).map(vae => ["vae", vae]))].map(([category, file]) => {
+                const current = (this.seedvrAssets?.[category] || []).find(item => item.name === file.name) || file;
+                return { name: file.name, ...(current.status === "installed" ? { status: "installed" }
+                    : { status: "missing", ...this.seedvrDownloads[`${category}:${file.name}`] }) };
+            }), () => this.downloadSeedvrAsset("models", entry));
+        dialog.overlay.className = "vnccs-pipe-modal-backdrop";
+        dialog.modal.className = "vnccs-pipe-modal";
+        dialog.title.className = "vnccs-pipe-modal-title";
+        dialog.content.className = "vnccs-pipe-modal-body";
+        dialog.actions.className = "vnccs-pipe-modal-actions";
+        dialog.buttons.forEach(button => button.className = "vnccs-pipe-modal-btn");
+        this.modalEl = dialog.overlay;
+    }
+
     buildSeedvrCard(entry, { pickerHead = false } = {}) {
         const rel = this.seedvrRelativePath(entry);
         const key = `models:${entry.name}`;
         const download = this.seedvrDownloads[key] || {};
-        const status = ["queued", "downloading", "error"].includes(download.status) ? download.status : entry.status;
+        const status = entry.status === "installed" ? "installed" : "missing";
         const installed = status === "installed";
         const ready = installed;
         const selected = this.data.upscaler.model === rel;
@@ -3559,14 +3598,14 @@ class CharacterGeneratorWidget {
         } else {
             const button = document.createElement("button");
             button.className = "vnccs-seedvr-download";
-            button.textContent = status === "error" ? (download.message || "Retry") : (["queued", "downloading"].includes(status) ? (download.message || "Downloading…") : "Install / Download");
+            button.textContent = "Install / Download";
             button.ariaLabel = button.textContent;
             setHelpText(button, button.textContent);
             setHelpText(card, button.textContent);
             button.disabled = ["queued", "downloading"].includes(status);
             button.onclick = event => {
                 event.stopPropagation();
-                this.downloadSeedvrAsset("models", entry);
+                this.openSeedvrDownload(entry);
             };
             card.appendChild(button);
         }
@@ -4205,7 +4244,7 @@ class CharacterGeneratorWidget {
         const images = [...grid.children].map(tile => tile._clothesRevealBase || tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
         const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
         const fixed = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
-        const fallback = known ? known.naturalWidth / known.naturalHeight : this.isBackground ? 16 / 9 : CHARACTER_MANNEQUIN_ASPECT;
+        const fallback = known ? known.naturalWidth / known.naturalHeight : this.isBackground ? 16 / 9 : grid.children[0]._previewAspect || CHARACTER_MANNEQUIN_ASPECT;
         // All cards share one frame, including pending previews and mannequins.
         const aspect = Number.isFinite(fixed) && fixed > 0 ? fixed : fallback;
         const aspects = images.map(() => aspect);

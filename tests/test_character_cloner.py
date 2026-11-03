@@ -282,12 +282,17 @@ def _run_wizard(monkeypatch, tmp_path, content, image=None):
     return cloner._cloner_auto_generate_response({"image_name": "reference.png"}), calls
 
 
-def test_wizard_requests_visible_character_traits_only(monkeypatch, tmp_path):
+def test_wizard_requests_visible_character_traits_only(monkeypatch, tmp_path, caplog):
     traits = {"skin_color": "red skin", "face": "", "additional_details": "monster arm"}
     response, calls = _run_wizard(monkeypatch, tmp_path, json.dumps(traits))
     assert response.status == 200
     assert response.data == traits
     prompt = calls[0]["messages"][1]["content"][0]["text"]
+    record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
+    assert record.vnccs["user"] == prompt
+    assert record.vnccs["system"] == calls[0]["messages"][0]["content"]
+    assert prompt in record.getMessage()
+    assert "base64" not in record.getMessage()
     assert "do not choose from presets or a closed list" in prompt
     assert "including unusual or multiple colors" in prompt
     assert "Red or pink skin across the face or body is skin_color, not blush" in prompt

@@ -320,7 +320,7 @@ def test_generator_internal_node_settings_are_forwarded(monkeypatch):
     calls = {}
 
     class FakeMaskExtractor:
-        def fill_alpha_with_color(self, image):
+        def fill_alpha_with_color(self, image, background_color="Green"):
             return (image,)
 
     class TestGenerator(cg.VNCCS_CharacterGenerator):
@@ -900,7 +900,7 @@ def test_pose_generation_decode_preserves_encoder_aspect(monkeypatch):
     decoded = torch.rand(1, 1584, 664, 3)
 
     class FakeMaskExtractor:
-        def fill_alpha_with_color(self, image):
+        def fill_alpha_with_color(self, image, background_color="Green"):
             return (image,)
 
     class TestGenerator(cg.VNCCS_CharacterGenerator):
@@ -964,6 +964,14 @@ def test_h3_resolution_scale_uses_linear_megapixel_area_at_2048():
     assert height / width == pytest.approx(1536 / 640, rel=0.025)
 
 
+def test_h3_clothes_resolution_rounds_scaled_pixels_down_without_changing_other_callers():
+    torch = pytest.importorskip("torch")
+    generator = cg.VNCCS_CharacterGenerator()
+    source = torch.zeros(1, 1536, 640, 3)
+    assert generator._resolution_scale_dimensions(source, 1024, round_down=True) == (640, 1568)
+    assert generator._resolution_scale_dimensions(source, 1024) == (672, 1600)
+
+
 def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(monkeypatch):
     torch = pytest.importorskip("torch")
     calls = []
@@ -972,7 +980,7 @@ def test_h3_pose_generation_follows_reference_workflow_and_returns_first_frame(m
     character = torch.rand(2, 64, 64, 3)
 
     class FakeMaskExtractor:
-        def fill_alpha_with_color(self, image):
+        def fill_alpha_with_color(self, image, background_color="Green"):
             return (image,)
 
     class TestGenerator(cg.VNCCS_CharacterGenerator):

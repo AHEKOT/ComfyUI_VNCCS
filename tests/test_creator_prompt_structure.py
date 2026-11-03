@@ -165,14 +165,16 @@ def test_qi2_enhancement_toggle_controls_only_creator_text_generation(creator, m
     monkeypatch.setattr(creator.server.PromptServer, "instance", prompt_server)
 
     def dispatch(name, **values):
-        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        assert not hasattr(prompt_server, "last_prompt_id")
         calls.append((name, values))
         if name == "TextGenerate":
             return ('{"rewritten_prompt":"One character with black hair with fine strands.","wh_ratio":"2:3"}',)
         assert name == "TextEncodeQwenImage21"
         return "positive", "negative", None
 
-    monkeypatch.setitem(sys.modules, "_vnccs.nodes.character_generator", SimpleNamespace(_call_comfy_node=dispatch))
+    monkeypatch.setitem(sys.modules, "_vnccs.nodes.character_generator", SimpleNamespace(
+        _call_comfy_node=dispatch, _qi2_scale=lambda size: (1.0, 1024),
+    ))
     info = character()
     positive, negative = creator.CharacterCreatorV2.construct_creator_prompt(info, "qi2", include_style=False)
     settings = creator.normalize_gen_settings({"generation_mode": "qi2", "qi2_prompt_enhancement": enabled})
@@ -193,6 +195,7 @@ def test_qi2_enhancement_disabled_in_creator_settings_does_not_change_shared_dis
     monkeypatch.setattr(creator, "generate_qi2_prompt", lambda *a, **k: calls.append("legacy PE") or "legacy prompt")
     monkeypatch.setitem(sys.modules, "_vnccs.nodes.character_generator", SimpleNamespace(
         _call_comfy_node=lambda *a, **k: ("positive", "negative", None),
+        _qi2_scale=lambda size: (1.0, 1024),
     ))
     result = creator.encode_generation_conditioning("clip", "vae", "source", "negative", {
         "generation_mode": "qi2", "qi2_prompt_enhancement": False,

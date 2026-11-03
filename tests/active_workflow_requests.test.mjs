@@ -137,28 +137,37 @@ for (const widget of ['clothes', 'cloner', 'creator']) {
 
 for (const oldResult of ['success', 'missing', 'error', 'removed']) {
     test(`clothes preview ignores stale ${oldResult} after a selection change`, async () => {
-        const requests = [], navigated = [], saved = [];
+        const requests = [], images = [], navigated = [], saved = [];
         const state = { character: 'Alice', costume: 'Dress' }, node = {};
         const context = createWidgetContext({
-            state, node, console,
+            state, node, console, URLSearchParams,
+            Image: class { constructor() { images.push(this); } },
             hasSelectedEditableCostume: () => true,
             saveState: () => saved.push(state.selected_preview_sprite),
-            fetch: () => { const task = deferred(); requests.push(task); return task.promise; },
+            api: { fetchApi(route) {
+                assert.match(route, /get_character_pose_preview_meta/);
+                const task = deferred(); requests.push(task); return task.promise;
+            } },
             els: { previewImg: { style: {} }, placeholder: { style: {} } },
-            spritePreviewNavigator: {
-                invalidate() {}, hideNav() { assert.fail('Stale missing response changed navigation'); },
-                load: async (character, options) => navigated.push({ character, ...options }),
-            },
+            onLoaded: (_url, preview) => navigated.push(preview),
         });
-        vm.runInContext(`${guardCode}\nconst beginPreviewRequest = createRequestGuard(node);\n${between(source('vnccs_clothes_designer'), 'const updatePreviewImage =', 'const onPreviewUpdated =')}\nglobalThis.update = updatePreviewImage;`, context);
+        const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
+        vm.runInContext(`${guardCode}\n${navigatorCode}\nconst beginPreviewRequest = createRequestGuard(node);
+            const spritePreviewNavigator = createSpritePreviewNavigator({ node, image: els.previewImg, placeholder: els.placeholder,
+                isSelectionCurrent: value => value.character === state.character && value.costume === state.costume, onLoaded });
+            ${between(source('vnccs_clothes_designer'), 'const updatePreviewImage =', 'const onPreviewUpdated =')}
+            globalThis.update = updatePreviewImage;`, context);
         const old = context.update();
+        const oldImage = images[0];
         state.character = 'Bob'; state.costume = 'Suit';
         const current = context.update();
-        requests[1].resolve({ ok: true }); await current;
+        requests[1].resolve(response({ count: 1 })); await current;
+        images.at(-1).onload();
         const savedCount = saved.length;
         if (oldResult === 'removed') node.onRemoved();
-        requests[0].resolve(oldResult === 'error' ? Promise.reject(new Error('Old request failed')) : { ok: oldResult !== 'missing' });
+        requests[0].resolve(oldResult === 'error' ? Promise.reject(new Error('Old request failed')) : response({ count: oldResult === 'missing' ? 0 : 1 }));
         await old;
+        oldImage.onload(); oldImage.onerror();
         assert.equal(navigated.length, 1);
         assert.equal(navigated[0].character, 'Bob');
         assert.equal(navigated[0].costume, 'Suit');
@@ -469,6 +478,137 @@ test('shared preview navigator ignores stale metadata errors and images after se
     assert.equal(loaded.length, 1); assert.equal(missing.length, 0);
 });
 
+function previewLoadingHarness(fetchApi) {
+    const images = [], timers = new Map(), loaded = [], messages = [];
+    let nextTimer = 0, loading = false;
+    const node = {};
+    const context = createWidgetContext({
+        node, URLSearchParams, console: { warn() {} },
+        Image: class { constructor() { images.push(this); } },
+        setTimeout(callback, delay) { assert.equal(delay, 30000); timers.set(++nextTimer, callback); return nextTimer; },
+        clearTimeout(id) { timers.delete(id); },
+        api: { fetchApi }, image: { style: {} }, placeholder: {},
+        loading: { classList: { toggle(name, value) { loading = value; } } },
+        interactions: { prepareCharacter() {}, presentPreview(image, placeholder, url) { loaded.push(url); },
+            emptyPreview(image, placeholder, character, message) { messages.push(message); } },
+    });
+    const navigatorCode = between(source('vnccs_common'), 'export function createSpritePreviewNavigator', '// ── DOM Widget Canvas Navigation').replace('export ', '');
+    vm.runInContext(`${guardCode}\n${navigatorCode}\nglobalThis.navigator = createSpritePreviewNavigator({ node, image, placeholder, loading, interactions });`, context);
+    return { context, nav: context.navigator, node, images, timers, loaded, messages, loading: () => loading,
+        expire() { assert.equal(timers.size, 1); [...timers.values()][0](); } };
+}
+
+for (const repeatSelection of [false, true]) {
+    test(`Clothes Designer loads the first costume image directly${repeatSelection ? ' on a repeated selection' : ''}`, async () => {
+        const requests = [];
+        const h = previewLoadingHarness(route => {
+            assert.match(route, /^\/vnccs\/get_character_pose_preview_meta\?/,
+                'Image availability must not be checked with an unread fetch response');
+            const request = deferred(); requests.push(request); return request.promise;
+        });
+        Object.assign(h.context, {
+            state: { character: 'Max', costume: 'Shelter', costume_info: {} },
+            els: { previewImg: {}, placeholder: {} },
+            hasSelectedEditableCostume: () => true, saveState() {},
+        });
+        vm.runInContext(`const beginPreviewRequest = createRequestGuard(node);
+            const spritePreviewNavigator = navigator;
+            ${between(source('vnccs_clothes_designer'), 'const updatePreviewImage =', 'const onPreviewUpdated =')}
+            globalThis.update = updatePreviewImage;`, h.context);
+        if (repeatSelection) {
+            const first = h.context.update();
+            h.images.at(-1).onload();
+            requests[0].resolve(response({ count: 0 }));
+            await first;
+        }
+        const previousLoads = h.loaded.length;
+        const operation = h.context.update();
+        assert.match(h.images.at(-1).src, /get_preview\?character=Max&costume=Shelter/);
+        h.images.at(-1).onload();
+        assert.equal(h.loaded.length, previousLoads + 1, 'Display the existing PNG before navigation metadata arrives');
+        assert.equal(h.loading(), false);
+        requests.at(-1).resolve(Promise.reject(new Error('Fetch timeout')));
+        await operation;
+        assert.equal(h.loaded.length, previousLoads + 1);
+        assert.equal(h.messages.length, 0, 'Navigation timeout must not replace a loaded image with an error');
+        assert.equal(h.timers.size, 0);
+    });
+}
+
+for (const metadataFails of [false, true]) {
+    test(`new costume shows its base sprite before metadata ${metadataFails ? 'times out' : 'arrives'}`, async () => {
+        const metadata = deferred();
+        const h = previewLoadingHarness(() => metadata.promise);
+        h.nav.showFallback('/vnccs/get_preview?costume=Dress', { character: 'Alice', costume: 'Dress' });
+        h.images.at(-1).onload();
+        assert.equal(h.loading(), false, 'The previous costume is already generated and displayed');
+
+        const operation = h.nav.load('Alice', { costume: 'Shelter', fallbackUrl: '/vnccs/get_preview?costume=Shelter' });
+        h.images.at(-1).onload();
+        assert.equal(h.loaded.at(-1), '/vnccs/get_preview?costume=Shelter');
+        assert.equal(h.loading(), false, 'The base sprite must be visible without waiting for metadata');
+        if (metadataFails) metadata.resolve(Promise.reject(new Error('Fetch timeout')));
+        else metadata.resolve(response({ count: 12 }));
+        await operation;
+        if (metadataFails) {
+            assert.equal(h.images.length, 2, 'A metadata error must not reload the available base sprite');
+            assert.equal(h.loading(), false);
+        } else {
+            assert.match(h.images.at(-1).src, /get_character_pose_preview.*costume=Shelter/);
+            h.images.at(-1).onload();
+            assert.equal(h.nav.state.count, 12);
+            assert.equal(h.loading(), false);
+        }
+        assert.equal(h.messages.length, 0);
+    });
+}
+
+test('metadata timeout and stalled fallback end loading and allow a later retry', async () => {
+    const h = previewLoadingHarness(async () => { throw new Error('Fetch timeout'); });
+    await h.nav.load('Alice', { costume: 'Shelter', fallbackUrl: '/vnccs/get_preview?costume=Shelter' });
+    assert.equal(h.loading(), true);
+    const lateLoad = h.images[0].onload;
+    h.expire();
+    assert.equal(h.loading(), false);
+    assert.equal(h.timers.size, 0);
+    assert.match(h.messages.at(-1), /unavailable.*retry/);
+    lateLoad();
+    assert.equal(h.loaded.length, 0, 'A timed-out request must not publish a late image');
+    await h.nav.load('Alice', { costume: 'Shelter', fallbackUrl: '/vnccs/get_preview?costume=Shelter' });
+    h.images.at(-1).onload();
+    assert.equal(h.loading(), false);
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.loaded.length, 1);
+});
+
+for (const action of ['invalidate', 'empty', 'remove']) {
+    test(`preview ${action} cancels loading, timers, and stale image callbacks`, async () => {
+        const h = previewLoadingHarness(async () => response({ count: 1 }));
+        await h.nav.load('Alice', { costume: 'Dress' });
+        assert.equal(h.loading(), true);
+        const lateLoad = h.images[0].onload;
+        if (action === 'invalidate') h.nav.invalidate();
+        else if (action === 'empty') h.nav.showFallback('');
+        else h.node.onRemoved();
+        assert.equal(h.loading(), false);
+        assert.equal(h.timers.size, 0);
+        lateLoad();
+        assert.equal(h.loaded.length, 0);
+    });
+}
+
+test('stalled sprite advances to its fallback and both image waits are bounded', async () => {
+    const h = previewLoadingHarness(async () => response({ count: 2 }));
+    await h.nav.load('Alice', { costume: 'Shelter', fallbackUrl: '/vnccs/get_preview?costume=Shelter' });
+    h.expire();
+    assert.equal(h.loading(), true);
+    assert.match(h.images.at(-1).src, /get_preview/);
+    h.expire();
+    assert.equal(h.loading(), false);
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.loaded.length, 0);
+});
+
 test('shared preview navigator defaults to the first image and preserves the user selection', async () => {
     const images = [], countLabel = {}, node = {};
     const button = () => ({
@@ -516,7 +656,8 @@ for (const previousSelection of [false, true]) {
             state, node, els, console, URLSearchParams,
             Image: class { constructor() { images.push(this); } },
             api: { fetchApi: route => {
-                if (!route.startsWith('/vnccs/get_preview?')) return Promise.resolve(response({ count: 1 }));
+                assert.match(route, /get_character_pose_preview_meta/);
+                if (route.includes('character=Alice')) return Promise.resolve(response({ count: 1 }));
                 const task = deferred(); requests.push(task); return task.promise;
             } },
             saveState() {}, hasSelectedEditableCostume: () => true,
@@ -539,17 +680,17 @@ for (const previousSelection of [false, true]) {
         const selected = { character: 'Bob', costume: 'Suit', index: 2 };
         state.selected_preview_sprite = selected;
         const cached = context.update(true);
-        requests[1].resolve({ ok: true }); await cached;
+        await cached;
         const freshImage = images.at(-1);
         assert.match(freshImage.src, /character=Bob&costume=Suit.*force_cache=true/);
         freshImage.onload();
-        requests[0].resolve({ ok: true }); await normal;
+        requests[0].resolve(response({ count: 1 })); await normal;
         if (previousSelection) images[0].onload();
         assert.match(els.previewImg.src, /character=Bob&costume=Suit.*force_cache=true/);
         assert.equal(state.selected_preview_sprite, selected, 'Displaying cache must retain its source reference');
         assert.equal(context.navigator.state.character, 'Bob');
         assert.equal(context.navigator.state.costume, 'Suit');
-        assert.equal(images.length, previousSelection ? 2 : 1);
+        assert.equal(images.length, previousSelection ? 3 : 2);
     });
 }
 

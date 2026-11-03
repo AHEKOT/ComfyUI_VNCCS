@@ -536,7 +536,8 @@ def test_malformed_download_requests_stop_before_catalog_access(monkeypatch, pay
     assert response.data["error"]
 
 
-def test_download_aliases_share_the_canonical_catalog_identity(monkeypatch):
+@pytest.mark.parametrize("skip_existing", [False, True])
+def test_download_aliases_share_the_canonical_catalog_identity(monkeypatch, skip_existing):
     entry = {"name": "Style", "local_path": "models/loras/style.safetensors", "hf_path": "style.safetensors"}
     tasks = queue.Queue()
     monkeypatch.setattr(cc, "_DOWNLOAD_QUEUE", tasks)
@@ -547,10 +548,10 @@ def test_download_aliases_share_the_canonical_catalog_identity(monkeypatch):
     monkeypatch.setattr(cc.web, "json_response", lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)
     for name in ("style", " STYLE ", "Style"):
         async def read():
-            return {"repo_id": "test/repo", "category": "lora", "name": name}
+            return {"repo_id": "test/repo", "category": "lora", "name": name, "skip_existing": skip_existing}
         assert asyncio.run(cc.cc_download(SimpleNamespace(json=read))).status == 200
     assert tasks.qsize() == 1
-    assert tasks.get_nowait() == ("test/repo", "cc_lora_Style", entry)
+    assert tasks.get_nowait() == ("test/repo", "cc_lora_Style", {**entry, "skip_existing": True} if skip_existing else entry)
     assert list(cc._DOWNLOAD_STATUS) == ["cc_lora_Style"]
 
 

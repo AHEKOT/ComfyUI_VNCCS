@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { createSakuraInteractions } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON } from "./vnccs_transport.js";
 import { presetSelection } from "./character_presets.mjs";
-import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, registerCleanup, animateWizardRows, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
+import { createTraitInput, createQwenVLModelLoader, SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, createLoadingOverlay, injectStyles, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, createSpritePreviewNavigator, createRequestGuard, requestWizard, registerCleanup, animateWizardRows, normalizeUploadFile, normalizeAgeValue } from "./vnccs_common.js";
 
 // --- STYLES: Sakura Archive Design System ---
 const STYLE = `
@@ -2264,10 +2264,8 @@ app.registerExtension({
                         if (!await ensureQwenVLReady()) return true;
                         if (!isCurrent()) return;
                         autoGenBtn.innerText = "ANALYZING...";
-                        const r = await api.fetchApi("/vnccs/cloner_auto_generate", {
-                            method: "POST",
-                            body: JSON.stringify({ image_name: imgName, node_id: node.id })
-                        });
+                        const r = await requestWizard(node, "/vnccs/cloner_auto_generate", { image_name: imgName }, isCurrent,
+                            label => { autoGenBtn.innerText = label; });
 
                         if (!isCurrent()) return;
                         if (r.ok) {
