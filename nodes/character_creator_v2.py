@@ -2445,7 +2445,7 @@ class CharacterCreatorV2:
                      with Image.open(cache_path) as cached:
                          saved_key = cached.info.get("vnccs_preview_key")
                          # shortcut: legacy PNGs trust preview_valid until a new preview records its inputs.
-                         if saved_key is None or saved_key == cache_key:
+                         if saved_key == cache_key or (saved_key is None and generation_mode != "qi2"):
                              image = pil2tensor(cached)
                              log_event("preview_cache", component="Creator", character=character_name, cache="hit")
                          else:
@@ -2600,7 +2600,7 @@ class CharacterCreatorV2:
             background_color = "Alpha"
 
         # Resize full sheet (1024x3072) to single character size (512x1536)
-        if torch.is_tensor(image) and image.shape[1] == 3072 and image.shape[2] == 1024:
+        if generation_mode != "qi2" and torch.is_tensor(image) and image.shape[1] == 3072 and image.shape[2] == 1024:
             pil_img = tensor2pil(image)
             pil_img = pil_img.resize((512, 1536), Image.LANCZOS)
             image = pil2tensor(pil_img)

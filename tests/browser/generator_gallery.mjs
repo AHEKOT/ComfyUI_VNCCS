@@ -159,9 +159,81 @@ async function assertPackedRows(zoom){
 }
 const report=[];
 const targetedOnly=process.env.VNCCS_BROWSER_SCENARIO==='clone-naked';
-try {
+async function verifyClothesEncoderResolution() {
+    const fixture = fixtures.find(item => item.node.type === 'VNCCS_ClothesGenerator');
+    for (const [size, zoom] of [[[980,760], 1], [[1180,760], 1], [fixture.node.size, fixture.scale]]) {
+        await page.setViewportSize({width: Math.ceil(size[0]*zoom)+36, height: Math.ceil(size[1]*zoom)+36});
+        await page.evaluate(item => setup(item), {...fixture, node: {...fixture.node, size}, zoom});
+        const open = () => page.evaluate(() => widget.openGeneratorSettings());
+        await open();
+        const field = page.getByRole('spinbutton', {name:'resolution', exact:true});
+        const scale = page.getByRole('slider', {name:'resolution scale', exact:true});
+        const override = page.getByRole('checkbox', {name:'Override encoder resolution'});
+        assert.equal(await override.isChecked(), false);
+        assert.equal(await field.isDisabled(), true);
+        assert.equal(await scale.inputValue(), '2');
+        assert.equal(await field.inputValue(), '1440');
+        assert.deepEqual(await field.evaluate(el => [el.min, el.max, el.step]), ['0','4096','32']);
+        const setMP = mp => scale.evaluate((el, value) => {
+            el.value = String(value);
+            el.dispatchEvent(new Event('input', {bubbles:true}));
+        }, mp);
+        for (const [mp, pixels] of [[1,1024],[2,1440],[3,1760],[4,2048],[1.3,1152]]) {
+            await setMP(mp);
+            assert.equal(await field.inputValue(), String(pixels));
+        }
+        await setMP(3);
+        await page.getByRole('button', {name:'Apply',exact:true}).click();
+        await page.locator('.vnccs-pipe-modal-backdrop').waitFor({state:'detached'});
+        await page.evaluate(() => widget.node.onConfigure());
+        await open();
+        assert.equal(await field.isDisabled(), true);
+        assert.equal(await field.inputValue(), '1760');
+        await page.evaluate(() => Promise.all(widget.modalEl.getAnimations({subtree:true})
+            .filter(animation => animation.effect.getTiming().iterations === 1).map(animation => animation.finished)));
+        await page.screenshot({path:join(output, 'clothes-encoder-linked-'+size[0]+'.png')});
+        await override.check();
+        await field.fill('0');
+        await field.focus();
+        const bounds = await field.evaluate(el => {
+            const group = el.closest('section').getBoundingClientRect(), box = el.getBoundingClientRect();
+            const body = el.closest('.vnccs-pipe-modal-body').getBoundingClientRect();
+            return box.width > 0 && box.height > 0 && box.left >= group.left && box.right <= group.right
+                && box.top >= body.top && box.bottom <= body.bottom && box.bottom <= group.bottom;
+        });
+        assert.ok(bounds, 'The encoder resolution control fits inside the visible pose settings');
+        await page.getByRole('button', {name:'Apply',exact:true}).click();
+        await page.locator('.vnccs-pipe-modal-backdrop').waitFor({state:'detached'});
+        await page.evaluate(() => widget.node.onConfigure());
+        await open();
+        assert.equal(await field.inputValue(), '0');
+        await setMP(4);
+        assert.equal(await field.inputValue(), '0');
+        await override.uncheck();
+        assert.equal(await field.isDisabled(), true);
+        assert.equal(await field.inputValue(), '2048');
+        await override.check();
+        assert.equal(await field.inputValue(), '0');
+        await field.fill('1551');
+        await field.blur();
+        assert.equal(await field.inputValue(), '1536');
+        await page.getByRole('button', {name:'Load Defaults'}).click();
+        assert.equal(await override.isChecked(), false);
+        assert.equal(await field.isDisabled(), true);
+        assert.equal(await field.inputValue(), '1024');
+        await page.getByRole('button', {name:'Cancel'}).click();
+        const saved = await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).pose_generation);
+        assert.ok(saved.override_resolution);
+        assert.equal(saved.resolution, 0);
+        assert.equal(saved.target_size, 3072);
+    }
+    assert.deepEqual(errors, []);
+}
+async function runScenarios() {
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.waitForFunction(()=>window.ready);
+    if (!targetedOnly) await verifyClothesEncoderResolution();
+    if (process.env.VNCCS_BROWSER_SCENARIO === 'clothes-resolution') return;
     if(!targetedOnly)for(const fixture of fixtures){
         for(const zoom of [fixture.scale,1]){
             await page.setViewportSize({width:Math.ceil(fixture.node.size[0]*zoom)+36,height:Math.ceil(fixture.node.size[1]*zoom)+36});
@@ -438,6 +510,9 @@ try {
     assert.deepEqual(errors,[]);
     await writeFile(join(output,'report.json'),JSON.stringify({report,layoutReport,deviceScaleFactor:2,reducedMotion:true,errors},null,2));
     console.log(JSON.stringify({scenarios:report.length,workflowSizes:fixtures.map(f=>({type:f.node.type,size:f.node.size,scale:f.scale})),errors,output}));
+}
+try {
+    await runScenarios();
 } catch(error){
     await page.screenshot({path:join(output,'failure.png')});console.error(await page.evaluate(()=>({type:widget?.node.type,geometry:geometry(),grids:widget?.previewEl.querySelectorAll('.vnccs-pipe-grid').length})));throw error;
 } finally{await browser.close();server.close();}

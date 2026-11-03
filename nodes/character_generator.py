@@ -254,6 +254,17 @@ def resize_mask_batch(mask, target_hw, mode="bilinear"):
     return item[:, 0].clamp(0.0, 1.0)
 
 
+def _qi2_reference_image(image):
+    if not torch.is_tensor(image) or image.ndim not in {3, 4} or image.shape[-1] not in {3, 4}:
+        raise ValueError("Qwen Image 2.1 references must be RGB or RGBA IMAGE tensors.")
+    if image.numel() == 0:
+        raise ValueError("Qwen Image 2.1 references must contain a non-empty image.")
+    if image.shape[-1] == 4:
+        alpha = image[..., 3:4].clamp(0.0, 1.0)
+        return image[..., :3] * alpha + (1.0 - alpha)
+    return image
+
+
 def _first_tensor(value):
     if isinstance(value, tuple):
         value = value[0]
@@ -645,13 +656,17 @@ def _save_run_inputs(cache_dir, **items):
     try:
         meta = {"created_at": time.time(), "items": {}}
         for key, value in items.items():
-            if torch.is_tensor(value):
-                tensor_key = f"input_{key}_{revision}"
-                path = _cache_tensor_path(cache_dir, tensor_key)
-                created.add(path)
-                if not _save_cached_tensor(cache_dir, tensor_key, value):
-                    raise OSError(f"Could not cache required input '{key}'")
-                meta["items"][key] = {"type": "tensor", "shape": list(value.shape), "tensor_key": tensor_key}
+            tensor_list = isinstance(value, list) and value and all(torch.is_tensor(item) for item in value)
+            if torch.is_tensor(value) or tensor_list:
+                descriptors = []
+                for index, tensor in enumerate(value if tensor_list else [value]):
+                    tensor_key = f"input_{key}_{revision}_{index}"
+                    path = _cache_tensor_path(cache_dir, tensor_key)
+                    created.add(path)
+                    if not _save_cached_tensor(cache_dir, tensor_key, tensor):
+                        raise OSError(f"Could not cache required input '{key}'")
+                    descriptors.append({"type": "tensor", "shape": list(tensor.shape), "tensor_key": tensor_key})
+                meta["items"][key] = {"type": "tensor_list", "items": descriptors} if tensor_list else descriptors[0]
             else:
                 meta["items"][key] = {"type": "json", "value": value}
         with atomic_output_path(safe_join_under(base, "inputs.json")) as temporary:
@@ -690,11 +705,14 @@ def _load_run_inputs(cache_dir, keys=None):
         for key, item in (meta.get("items") or {}).items():
             if requested is not None and key not in requested:
                 continue
-            if item.get("type") == "tensor":
-                value = _load_cached_tensor(cache_dir, item.get("tensor_key") or f"input_{key}")
-                if value is None or list(value.shape) != item.get("shape", list(value.shape)):
-                    return {}
-                result[key] = value
+            if item.get("type") in {"tensor", "tensor_list"}:
+                values = []
+                for descriptor in item["items"] if item["type"] == "tensor_list" else [item]:
+                    value = _load_cached_tensor(cache_dir, descriptor.get("tensor_key") or f"input_{key}")
+                    if value is None or list(value.shape) != descriptor.get("shape", list(value.shape)):
+                        return {}
+                    values.append(value)
+                result[key] = values if item["type"] == "tensor_list" else values[0]
             elif item.get("type") == "json":
                 result[key] = item.get("value")
         return result
@@ -844,6 +862,8 @@ DEFAULT_WIDGET_DATA = {
     },
     "pose_generation": {
         "target_size": 1024,
+        "override_resolution": False,
+        "resolution": 1024,
         "upscale_method": "lanczos",
         "crop_method": "disabled",
         "image1_name": "image 1",
@@ -1267,9 +1287,9 @@ class VNCCS_CharacterGenerator:
     def _slice_batch_item(self, values, index):
         if index is None:
             return values
-        batch = self._list_to_batch(values)
-        if torch.is_tensor(batch) and batch.ndim == 4 and 0 <= index < batch.shape[0]:
-            return batch[index:index + 1]
+        images = self._image_list(values)
+        if 0 <= index < len(images):
+            return images[index]
         raise ValueError("Selected image is unavailable. Run the generator normally before regenerating one image.")
 
     def _pose_prompts(self, prompt, count):
@@ -1433,60 +1453,33 @@ class VNCCS_CharacterGenerator:
             sigmas=sigmas, latent_image=latent,
         )[0]
 
-    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt="", align_image1=False):
-        target_size = _resolution_scale_value(target_size)
-        reference_images = {}
-        output_width = output_height = None
-        for index, image in enumerate(images, start=1):
-            if image is None:
-                continue
-            if torch.is_tensor(image) and image.ndim in {3, 4} and image.shape[-1] >= 4:
-                # Flatten before resizing so hidden RGB cannot bleed into the reference edges.
-                image = VNCCS_MaskExtractor().fill_alpha_with_color(image, background_color="White")[0]
-            if output_width is None:
-                scaled_output = _call_comfy_node(
-                    "ImageScaleToTotalPixels",
-                    image=image,
-                    upscale_method="lanczos",
-                    megapixels=float(target_size) / 1024.0,
-                    resolution_steps=1,
-                )[0]
-                scaled_tensor = _first_tensor(scaled_output)
-                if not torch.is_tensor(scaled_tensor) or scaled_tensor.ndim not in {3, 4}:
-                    raise ValueError("Qwen Image 2.1 output scaling did not return an IMAGE tensor.")
-                output_height = int(scaled_tensor.shape[-3])
-                output_width = int(scaled_tensor.shape[-2])
-                encoder_width, encoder_height = output_width, output_height
-                if align_image1:
-                    output_width, output_height = _image_dimensions(scaled_tensor, multiple=32)
-                    source = _first_tensor(image)
-                    encoder_width, encoder_height = _image_dimensions(source, multiple=32)
-                    if (encoder_width, encoder_height) != _image_dimensions(source):
-                        image = _call_comfy_node(
-                            "ImageScale", image=image, upscale_method="lanczos",
-                            width=encoder_width, height=encoder_height, crop="disabled",
-                        )[0]
-                    reference_images[f"image_{index}"] = image
-                else:
-                    reference_images[f"image_{index}"] = scaled_output
-            else:
-                reference_images[f"image_{index}"] = image
-        if not reference_images:
-            raise ValueError("Qwen Image 2.1 generation requires a reference image.")
-        resolution = min(encoder_width, encoder_height) if align_image1 else 1024
+    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt="", resolution=1024):
+        # Use the same rounded area for the pose encoder and sampling canvas.
+        megapixels = math.floor(_resolution_scale_megapixels(target_size) * 10 + 0.5) / 10
+        if resolution is None:
+            resolution = 32 * round(32 * math.sqrt(megapixels))
+        if not isinstance(resolution, int) or resolution % 32 or not 0 <= resolution <= 4096:
+            raise ValueError("QI2 encoder resolution must be a multiple of 32 from 0 to 4096.")
+        references = {
+            f"image_{index}": _qi2_reference_image(image)
+            for index, image in enumerate(images, start=1) if image is not None
+        }
+        if "image_1" not in references:
+            raise ValueError("QI2 reference generation requires image_1.")
+        image1 = references["image_1"]
+        width, height = _image_dimensions(_call_comfy_node(
+            "ImageScaleToTotalPixels", image=image1.unsqueeze(0) if image1.ndim == 3 else image1,
+            upscale_method="nearest-exact", megapixels=megapixels, resolution_steps=1,
+        )[0])
         log_event("encoder_resolution", encoder="TextEncodeQwenImage21", resolution=resolution,
-                  image1_width=encoder_width, image1_height=encoder_height,
-                  generation_width=output_width, generation_height=output_height)
-        positive, negative, _encoder_latent = _call_comfy_node(
+                  megapixels=megapixels, generation_width=width, generation_height=height)
+        positive, negative, _ = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=pipe_values["clip"], vae=pipe_values["vae"],
             prompt=str(prompt or ""), negative_prompt=str(negative_prompt or ""),
-            resolution=resolution,
-            images=reference_images,
+            resolution=resolution, images=references,
         )
-        latent = _call_comfy_node(
-            "EmptyLatentImage", width=output_width, height=output_height, batch_size=1,
-        )[0]
+        latent = _call_comfy_node("EmptyLatentImage", width=width, height=height, batch_size=1)[0]
         return positive, negative, latent
 
     def _qi2_decode(self, samples, vae):
@@ -1707,7 +1700,6 @@ class VNCCS_CharacterGenerator:
             return image, image, empty_mask
 
         aligned_crop, crop_padding = self._pad_image_to_square_multiple(crop, multiple=32)
-        aligned_crop = VNCCS_MaskExtractor().fill_alpha_with_color(aligned_crop, background_color="White")[0]
 
         target_size = _resolution_scale_value(configured.get("target_size", 2048))
         scaled_crop = _call_comfy_node(
@@ -2217,6 +2209,7 @@ class VNCCS_CharacterGenerator:
         progress_total=None,
         align_image1=False,
     ):
+        pipe_values = self._extract_pipe(pipe)
         pose_parts = self._image_list(poses)
         if publish_each and pose_parts:
             total = len(pose_parts)
@@ -2250,9 +2243,8 @@ class VNCCS_CharacterGenerator:
                     processing_index=index + 1 if index + 1 < total else None,
                     preview_aspect=self._image_aspect(pose),
                 )
-            return self._safe_image_batch(generated, stage="incremental pose generation")
-
-        pipe_values = self._extract_pipe(pipe)
+            return (torch.cat(generated, dim=0) if self._is_qi2_pipe(pipe_values)
+                    else self._safe_image_batch(generated, stage="incremental pose generation"))
         qwen_settings = self._qwen_settings(settings, background)
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
@@ -2281,6 +2273,9 @@ class VNCCS_CharacterGenerator:
         ]
 
         if self._is_qi2_pipe(pipe_values):
+            resolution = None
+            if settings and settings.get("override_resolution") is True:
+                resolution = settings.get("resolution", 1024)
             encode_progress = self._stage_progress_callback(
                 unique_id, stage, "Encoding poses", lora_info, progress_start, progress_total,
             )
@@ -2303,11 +2298,9 @@ class VNCCS_CharacterGenerator:
                 positive = negative = latent = samples = None
                 try:
                     positive, negative, latent = self._qi2_encode(
-                        pipe_values,
-                        "Replace the pose of <image 2> with the pose of <image 1>. "
-                        "Keep the character of <image 2>. " + prompts[index - 1],
+                        pipe_values, prompts[index - 1],
                         (pose, character), target_size=qwen_settings["target_size"],
-                        align_image1=align_image1,
+                        resolution=resolution,
                     )
                     encode_progress(index, total, index - 1)
                     samples = self._qi2_sample(
@@ -2318,7 +2311,7 @@ class VNCCS_CharacterGenerator:
                     decode_progress(index, total)
                 finally:
                     del positive, negative, latent, samples
-            return self._safe_image_batch(decoded, stage="QI2 pose generation decode")
+            return torch.cat(decoded, dim=0)
 
         if not self._is_klein_pipe(pipe_values):
             raise RuntimeError(f"Unsupported pose generation model family: {pipe_values.get('model_kind') or 'unknown'}")
@@ -2395,8 +2388,8 @@ class VNCCS_CharacterGenerator:
         )
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
-        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(
-            character, background_color="White" if self._is_qi2_pipe(pipe_values) else "Green",
+        character_rgb = character if self._is_qi2_pipe(pipe_values) else VNCCS_MaskExtractor().fill_alpha_with_color(
+            character, background_color="Green",
         )[0]
 
         encoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Encoding source character", lora_info)
@@ -2848,10 +2841,11 @@ class VNCCS_CharacterGenerator:
                 sheets_path = cached_inputs.get("sheets_path", sheets_path)
             if not regenerate_from:
                 _rotate_preview_cache(cache_dir)
+            is_qi2 = self._is_qi2_pipe(self._extract_pipe(pipe))
             _save_run_inputs(
                 cache_dir,
-                poses=self._list_to_batch(poses),
-                character=self._list_to_batch(character),
+                poses=self._image_list(poses) if is_qi2 else self._list_to_batch(poses),
+                character=character if is_qi2 else self._list_to_batch(character),
                 prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
@@ -3133,10 +3127,11 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 sheets_path = cached_inputs.get("sheets_path", sheets_path)
             if not regenerate_from:
                 _rotate_preview_cache(cache_dir)
+            is_qi2 = self._is_qi2_pipe(self._extract_pipe(pipe))
             _save_run_inputs(
                 cache_dir,
-                poses=self._list_to_batch(poses),
-                character=self._list_to_batch(character),
+                poses=self._image_list(poses) if is_qi2 else self._list_to_batch(poses),
+                character=character if is_qi2 else self._list_to_batch(character),
                 prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
@@ -3284,10 +3279,11 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 sheets_path = cached_inputs.get("sheets_path", sheets_path)
             if not regenerate_from:
                 _rotate_preview_cache(cache_dir)
+            is_qi2 = self._is_qi2_pipe(self._extract_pipe(pipe))
             _save_run_inputs(
                 cache_dir,
-                poses=self._list_to_batch(poses),
-                character=self._list_to_batch(character),
+                poses=self._image_list(poses) if is_qi2 else self._list_to_batch(poses),
+                character=character if is_qi2 else self._list_to_batch(character),
                 prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
@@ -3354,7 +3350,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 )
                 pose_images = self._run_pose_generation(
                     pose_input,
-                    source_upscaled,
+                    character if is_qi2 else source_upscaled,
                     pipe,
                     self._slice_pose_prompt(prompt, regenerate_index),
                     settings["pose_generation"],
@@ -4205,6 +4201,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                 detailer_positive_text += f"\n{NATIVE_BACKGROUND_PROMPT}"
         else:
             detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
+        log_event("emotion_prompt", level="debug", prompt=detailer_positive_text)
         if not is_qi2:
             log_prompts("Emotion detailer", positive=detailer_positive_text, negative=str(negative_prompt or ""))
             positive = _call_comfy_node(

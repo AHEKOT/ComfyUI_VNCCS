@@ -226,18 +226,15 @@ def _rewrite_preview_output(clip, info, style_reference):
     return prompt
 
 
-def _analyze_breast_size(image):
-    from .character_generator import _call_comfy_node
+def _analyze_breast_size(image, mode):
+    from .character_generator import _call_comfy_node, _qi2_reference_image
 
     if image.ndim != 4 or image.shape[0] != 1 or image.shape[-1] not in (3, 4):
         raise ValueError("Breast size analysis requires exactly one RGB or RGBA image")
-    rgb = image[..., :3]
-    if image.shape[-1] == 4:
-        alpha = image[..., 3:4]
-        rgb = rgb * alpha + (1 - alpha)
+    rgb = _qi2_reference_image(image)
     height, width = rgb.shape[1:3]
-    scale = min(1.0, 1024 / max(height, width))
-    if scale < 1.0:
+    if mode == "anima" and max(height, width) > 1024:
+        scale = 1024 / max(height, width)
         rgb = torch.nn.functional.interpolate(
             rgb.movedim(-1, 1), size=(max(1, round(height * scale)), max(1, round(width * scale))),
             mode="bilinear", align_corners=False,
@@ -271,11 +268,10 @@ def _select_diffusion_model(mode):
     raise ValueError(f"No {mode.upper()} diffusion model found in ComfyUI diffusion_models")
 
 
-def _square_side(scale):
+def _preview_target_size(scale):
     scale = max(1.0, min(4.0, float(scale)))
     stepped = round(scale, 1)
-    target_size = {1.3: 1344, 1.5: 1536}.get(stepped, round(stepped * 1024))
-    return max(8, round(math.sqrt(target_size * 1024) / 8) * 8)
+    return {1.3: 1344, 1.5: 1536}.get(stepped, round(stepped * 1024))
 
 
 def _next_output_path(output_dir, mode, style_id):
@@ -359,10 +355,10 @@ class VNCCSStylePreviewTest:
         else:
             positive_text, negative_text = CharacterCreatorV2.construct_prompt(info, mode, include_style=False)
 
-        side = _square_side(scale_mp)
         settings = normalize_gen_settings({
             **(ANIMA_DEFAULTS if mode == "anima" else QI2_DEFAULTS),
             "generation_mode": mode,
+            "target_size": _preview_target_size(scale_mp),
             "diffusion_model_name": _select_diffusion_model(mode),
             "turbo_enabled": bool(turbo_enabled),
             "lora_stack": [],
@@ -389,6 +385,7 @@ class VNCCSStylePreviewTest:
         )
         if mode == "anima":
             validate_anima_conditioning(positive, negative, settings["clip_name"])
+        side = round(math.sqrt(settings["target_size"] * 1024) / 8) * 8
         latent = create_generation_latent(diffusion_model, side, side, settings)
         sampled = sample_generation_latent(
             model=diffusion_model,
@@ -413,7 +410,7 @@ class VNCCSStylePreviewTest:
         tensor2pil(image).save(path)
         log_event("preview_saved", component="StylePreview", file=os.path.basename(path))
         if info["age"] >= 18:
-            breast_size = _analyze_breast_size(image)
+            breast_size = _analyze_breast_size(image, mode)
             _set_observed_breast_size(info, breast_size)
             log_event("body_analysis", component="StylePreview", breast_size=breast_size)
         if mode == "anima" or info["age"] >= 18:

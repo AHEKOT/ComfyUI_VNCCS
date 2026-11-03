@@ -131,16 +131,20 @@ def test_clothes_cache_and_comfy_signature_follow_primary_reference(runtime, tmp
 
 @pytest.mark.parametrize('node_name', ['VNCCS_CharacterGenerator', 'VNCCS_CharacterCloneGenerator', 'VNCCS_ClothesGenerator'])
 @pytest.mark.parametrize('regenerate', [False, True])
-def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime, monkeypatch, node_name, regenerate):
+@pytest.mark.parametrize('kind', ['qi2', 'klein9b'])
+def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime, monkeypatch, node_name, regenerate, kind):
     cg = runtime.generator
     node = getattr(cg, node_name)()
     poses = torch.zeros(2, 8, 8, 3)
     character = torch.zeros(1, 8, 8, 3)
+    upscaled = torch.ones(1, 16, 16, 3)
     prompts = ['front light', 'back light']
     seen, cached = [], []
     class ReachedEncoder(Exception):
         pass
     def inspect(*args, **kwargs):
+        expected_character = upscaled if node_name == 'VNCCS_ClothesGenerator' and kind != 'qi2' else character
+        assert args[1] is expected_character
         seen.append(args[3])
         assert kwargs.get('align_image1', False) is (node_name == 'VNCCS_ClothesGenerator')
         raise ReachedEncoder()
@@ -150,8 +154,8 @@ def test_pose_prompt_lists_survive_caching_and_single_pose_regeneration(runtime,
     monkeypatch.setattr(node, '_find_pose_lora', lambda *a: None)
     monkeypatch.setattr(node, '_run_pose_generation', inspect)
     monkeypatch.setattr(node, '_emit', lambda *a, **k: None)
-    monkeypatch.setattr(node, '_extract_pipe', lambda *a: {'seed': 0})
-    monkeypatch.setattr(node, '_run_source_upscaler', lambda image, *a, **k: image)
+    monkeypatch.setattr(node, '_extract_pipe', lambda *a: {'seed': 0, 'model_kind': kind})
+    monkeypatch.setattr(node, '_run_source_upscaler', lambda image, *a, **k: upscaled)
     stage = 'original_pose_generation' if node_name == 'VNCCS_CharacterCloneGenerator' else 'pose_generation'
     state = {'regenerate_from': stage, 'regenerate_index': 1} if regenerate else {}
     if node_name == 'VNCCS_ClothesGenerator':
@@ -200,7 +204,7 @@ def test_each_pose_encoder_receives_its_own_prompt(runtime, monkeypatch, kind, a
             if kind == 'klein9b':
                 assert kwargs['align_image1'] is align_image1
             elif kind == 'qi2':
-                assert kwargs['resolution'] == (32 if align_image1 else 1024)
+                assert kwargs['resolution'] == 1024
             elif align_image1:
                 assert kwargs['ref_images']['ref_image_1'].shape[1:3] == (kwargs['height'], kwargs['width'])
             seen.append(kwargs['prompt'])

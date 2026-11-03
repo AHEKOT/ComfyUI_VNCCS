@@ -121,6 +121,7 @@ def test_both_generation_paths_apply_overhaul_before_turbo_and_sampling(monkeypa
     monkeypatch.setattr(creator, "encode_generation_conditioning", lambda *a, **kw: ("pos", "neg", "prompt"))
     monkeypatch.setattr(creator, "create_generation_latent", lambda *a: "latent")
     def sample(**kwargs):
+        assert kwargs["latent"] == "latent"
         assert kwargs["model"] == "prepared-model"
         assert kwargs["qi2_turbo"] == turbo
         calls.append(("sample",))

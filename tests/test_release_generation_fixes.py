@@ -82,7 +82,7 @@ def test_remove_clothes_prepares_white_reference_only_for_qi2(monkeypatch, kind,
     image[..., 3] = torch.tensor([0.0, 0.5, 1.0])
     original = image.clone()
     monkeypatch.setattr(node, "_extract_pipe", lambda _pipe: {
-        "model_kind": kind, "seed": 1, "steps": 8, "cfg": 1.0,
+        "model_kind": kind, "clip": "clip", "vae": "vae", "seed": 1, "steps": 8, "cfg": 1.0,
         "sampler": "euler", "scheduler": "simple",
     })
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
@@ -90,12 +90,21 @@ def test_remove_clothes_prepares_white_reference_only_for_qi2(monkeypatch, kind,
     class EncodingReached(Exception):
         pass
 
-    def encode(_pipe_values, _prompt, image1, **kwargs):
+    def encode(name, **kwargs):
+        if name == "ImageScaleToTotalPixels":
+            return (kwargs["image"],)
+        if kind == "qi2":
+            assert name == "TextEncodeQwenImage21"
+            assert kwargs["resolution"] == 1024
+            image1 = kwargs["images"]["image_1"]
+        else:
+            assert name == "VNCCS_Flux_Klein_Encoder"
+            image1 = kwargs["image1"]
         expected = original[..., :3] * original[..., 3:4] + torch.tensor(background) * (1.0 - original[..., 3:4])
         torch.testing.assert_close(image1, expected)
         raise EncodingReached()
 
-    monkeypatch.setattr(node, "_encoder_call", encode)
+    monkeypatch.setattr(cg, "_call_comfy_node", encode)
     with pytest.raises(EncodingReached):
         node._run_remove_clothes(image, object(), {"prompt": "Keep the character"})
     assert torch.equal(image, original)
@@ -211,7 +220,7 @@ def test_legacy_clothes_without_seed_inherits_pipe(designer_run):
     assert seeds == [77]
 
 
-def test_clothes_qi2_encoder_receives_white_rgb_target_and_donor(designer_run, monkeypatch):
+def test_clothes_qi2_passes_original_target_and_donor_to_shared_encoder(designer_run, monkeypatch):
     node, pipe, data, _ = designer_run
     data["gen_settings"]["background_color"] = "Transparent"
     target = torch.full((1, 32, 32, 4), 0.2)
@@ -228,21 +237,25 @@ def test_clothes_qi2_encoder_receives_white_rgb_target_and_donor(designer_run, m
 
     monkeypatch.setattr(cg.VNCCS_CharacterGenerator, "_qi2_encode", encode)
     node.process(pipe=pipe, widget_data=json.dumps(data))
-    assert references[0].shape == references[1].shape == (1, 32, 32, 3)
-    torch.testing.assert_close(references[0], torch.full((1, 32, 32, 3), 0.6))
-    expected_donor = torch.tensor([51, 102, 153]) / 255 * (128 / 255) + (1 - 128 / 255)
+    assert references[0] is target
+    assert references[1].shape == (1, 32, 32, 4)
+    expected_donor = torch.tensor([51, 102, 153, 128]) / 255
     torch.testing.assert_close(references[1][0, 0, 0], expected_donor)
     assert torch.equal(target, original)
 
 
-def test_clothes_rebuilds_preview_cached_with_transparent_rgba(designer_run, monkeypatch):
+@pytest.mark.parametrize("legacy", ["transparent_rgba", "modified_donor"])
+def test_clothes_rebuilds_preview_cached_with_old_reference_preparation(designer_run, monkeypatch, legacy):
     node, pipe, data, seeds = designer_run
     dumps = json.dumps
 
     def legacy_dumps(value, *args, **kwargs):
         if isinstance(value, dict) and "source_reference" in value:
             value = copy.deepcopy(value)
-            value["qi2_reference_alpha"] = "straight"
+            if legacy == "transparent_rgba":
+                value["qi2_reference_alpha"] = "straight"
+            else:
+                value.pop("reference_preparation")
         return dumps(value, *args, **kwargs)
 
     with monkeypatch.context() as patch:
@@ -253,14 +266,17 @@ def test_clothes_rebuilds_preview_cached_with_transparent_rgba(designer_run, mon
     assert seeds == [123, 123]
 
 
-def test_clothes_rebuilds_preview_cached_before_image_alignment(designer_run, monkeypatch):
+@pytest.mark.parametrize("old_latent", ["scaled_encoder", "image1_aspect", "upscaled_encoder_latent"])
+def test_clothes_rebuilds_preview_cached_with_old_latent(designer_run, monkeypatch, old_latent):
     node, pipe, data, seeds = designer_run
     dumps = json.dumps
 
     def legacy_dumps(value, *args, **kwargs):
         if isinstance(value, dict) and "source_reference" in value:
             value = copy.deepcopy(value)
-            value["resolution"].pop("image1_multiple")
+            value["resolution"] = {"latent": old_latent, "target_size": 1024}
+            if old_latent != "scaled_encoder":
+                value["resolution"]["encoder"] = 1024
         return dumps(value, *args, **kwargs)
 
     with monkeypatch.context() as patch:

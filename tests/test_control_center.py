@@ -601,6 +601,51 @@ class TestEnrichConfigEntries:
         assert result[0]["status"] == "installed"
         assert result[0]["active_version"] == "0.3.5"
 
+    def test_catalog_version_round_trip_resolves_the_requested_file(self, tmp_path, monkeypatch):
+        from nodes import vnccs_control_center as cc
+
+        name = "VNCCS Clothes Core QI2"
+        paths = {
+            "2.6": "models/loras/QI2.1/VNCCS/VNCCS_QI2_ClothesCoreV2.6.safetensors",
+            "3.0": "models/loras/QI2.1/VNCCS/VNCCS_QI2_ClothesCoreV3.safetensors",
+        }
+        for path in paths.values():
+            (tmp_path / path.rsplit("/", 1)[-1]).write_bytes(b"installed model")
+        monkeypatch.setattr(cc, "_resolve_model_download_path", lambda path: str(tmp_path / path.rsplit("/", 1)[-1]))
+        monkeypatch.setattr(cc, "_find_model_on_disk", lambda path: (
+            str(tmp_path / path.rsplit("/", 1)[-1]), (tmp_path / path.rsplit("/", 1)[-1]).is_file(),
+        ))
+        installed = {f"cc_lora_{name}": "3.0"}
+        monkeypatch.setattr(cc, "get_installed_version_info", lambda: installed)
+
+        for version in ["3.0", "2.6", "3.0"]:
+            entry = {"name": name, "local_path": paths[version], "version": version}
+            enriched = _enrich_config_entries([entry], "lora", installed)[0]
+            assert enriched["status"] == "installed"
+            assert cc._apply_active_installed_paths({"lora": [entry]})["lora"][0] == entry
+            if version == "2.6":
+                installed[f"cc_lora_{name}"] = "2.6"
+
+        assert len(list(tmp_path.iterdir())) == 2
+        (tmp_path / paths["3.0"].rsplit("/", 1)[-1]).unlink()
+        missing = {"name": name, "local_path": paths["3.0"], "version": "3.0"}
+        assert _enrich_config_entries([missing], "lora", installed)[0]["status"] == "missing"
+        fallback = cc._apply_active_installed_paths({"lora": [missing]})["lora"][0]
+        assert fallback["local_path"] == paths["2.6"]
+        assert fallback["version"] == "2.6"
+
+    def test_catalog_downgrade_does_not_offer_an_update(self, monkeypatch):
+        from nodes import vnccs_control_center as cc
+
+        monkeypatch.setattr(cc, "_find_model_on_disk", lambda path: ("/models/model.safetensors", True))
+        monkeypatch.setattr(cc, "_find_active_installed_local_path", lambda *args: "")
+        result = _enrich_config_entries(
+            [{"name": "Model", "local_path": "models/loras/model.safetensors", "version": "2.6"}],
+            "lora", {"cc_lora_Model": "3.0"},
+        )
+
+        assert result[0]["status"] == "installed"
+
 
 class TestPackagedConfigSync:
     @pytest.mark.parametrize("folder_name", ["vnccs", "ComfyUI_VNCCS", "ComfyUI_vnccs", "my-vnccs-checkout"])

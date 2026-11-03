@@ -47,7 +47,9 @@ def runtime(monkeypatch, tmp_path):
             return (json.dumps({"fields": calls["rewrite_fields"]}),)
         assert name == "TextEncodeQwenImage21"
         calls["encoded"].append((kwargs["clip"], kwargs["prompt"]))
-        return "positive", "negative", None
+        calls["encoder_resolution"] = kwargs["resolution"]
+        calls["encoder_latent"] = object()
+        return "positive", "negative", calls["encoder_latent"]
 
     def encode_prompt(encoder, text, settings):
         calls["encoded"].append((encoder, text))
@@ -98,8 +100,8 @@ def test_node_contract_preserves_old_inputs_and_adds_outputs_and_controls():
     assert inputs["optional"]["framing_mode"][0] == ["Full Body", "Cowboy Shot", "Random"]
     assert inputs["optional"]["framing_mode"][1]["default"] == "Random"
     assert math.isnan(node.IS_CHANGED())
-    assert preview._square_side(1.0) == 1024
-    assert preview._square_side(4.0) == 2048
+    assert preview._preview_target_size(1.0) == 1024
+    assert preview._preview_target_size(4.0) == 4096
 
 
 @pytest.mark.parametrize("model,background", [("Anima", "Green"), ("QI2", "Transparent")])
@@ -140,7 +142,9 @@ def test_single_image_and_returned_prompt_only_changes_observed_size(runtime, mo
     with Image.open(output / "VNCCS" / "style_previews" / filename) as saved:
         assert saved.mode == "RGBA"
     sample = calls["sample"][0]
-    assert sample["latent"][0] == sample["latent"][1]
+    assert sample["latent"] == (1256, 1256)
+    if model == "QI2":
+        assert calls["encoder_resolution"] == 1024
     assert sample["gen_settings"]["turbo_enabled"] is turbo
     assert sample["qi2_turbo"] is (turbo and model == "QI2")
     assert sample["steps"] == ((12 if model == "Anima" else 6) if turbo else (30 if model == "Anima" else 25))
@@ -288,7 +292,7 @@ def test_breast_size_section_replaces_size_tags_but_preserves_body_details(runti
 def test_analysis_returns_complete_model_response_without_filtering(runtime, response):
     calls, image, *_ = runtime
     calls["analysis_output"] = response
-    assert preview._analyze_breast_size(image) == response
+    assert preview._analyze_breast_size(image, "qi2") == response
 
 
 @pytest.mark.parametrize("response", [
@@ -310,12 +314,13 @@ def test_complete_model_response_is_embedded_verbatim_in_body(runtime, response)
     assert len(list((output / "VNCCS" / "style_previews").glob("*.png"))) == 1
 
 
-def test_analysis_composites_alpha_on_white_and_bounds_large_images(runtime):
+@pytest.mark.parametrize("mode,shape", [("qi2", (1200, 1600)), ("anima", (768, 1024))])
+def test_analysis_composites_alpha_on_white_and_preserves_qi2_dimensions(runtime, mode, shape):
     calls, *_ = runtime
     image = torch.zeros(1, 1200, 1600, 4)
-    assert preview._analyze_breast_size(image) == "B-Cup"
+    assert preview._analyze_breast_size(image, mode) == "B-Cup"
     analyzed = calls["analysis"][0]["image"]
-    assert analyzed.shape == (1, 768, 1024, 3)
+    assert analyzed.shape == (1, *shape, 3)
     assert torch.all(analyzed == 1)
     assert calls["analysis"][0]["thinking"] is False
     assert calls["analysis"][0]["max_length"] == 512
@@ -437,7 +442,7 @@ def test_observed_j_cup_is_inside_body_and_cannot_be_changed_by_pe(runtime, monk
 def test_json_analysis_response_is_returned_in_full(runtime):
     calls, image, *_ = runtime
     calls["analysis_output"] = '{"fields":{"breast_size":"J-Cup"}}'
-    assert preview._analyze_breast_size(image) == calls["analysis_output"]
+    assert preview._analyze_breast_size(image, "qi2") == calls["analysis_output"]
 
 
 def test_calibrated_analysis_uses_image_only_and_retains_qualified_response(runtime):
@@ -448,7 +453,7 @@ def test_calibrated_analysis_uses_image_only_and_retains_qualified_response(runt
         "without the clearly above-medium volume of E-Cup."
     )
     calls["analysis_output"] = response
-    assert preview._analyze_breast_size(image) == response
+    assert preview._analyze_breast_size(image, "qi2") == response
     request = calls["analysis"][0]
     assert request["sampling_mode"]["sampling_mode"] == "off"
     assert request["image"].shape == (1, 8, 8, 3)

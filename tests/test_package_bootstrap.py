@@ -43,7 +43,15 @@ def test_registered_nodes_match_workflows_and_preserved_tools():
                 for target in statement.targets
             ):
                 registered.update(ast.literal_eval(key) for key in statement.value.keys)
-    assert registered == (used - {"VNCCS_PoseStudio", "PreviewImage"}) | {
+    external_nodes = {
+        "VNCCS_PoseStudio", "PreviewImage", "UNETLoader", "CLIPLoader", "VAELoader",
+        "LoadImage", "GetImageSize", "EmptyImage", "ImageCompositeMasked", "ImageScaleToTotalPixels",
+        "EmptyLatentImage", "LoraLoaderModelOnly", "QwenImage21Cache",
+        "TextEncodeQwenImage21", "KSampler", "VAEDecode", "StringTrim", "PrimitiveStringMultiline",
+        "RegexReplace", "StringContains", "StringConcatenate", "ComfySwitchNode",
+        "PrimitiveFloat", "ComfyMathExpression",
+    }
+    assert registered == (used - external_nodes) | {
         "VNCCSStylePreviewTest", "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
         "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
     }

@@ -167,7 +167,8 @@ def test_builtin_qi2_turbo_defaults_use_base_sampler_and_preserve_user_parameter
     assert (custom["steps"], custom["cfg"]) == (10, 1.5)
 
 
-def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch):
+@pytest.mark.parametrize("cfg", [1.0, 3.0])
+def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch, cfg):
     calls = []
 
     def fake_node(name, **kwargs):
@@ -184,7 +185,7 @@ def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeyp
         "vae",
         "anime character prompt",
         "negative prompt",
-        {"generation_mode": "qi2"},
+        {"generation_mode": "qi2", "target_size": 2048, "cfg": cfg},
     )
 
     assert (positive, negative, rewritten) == (

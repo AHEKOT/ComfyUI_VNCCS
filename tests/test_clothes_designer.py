@@ -3,6 +3,8 @@
 import os
 import sys
 import types
+import json
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +17,45 @@ from _vnccs.nodes.clothes_designer import (
     ClothesDesigner,
     _resolve_pipe_clothes_core_lora,
 )
+
+
+def test_manual_clone_workflow_matches_qi2_prompts_and_sampler_inputs():
+    path = Path(__file__).resolve().parents[1] / "workflows/manual/QI2_ClothesDesigner_Clone_Turbo.json"
+    graph = json.loads(path.read_text())
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    links = {link[0]: link for link in graph["links"]}
+
+    def upstream(node, name):
+        port = next(p for p in node["inputs"] if p["name"] == name)
+        _, source, slot, destination, index, _ = links[port["link"]]
+        assert destination == node["id"] and node["inputs"][index] is port
+        assert port["link"] in nodes[source]["outputs"][slot]["links"]
+        return nodes[source], slot
+
+    sampler, = (n for n in nodes.values() if n["type"] == "KSampler")
+    encoder, positive = upstream(sampler, "positive")
+    assert (encoder["type"], positive) == ("TextEncodeQwenImage21", 0)
+    assert upstream(sampler, "negative") == (encoder, 1)
+    data = {"activeTab": "clone", "clone_image": True, "gen_settings": {"background_color": "Transparent"}}
+    assert encoder["widgets_values"] == [*ClothesDesigner.construct_prompt(data, model_kind="qi2"), 1024]
+    empty, slot = upstream(sampler, "latent_image")
+    assert (empty["type"], slot) == ("EmptyLatentImage", 0)
+    assert not encoder["outputs"][2]["links"]
+    assert sampler["widgets_values"][1:] == ["fixed", 8, 1.0, "euler", "simple", 1.0]
+    first, second = [upstream(encoder, f"images.image_{i}")[0] for i in (1, 2)]
+    assert first != second
+    size, slot = upstream(empty, "width")
+    assert (size["type"], slot) == ("GetImageSize", 0)
+    assert upstream(empty, "height") == (size, 1)
+    scale, slot = upstream(size, "image")
+    assert (scale["type"], slot) == ("ImageScaleToTotalPixels", 0)
+    assert scale["widgets_values"] == ["nearest-exact", 4.0, 1]
+    assert upstream(scale, "image") == (first, 0)
+    for rgb in (first, second):
+        assert rgb["type"] == "ImageCompositeMasked" and rgb["widgets_values"] == [0, 0, False]
+        source, slot = upstream(rgb, "destination")
+        assert (source["type"], slot) == ("LoadImage", 0)
+        assert upstream(rgb, "mask") == (source, 1)
 
 
 # ── construct_prompt ──────────────────────────────────────────────────────────
@@ -155,9 +196,8 @@ class TestReferenceBackgroundPreparation:
         if batched:
             image = image.unsqueeze(0)
         original = image.clone()
-        prepared = ClothesDesigner._prepare_reference_background(
-            image, "Transparent", white_background=True,
-        )
+        from _vnccs.nodes.character_generator import _qi2_reference_image
+        prepared = _qi2_reference_image(image)
         assert prepared.shape[-1] == 3
         expected = torch.tensor([[[1.0, 1.0, 1.0], [0.6, 0.7, 0.8], [0.2, 0.4, 0.6]]])
         torch.testing.assert_close(prepared, expected.unsqueeze(0) if batched else expected)
@@ -273,7 +313,7 @@ class TestEditableCostumeValidation:
     ("Klein9b", None, 1024), ("Klein9b", 2048, 2048),
 ])
 @pytest.mark.parametrize("clone", [False, True])
-@pytest.mark.parametrize("cfg", [None, 0.0])
+@pytest.mark.parametrize("cfg", [None, 0.0, 1.0])
 def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog, kind, size, expected, clone, cfg):
     from _vnccs.nodes import clothes_designer as cd
     from _vnccs.nodes import character_generator as cg
@@ -290,7 +330,10 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
     if reference_channels == 4:
         reference[..., 3] = 1.0
     clone_path = tmp_path / "clone.png"
-    Image.new("RGB", (80, 40), (255, 0, 0)).save(clone_path)
+    donor = Image.new("RGBA", (80, 40), (255, 0, 0, 255))
+    donor.putpixel((1, 0), (24, 71, 129, 0))
+    donor.putpixel((2, 0), (75, 29, 193, 128))
+    donor.save(clone_path)
     reference_path = tmp_path / "reference.png"
     Image.new("RGB", (64, 96), "blue").save(reference_path)
     monkeypatch.setattr(cd, "get_latest_sprite_path", lambda *args: str(reference_path))
@@ -306,6 +349,8 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
     monkeypatch.setattr(node, "get_reference_sprite", lambda *args: reference)
     monkeypatch.setattr(node, "get_cache_paths", lambda *args: (str(tmp_path / "preview.png"), str(tmp_path / "preview.json")))
     calls = {}
+    encoder_latent = {"samples": torch.zeros(1), "metadata": object()}
+    sampling_latent = {"samples": torch.zeros(1)}
     call_names = []
     def call(name, **kwargs):
         calls[name] = kwargs
@@ -330,9 +375,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
             scaled_height = round(height * scale)
             return (source[0, 0, 0].expand(1, scaled_height, scaled_width, source.shape[-1]).clone(),)
         if name == "TextEncodeQwenImage21":
-            return "positive", "negative", {"samples": torch.zeros(1)}
+            return "positive", "negative", encoder_latent
         if name == "EmptyLatentImage":
-            return ({"samples": torch.zeros(1)},)
+            return (sampling_latent,)
         if name == "MiniMaxH3ReferenceToVideo":
             return "positive", {"samples": torch.zeros(1)}
         if name in ("KSampler", "SamplerCustomAdvanced"):
@@ -389,17 +434,20 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         assert calls["VNCCS_Flux_Klein_Encoder"]["align_image1"] is True
     else:
         assert background == "Alpha"
-        latent = calls["EmptyLatentImage"]
-        assert latent["width"] * latent["height"] == pytest.approx(expected * 1024, rel=0.04)
-        assert latent["width"] / latent["height"] == pytest.approx(64 / 96, rel=0.04)
-        assert calls["ImageScaleToTotalPixels"]["megapixels"] == pytest.approx(expected / 1024)
-        assert calls["ImageScaleToTotalPixels"]["image"].shape[-1] == 3
-        scale = (expected * 1024 / (64 * 96)) ** 0.5
-        width, height = round(64 * scale) // 32 * 32, round(96 * scale) // 32 * 32
-        assert (latent["width"], latent["height"]) == (width, height)
+        assert "ImageScale" not in calls
+        sizing = calls["ImageScaleToTotalPixels"]
+        assert sizing["image"] is calls["TextEncodeQwenImage21"]["images"]["image_1"]
+        assert (sizing["upscale_method"], sizing["resolution_steps"], sizing["megapixels"]) == (
+            "nearest-exact", 1, expected / 1024,
+        )
+        assert calls["KSampler"]["latent_image"] is sampling_latent
+        scale = (expected * 1024 / (96 * 64)) ** 0.5
+        assert calls["EmptyLatentImage"] == {"width": round(64 * scale), "height": round(96 * scale), "batch_size": 1}
         assert calls["TextEncodeQwenImage21"]["images"]["image_1"].shape[1:3] == (96, 64)
-        assert calls["TextEncodeQwenImage21"]["resolution"] == 64
-        assert calls["TextEncodeQwenImage21"]["negative_prompt"] == node.construct_prompt(data, model_kind="qi2")[1]
+        resolution = 1024
+        assert calls["TextEncodeQwenImage21"]["resolution"] == resolution
+        expected_negative = node.construct_prompt(data, model_kind="qi2")[1]
+        assert calls["TextEncodeQwenImage21"]["negative_prompt"] == expected_negative
         if clone:
             assert "TextGenerate" not in calls
         else:
@@ -443,6 +491,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
     assert references[target_key][0, 0, 0, :3].tolist() == pytest.approx([0, 0, 1])
     assert set(references) == ({target_key, donor_key} if clone else {target_key})
     if clone:
+        donor_tensor = node._pil_image_tensor(donor)
+        expected_donor = cg._qi2_reference_image(donor_tensor) if kind == "QI2" else donor_tensor
+        torch.testing.assert_close(references[donor_key], expected_donor)
         assert references[donor_key][0, 0, 0, :3].tolist() == pytest.approx([1, 0, 0])
         assert calls[encoder_name]["prompt"] == node.construct_prompt(data, model_kind=kind.lower())[0]
         assert calls[encoder_name]["prompt"].startswith("Dress character to clothes from image 2\n")
@@ -478,12 +529,8 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
             assert record.vnccs["component"] == "ClothesDesigner"
             assert record.vnccs["node_id"] == "123"
             assert record.vnccs["encoder"] == encoder_name
-            for key, value in {
-                "resolution": 64, "image1_width": 64, "image1_height": 96,
-                "generation_width": width, "generation_height": height,
-            }.items():
-                assert record.vnccs[key] == value
-                assert f"{key}={value}" in record.getMessage()
+            assert record.vnccs["resolution"] == resolution
+            assert f"resolution={resolution}" in record.getMessage()
             if not clone:
                 rewrite = next(record for record in records if record.vnccs["context"] == "Text generation")
                 assert rewrite.vnccs["user"] == calls["TextGenerate"]["prompt"]
@@ -522,14 +569,22 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
 
 
 class TestQI2EditRewriter:
-    def test_rgba_is_composited_once_for_rgb_prompt_enhancement(self):
-        from _vnccs.nodes.clothes_designer import _qi2_edit_image_batch
+    @pytest.mark.parametrize("channels", [3, 4])
+    def test_prompt_enhancement_preserves_reference_pixels_and_dimensions(self, monkeypatch, channels):
+        from _vnccs.nodes import clothes_designer as cd
+        from _vnccs.nodes.character_generator import _qi2_reference_image
 
-        image = torch.tensor([[[[1.0, 0.0, 1.0, 0.0], [0.2, 0.4, 0.6, 0.5], [0.2, 0.4, 0.6, 1.0]]]])
+        image = torch.rand(1, 1057, 67, channels)
         original = image.clone()
-        prepared = ClothesDesigner._prepare_reference_background(image, "Transparent", white_background=True)
-        batch = _qi2_edit_image_batch((prepared,))
-        torch.testing.assert_close(batch, torch.tensor([[[[1.0, 1.0, 1.0], [0.6, 0.7, 0.8], [0.2, 0.4, 0.6]]]]))
+        calls = []
+        monkeypatch.setattr(cd, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ("",))
+        cd._rewrite_qi2_clothes_prompt("clip", "outfit", image, "Blue", "edit rules")
+        assert calls[0][0] == "TextGenerate"
+        prepared = calls[0][1]["image"]
+        assert prepared.shape == (1, 1057, 67, 3)
+        torch.testing.assert_close(prepared, _qi2_reference_image(image))
+        if channels == 3:
+            assert prepared is image
         assert torch.equal(image, original)
 
     def test_official_template_is_bundled(self):
@@ -548,23 +603,6 @@ class TestQI2EditRewriter:
         monkeypatch.setattr(cd.os.path, "join", lambda *args: "/missing/qi2_edit_template.txt")
         with pytest.raises(RuntimeError, match="QI2 edit prompt template is missing"):
             cd._qi2_edit_system_prompt()
-
-    def test_different_image_sizes_are_fitted_without_cropping_or_mutating_encoder_inputs(self):
-        from _vnccs.nodes.clothes_designer import _qi2_edit_image_batch
-
-        target = torch.zeros((1, 8, 4, 4))
-        target[..., 2:] = 1
-        donor = torch.zeros((1, 2, 8, 3))
-        donor[..., 0] = 1
-        original_target, original_donor = target.clone(), donor.clone()
-        batch = _qi2_edit_image_batch((target, donor))
-        assert batch.shape == (2, 8, 4, 3)
-        assert torch.equal(target, original_target)
-        assert torch.equal(donor, original_donor)
-        assert batch[0, 0, 0].tolist() == [0, 0, 1]
-        assert batch[1, 0, 0].tolist() == [1, 1, 1]
-        assert batch[1, 3, 0].tolist() == [1, 0, 0]
-        assert batch[1, 3, -1].tolist() == [1, 0, 0]
 
     @pytest.mark.parametrize("background,expected", [
         ("Green", "hex #00FF00"), ("Blue", "hex #0000FF"),
@@ -587,16 +625,15 @@ class TestQI2EditRewriter:
             return (response,)
         monkeypatch.setattr(cd, "_call_comfy_node", call)
         image = torch.ones((1, 8, 4, 3))
-        references = (image,)
         source = "Original clothes request."
-        result = cd._rewrite_qi2_clothes_prompt(object(), source, references, background, "official edit rules")
+        result = cd._rewrite_qi2_clothes_prompt(object(), source, image, background, "official edit rules")
         assert len(calls) == 1
         name, kwargs = calls[0]
         assert name == "TextGenerate"
         for key, value in QI2_TEXT_GENERATION_DEFAULTS.items():
             assert kwargs[key] == value
         assert source in kwargs["prompt"]
-        assert kwargs["image"].shape[0] == len(references)
+        assert kwargs["image"] is image
         assert expected in result
         assert "pose, framing and rendering medium" in result
         assert "<think>" not in result

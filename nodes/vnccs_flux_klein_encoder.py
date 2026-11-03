@@ -172,13 +172,15 @@ class VNCCS_Flux_Klein_Encoder:
             if image is None:
                 continue
 
-            scaled = _call_comfy_node(
-                "ImageScaleToTotalPixels",
-                image=image,
-                upscale_method=upscale_method,
-                megapixels=float(megapixels),
-                resolution_steps=int(resolution_steps),
-            )[0]
+            scaled = image
+            if not align_image1 or first_scaled_image is None:
+                scaled = _call_comfy_node(
+                    "ImageScaleToTotalPixels",
+                    image=image,
+                    upscale_method=upscale_method,
+                    megapixels=float(megapixels),
+                    resolution_steps=int(resolution_steps),
+                )[0]
             if align_image1 and first_scaled_image is None:
                 width, height = _image_dimensions(scaled, multiple=32)
                 if (width, height) != _image_dimensions(scaled):
