@@ -685,6 +685,10 @@ def atomic_output_path(path):
             os.unlink(temporary)
         except FileNotFoundError:
             pass
+        except OSError as error:
+            log_event("cleanup_warning", component="Storage", level="warning", truncate=False,
+                      message="Could not remove temporary output file",
+                      path=temporary, error=str(error))
 
 
 def save_config(character_name: str, data: Dict[str, Any]) -> str:

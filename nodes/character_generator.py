@@ -4,7 +4,7 @@ Replacement node for the Step 1 Pose Generation -> Upscaler -> BG Remove
 subgraph chain. It executes the same processing stages internally and exposes a
 DOM widget for stage previews/settings.
 """
-from ..operation_logger import log_event, log_stage, logged_operation
+from ..operation_logger import log_event, log_stage, logged_operation, log_prompts
 
 from .generator_context import _LIVE_GENERATOR_CONTEXTS, _generator_context_key, _remember_generator_context, _get_generator_context, scoped_cache_dir, _forget_generator_context, generator_execution_lock, serialized_generator
 from .progress_state import begin_progress, record_progress, progress_snapshot, PROGRESS_EPOCH
@@ -56,7 +56,7 @@ except Exception:  # pragma: no cover
 from .runtime_cleanup import inference_stage
 from .h3_still import h3_still_samples, require_h3_still_support
 from .vnccs_pipe import VNCCS_Pipe
-from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder
+from .vnccs_flux_klein_encoder import VNCCS_Flux_Klein_Encoder, _image_dimensions
 from .vnccs_control_center import (
     _apply_lora_standard,
     _find_model_on_disk,
@@ -103,6 +103,7 @@ _SEEDVR_DOWNLOAD_STATUS = {}
 _SEEDVR_DOWNLOAD_LOCK = threading.Lock()
 MAX_SEED = 0xFFFFFFFFFFFFFFFF
 REGENERATE_SEED_SHIFT_MAX = 1_000_000
+UPSCALER_STAGES = {"upscaler", "source_upscaler", "original_upscaler", "naked_upscaler"}
 
 
 def _available_seedvr_attention_modes():
@@ -253,6 +254,17 @@ def resize_mask_batch(mask, target_hw, mode="bilinear"):
     return item[:, 0].clamp(0.0, 1.0)
 
 
+def _qi2_reference_image(image):
+    if not torch.is_tensor(image) or image.ndim not in {3, 4} or image.shape[-1] not in {3, 4}:
+        raise ValueError("Qwen Image 2.1 references must be RGB or RGBA IMAGE tensors.")
+    if image.numel() == 0:
+        raise ValueError("Qwen Image 2.1 references must contain a non-empty image.")
+    if image.shape[-1] == 4:
+        alpha = image[..., 3:4].clamp(0.0, 1.0)
+        return image[..., :3] * alpha + (1.0 - alpha)
+    return image
+
+
 def _first_tensor(value):
     if isinstance(value, tuple):
         value = value[0]
@@ -290,6 +302,10 @@ def _call_comfy_node(class_name, **kwargs):
     signature = inspect.signature(method)
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in signature.parameters.values())
     accepted = kwargs if accepts_kwargs else {k: v for k, v in kwargs.items() if k in signature.parameters}
+    if class_name in {"TextEncodeQwenImage21", "MiniMaxH3ReferenceToVideo"}:
+        log_prompts(class_name, positive=accepted.get("prompt"), negative=accepted.get("negative_prompt"))
+    elif class_name == "TextGenerate":
+        log_prompts("Text generation", system=accepted.get("system_prompt"), user=accepted.get("prompt"))
     try:
         result = method(**accepted)
     except AttributeError as exc:
@@ -552,8 +568,9 @@ def _rotate_preview_cache(cache_dir):
 
         files = [
             filename for filename in os.listdir(cache_dir)
-            if os.path.isfile(os.path.join(cache_dir, filename))
-            and os.path.splitext(filename)[1].lower() in image_exts
+            if (os.path.isfile(os.path.join(cache_dir, filename))
+                and os.path.splitext(filename)[1].lower() in image_exts)
+            or (filename in UPSCALER_STAGES and os.path.isdir(safe_join_under(cache_dir, filename)))
         ]
         if not files:
             return
@@ -599,6 +616,35 @@ def _load_cached_tensor(cache_dir, key):
         return None
 
 
+def _upscaled_image_paths(cache_dir, stage, count):
+    cache_dir = _safe_cache_dir(cache_dir)
+    if not cache_dir or stage not in UPSCALER_STAGES or not count:
+        return []
+    directory = safe_join_under(cache_dir, stage)
+    # Existing runs kept these PNGs directly in the workflow cache.
+    if not os.path.isdir(directory):
+        directory = cache_dir
+    return [safe_join_under(directory, f"{stage}_{index:02d}.png") for index in range(1, count + 1)]
+
+
+def _load_upscaled_images(cache_dir, stage, count):
+    batch = None
+    try:
+        for index, path in enumerate(_upscaled_image_paths(cache_dir, stage, count)):
+            with Image.open(path) as image:
+                mode = "RGBA" if "A" in image.getbands() else "RGB"
+                item = torch.from_numpy(np.array(image.convert(mode), dtype=np.float32) / 255.0)
+            if batch is None:
+                batch = torch.empty((count, *item.shape), dtype=item.dtype)
+            if item.shape != batch.shape[1:]:
+                raise ValueError("Upscaled image dimensions or channels do not match")
+            batch[index] = item
+        return batch
+    except (OSError, ValueError, RuntimeError) as exc:
+        log_event('warning', component='Generator', level='warning', message=f"Failed to load upscaled images '{stage}': {exc}", error=str(exc))
+        return None
+
+
 def _save_run_inputs(cache_dir, **items):
     cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
@@ -610,13 +656,17 @@ def _save_run_inputs(cache_dir, **items):
     try:
         meta = {"created_at": time.time(), "items": {}}
         for key, value in items.items():
-            if torch.is_tensor(value):
-                tensor_key = f"input_{key}_{revision}"
-                path = _cache_tensor_path(cache_dir, tensor_key)
-                created.add(path)
-                if not _save_cached_tensor(cache_dir, tensor_key, value):
-                    raise OSError(f"Could not cache required input '{key}'")
-                meta["items"][key] = {"type": "tensor", "shape": list(value.shape), "tensor_key": tensor_key}
+            tensor_list = isinstance(value, list) and value and all(torch.is_tensor(item) for item in value)
+            if torch.is_tensor(value) or tensor_list:
+                descriptors = []
+                for index, tensor in enumerate(value if tensor_list else [value]):
+                    tensor_key = f"input_{key}_{revision}_{index}"
+                    path = _cache_tensor_path(cache_dir, tensor_key)
+                    created.add(path)
+                    if not _save_cached_tensor(cache_dir, tensor_key, tensor):
+                        raise OSError(f"Could not cache required input '{key}'")
+                    descriptors.append({"type": "tensor", "shape": list(tensor.shape), "tensor_key": tensor_key})
+                meta["items"][key] = {"type": "tensor_list", "items": descriptors} if tensor_list else descriptors[0]
             else:
                 meta["items"][key] = {"type": "json", "value": value}
         with atomic_output_path(safe_join_under(base, "inputs.json")) as temporary:
@@ -655,11 +705,14 @@ def _load_run_inputs(cache_dir, keys=None):
         for key, item in (meta.get("items") or {}).items():
             if requested is not None and key not in requested:
                 continue
-            if item.get("type") == "tensor":
-                value = _load_cached_tensor(cache_dir, item.get("tensor_key") or f"input_{key}")
-                if value is None or list(value.shape) != item.get("shape", list(value.shape)):
-                    return {}
-                result[key] = value
+            if item.get("type") in {"tensor", "tensor_list"}:
+                values = []
+                for descriptor in item["items"] if item["type"] == "tensor_list" else [item]:
+                    value = _load_cached_tensor(cache_dir, descriptor.get("tensor_key") or f"input_{key}")
+                    if value is None or list(value.shape) != descriptor.get("shape", list(value.shape)):
+                        return {}
+                    values.append(value)
+                result[key] = values if item["type"] == "tensor_list" else values[0]
             elif item.get("type") == "json":
                 result[key] = item.get("value")
         return result
@@ -809,6 +862,8 @@ DEFAULT_WIDGET_DATA = {
     },
     "pose_generation": {
         "target_size": 1024,
+        "override_resolution": False,
+        "resolution": 1024,
         "upscale_method": "lanczos",
         "crop_method": "disabled",
         "image1_name": "image 1",
@@ -1002,6 +1057,12 @@ def _resolution_scale_value(value, default=1024):
 
 def _resolution_scale_megapixels(value, default=1024):
     return _resolution_scale_value(value, default=default) / 1024.0
+
+
+def _qi2_scale(target_size):
+    """Return the displayed megapixels and the corresponding QI2 encoder resolution."""
+    megapixels = math.floor(_resolution_scale_megapixels(target_size) * 10 + 0.5) / 10
+    return megapixels, 32 * round(32 * math.sqrt(megapixels))
 
 
 class VNCCS_CharacterGenerator:
@@ -1232,9 +1293,9 @@ class VNCCS_CharacterGenerator:
     def _slice_batch_item(self, values, index):
         if index is None:
             return values
-        batch = self._list_to_batch(values)
-        if torch.is_tensor(batch) and batch.ndim == 4 and 0 <= index < batch.shape[0]:
-            return batch[index:index + 1]
+        images = self._image_list(values)
+        if 0 <= index < len(images):
+            return images[index]
         raise ValueError("Selected image is unavailable. Run the generator normally before regenerating one image.")
 
     def _pose_prompts(self, prompt, count):
@@ -1273,12 +1334,32 @@ class VNCCS_CharacterGenerator:
             raise ValueError("Selected regeneration stage is unavailable. Run the generator normally before regenerating.")
         return start < 0 or current >= start
 
-    def _load_cached_stage(self, cache_dir, stage, unique_id=None, message="Loaded cached stage"):
-        cached = _load_cached_tensor(cache_dir, stage)
+    def _load_cached_stage(self, cache_dir, stage, unique_id=None, message="Loaded cached stage", expected_count=None):
+        cached = (_load_upscaled_images(cache_dir, stage, expected_count) if stage in UPSCALER_STAGES
+                  else _load_cached_tensor(cache_dir, stage))
         if cached is not None:
             total = cached.shape[0] if torch.is_tensor(cached) and cached.ndim == 4 else 0
-            self._emit(unique_id, stage, "done", cached, message, total, total, cache_dir=cache_dir)
+            paths = (_upscaled_image_paths(cache_dir, stage, total)
+                     if stage in UPSCALER_STAGES else None)
+            self._emit(unique_id, stage, "done", cached, message, total, total, cache_dir=cache_dir, preview_paths=paths)
         return cached
+
+    def _save_upscaled_stage(self, cache_dir, stage, images, unique_id=None):
+        batch = self._list_to_batch(images)
+        paths = []
+        output_dir = _safe_cache_dir(cache_dir)
+        if cache_dir and not output_dir:
+            raise OSError("No writable generator image path")
+        if output_dir:
+            output_dir = safe_join_under(output_dir, stage)
+            with staged_image_batch(output_dir, version_existing=False) as pending:
+                for index, item in enumerate(batch, start=1):
+                    filename = f"{stage}_{index:02d}.png"
+                    self._tensor_item_to_pil(item).save(safe_join_under(pending, filename), format="PNG")
+                    paths.append(safe_join_under(output_dir, filename))
+        total = batch.shape[0]
+        self._emit(unique_id, stage, "done", batch, f"Upscale output ready for {total} image(s)", total, total,
+                   cache_dir=cache_dir, preview_paths=paths)
 
     def _save_stage(self, cache_dir, stage, images, normalized=False):
         _save_cached_tensor(cache_dir, stage, images if normalized else self._list_to_batch(images))
@@ -1378,40 +1459,32 @@ class VNCCS_CharacterGenerator:
             sigmas=sigmas, latent_image=latent,
         )[0]
 
-    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt=""):
-        target_size = _resolution_scale_value(target_size)
-        reference_images = {}
-        output_width = output_height = None
-        for index, image in enumerate(images, start=1):
-            if image is None:
-                continue
-            if output_width is None:
-                scaled_output = _call_comfy_node(
-                    "ImageScaleToTotalPixels",
-                    image=image,
-                    upscale_method="lanczos",
-                    megapixels=float(target_size) / 1024.0,
-                    resolution_steps=1,
-                )[0]
-                scaled_tensor = _first_tensor(scaled_output)
-                if not torch.is_tensor(scaled_tensor) or scaled_tensor.ndim not in {3, 4}:
-                    raise ValueError("Qwen Image 2.1 output scaling did not return an IMAGE tensor.")
-                output_height = int(scaled_tensor.shape[-3])
-                output_width = int(scaled_tensor.shape[-2])
-                reference_images[f"image_{index}"] = scaled_output
-            else:
-                reference_images[f"image_{index}"] = image
-        if not reference_images:
-            raise ValueError("Qwen Image 2.1 generation requires a reference image.")
-        positive, negative, _encoder_latent = _call_comfy_node(
+    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt="", resolution=None):
+        megapixels, linked_resolution = _qi2_scale(target_size)
+        if resolution is None:
+            resolution = linked_resolution
+        if not isinstance(resolution, int) or resolution % 32 or not 0 <= resolution <= 4096:
+            raise ValueError("QI2 encoder resolution must be a multiple of 32 from 0 to 4096.")
+        references = {
+            f"image_{index}": _qi2_reference_image(image)
+            for index, image in enumerate(images, start=1) if image is not None
+        }
+        if "image_1" not in references:
+            raise ValueError("QI2 reference generation requires image_1.")
+        image1 = references["image_1"]
+        width, height = _image_dimensions(_call_comfy_node(
+            "ImageScaleToTotalPixels", image=image1.unsqueeze(0) if image1.ndim == 3 else image1,
+            upscale_method="nearest-exact", megapixels=megapixels, resolution_steps=1,
+        )[0])
+        log_event("encoder_resolution", encoder="TextEncodeQwenImage21", resolution=resolution,
+                  megapixels=megapixels, generation_width=width, generation_height=height)
+        positive, negative, _ = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=pipe_values["clip"], vae=pipe_values["vae"],
             prompt=str(prompt or ""), negative_prompt=str(negative_prompt or ""),
-            resolution=1024, images=reference_images,
+            resolution=resolution, images=references,
         )
-        latent = _call_comfy_node(
-            "EmptyLatentImage", width=output_width, height=output_height, batch_size=1,
-        )[0]
+        latent = _call_comfy_node("EmptyLatentImage", width=width, height=height, batch_size=1)[0]
         return positive, negative, latent
 
     def _qi2_decode(self, samples, vae):
@@ -1645,13 +1718,14 @@ class VNCCS_CharacterGenerator:
         if not torch.is_tensor(scaled_tensor) or scaled_tensor.ndim != 4:
             raise RuntimeError("QI2 emotion crop scaling did not return an IMAGE tensor.")
 
+        _, resolution = _qi2_scale(target_size)
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=pipe_values["clip"],
             vae=pipe_values["vae"],
             prompt=prompt,
             negative_prompt=str(negative_prompt or ""),
-            resolution=1024,
+            resolution=resolution,
             images={"image_1": aligned_crop},
         )
         latent = _call_comfy_node(
@@ -1946,7 +2020,7 @@ class VNCCS_CharacterGenerator:
                     values.clear()
         return tuple(outputs or [])
 
-    def _resolution_scale_dimensions(self, image, target_size, multiple=32):
+    def _resolution_scale_dimensions(self, image, target_size, multiple=32, round_down=False):
         image = _first_tensor(image)
         if not torch.is_tensor(image) or image.ndim not in {3, 4}:
             raise ValueError("Resolution scaling requires an IMAGE tensor with B,H,W,C shape.")
@@ -1956,6 +2030,12 @@ class VNCCS_CharacterGenerator:
             raise ValueError(f"Resolution scaling received invalid dimensions: {width}x{height}.")
         target_size = _resolution_scale_value(target_size)
         scale = math.sqrt(float(target_size * 1024) / float(width * height))
+        if round_down:
+            target_width = round(width * scale) // multiple * multiple
+            target_height = round(height * scale) // multiple * multiple
+            if target_width == 0 or target_height == 0:
+                raise ValueError(f"Scaled reference image must be at least {multiple} pixels on each side.")
+            return target_width, target_height
         target_width = max(int(multiple), round(width * scale / multiple) * multiple)
         target_height = max(int(multiple), round(height * scale / multiple) * multiple)
         return int(target_width), int(target_height)
@@ -1987,6 +2067,7 @@ class VNCCS_CharacterGenerator:
         stage="pose_generation",
         progress_start=0,
         progress_total=None,
+        align_image1=False,
     ):
         require_h3_still_support()
         audio_vae = pipe_values.get("audio_vae")
@@ -2039,7 +2120,14 @@ class VNCCS_CharacterGenerator:
             prompts = self._pose_prompts(prompt, total)
             for pose_index, pose in enumerate(pose_parts):
                 pose_reference = self._image_list(pose)[0]
-                width, height = self._resolution_scale_dimensions(pose_reference, target_size, multiple=32)
+                width, height = self._resolution_scale_dimensions(
+                    pose_reference, target_size, multiple=32, round_down=align_image1,
+                )
+                if align_image1 and (width, height) != _image_dimensions(pose_reference):
+                    pose_reference = _call_comfy_node(
+                        "ImageScale", image=pose_reference, upscale_method="lanczos",
+                        width=width, height=height, crop="disabled",
+                    )[0]
                 positive, latent = _call_comfy_node(
                     "MiniMaxH3ReferenceToVideo",
                     clip=pipe_values["clip"],
@@ -2058,7 +2146,9 @@ class VNCCS_CharacterGenerator:
 
             sampling_progress(0, total)
             for index, (positive, latent) in enumerate(encoded_items):
-                width, height = self._resolution_scale_dimensions(pose_parts[index], target_size, multiple=32)
+                width, height = self._resolution_scale_dimensions(
+                    pose_parts[index], target_size, multiple=32, round_down=align_image1,
+                )
                 self._log_stage(
                     unique_id, stage,
                     f"H3 pose {progress_start + index + 1}/{overall_total}: {width}x{height}, {sampler['steps']} steps"
@@ -2123,7 +2213,9 @@ class VNCCS_CharacterGenerator:
         preview_cache_dir=None,
         progress_start=0,
         progress_total=None,
+        align_image1=False,
     ):
+        pipe_values = self._extract_pipe(pipe)
         pose_parts = self._image_list(poses)
         if publish_each and pose_parts:
             total = len(pose_parts)
@@ -2145,6 +2237,7 @@ class VNCCS_CharacterGenerator:
                     bg_remove_settings=bg_remove_settings,
                     unique_id=unique_id, stage=stage,
                     progress_start=index, progress_total=total,
+                    align_image1=align_image1,
                 )
                 generated.append(image)
                 self._emit(
@@ -2156,12 +2249,13 @@ class VNCCS_CharacterGenerator:
                     processing_index=index + 1 if index + 1 < total else None,
                     preview_aspect=self._image_aspect(pose),
                 )
-            return self._safe_image_batch(generated, stage="incremental pose generation")
-
-        pipe_values = self._extract_pipe(pipe)
+            return (torch.cat(generated, dim=0) if self._is_qi2_pipe(pipe_values)
+                    else self._safe_image_batch(generated, stage="incremental pose generation"))
         qwen_settings = self._qwen_settings(settings, background)
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
+        if not self._is_qi2_pipe(pipe_values):
+            character = VNCCS_MaskExtractor().fill_alpha_with_color(character, background_color=background)[0]
         if self._is_h3_pipe(pipe_values):
             return self._run_h3_pose_generation(
                 pose_parts,
@@ -2177,6 +2271,7 @@ class VNCCS_CharacterGenerator:
                 stage=stage,
                 progress_start=progress_start,
                 progress_total=progress_total,
+                align_image1=align_image1,
             )
         prompts = [
             self._prompt_with_solid_background(value, background, bg_remove_settings)
@@ -2184,6 +2279,9 @@ class VNCCS_CharacterGenerator:
         ]
 
         if self._is_qi2_pipe(pipe_values):
+            resolution = None
+            if settings and settings.get("override_resolution") is True:
+                resolution = settings.get("resolution", 1024)
             encode_progress = self._stage_progress_callback(
                 unique_id, stage, "Encoding poses", lora_info, progress_start, progress_total,
             )
@@ -2206,10 +2304,9 @@ class VNCCS_CharacterGenerator:
                 positive = negative = latent = samples = None
                 try:
                     positive, negative, latent = self._qi2_encode(
-                        pipe_values,
-                        "Replace the pose of <image 2> with the pose of <image 1>. "
-                        "Keep the character of <image 2>. " + prompts[index - 1],
+                        pipe_values, prompts[index - 1],
                         (pose, character), target_size=qwen_settings["target_size"],
+                        resolution=resolution,
                     )
                     encode_progress(index, total, index - 1)
                     samples = self._qi2_sample(
@@ -2220,7 +2317,7 @@ class VNCCS_CharacterGenerator:
                     decode_progress(index, total)
                 finally:
                     del positive, negative, latent, samples
-            return self._safe_image_batch(decoded, stage="QI2 pose generation decode")
+            return torch.cat(decoded, dim=0)
 
         if not self._is_klein_pipe(pipe_values):
             raise RuntimeError(f"Unsupported pose generation model family: {pipe_values.get('model_kind') or 'unknown'}")
@@ -2235,6 +2332,7 @@ class VNCCS_CharacterGenerator:
                 upscale_method="lanczos",
                 megapixels=_resolution_scale_megapixels(qwen_settings["target_size"]),
                 resolution_steps=1,
+                align_image1=align_image1,
             )
         else:
             encoder_kwargs.update(qwen_settings)
@@ -2296,7 +2394,9 @@ class VNCCS_CharacterGenerator:
         )
         sampler = self._sampler_settings(pipe_values, sampler_settings)
         vae_decode = self._vae_decode_settings(vae_decode_settings)
-        character_rgb = VNCCS_MaskExtractor().fill_alpha_with_color(character)[0]
+        character_rgb = character if self._is_qi2_pipe(pipe_values) else VNCCS_MaskExtractor().fill_alpha_with_color(
+            character, background_color="Green",
+        )[0]
 
         encoding_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Encoding source character", lora_info)
         sampling_progress = self._stage_progress_callback(unique_id, "remove_clothes", "Sampling source character", lora_info)
@@ -2568,16 +2668,6 @@ class VNCCS_CharacterGenerator:
         mode = _upscaler_mode(settings)
         if mode == "off":
             result = self._list_to_batch(image)
-            self._emit(
-                unique_id,
-                stage,
-                "done",
-                result,
-                "Upscaler skipped",
-                total,
-                total,
-                cache_dir=cache_dir,
-            )
             return result
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} image(s)", current=0, total=total, cache_dir=cache_dir)
@@ -2599,17 +2689,6 @@ class VNCCS_CharacterGenerator:
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
         if native_bg_remove:
             result_batch = self._restore_native_alpha(source_image, result_batch)
-        done_total = result_batch.shape[0] if torch.is_tensor(result_batch) and result_batch.ndim == 4 else total
-        self._emit(
-            unique_id,
-            stage,
-            "done",
-            result_batch,
-            f"SeedVR upscaled batch of {done_total} image(s)",
-            done_total,
-            done_total,
-            cache_dir=cache_dir,
-        )
         return result_batch
 
     def _run_source_upscaler(self, image, settings, seed, unique_id=None, cache_dir=None, stage="source_upscaler"):
@@ -2619,16 +2698,6 @@ class VNCCS_CharacterGenerator:
         mode = _upscaler_mode(settings)
         if mode == "off":
             result = self._list_to_batch(image)
-            self._emit(
-                unique_id,
-                stage,
-                "done",
-                result,
-                "Source upscaler skipped",
-                total,
-                total,
-                cache_dir=cache_dir,
-            )
             return result
 
         self._log_stage(unique_id, stage, f"Loading SeedVR models for {total} source image(s)", current=0, total=total, cache_dir=cache_dir)
@@ -2648,17 +2717,6 @@ class VNCCS_CharacterGenerator:
         elapsed = time.time() - started_at
         self._log_stage(unique_id, stage, f"SeedVR source batch finished in {elapsed:.1f}s; normalizing output batch", current=total, total=total, cache_dir=cache_dir)
         result_batch = self._safe_image_batch(results, stage=stage) if results else self._list_to_batch(image)
-        done_total = result_batch.shape[0] if torch.is_tensor(result_batch) and result_batch.ndim == 4 else total
-        self._emit(
-            unique_id,
-            stage,
-            "done",
-            result_batch,
-            f"SeedVR upscaled source batch of {done_total} image(s)",
-            done_total,
-            done_total,
-            cache_dir=cache_dir,
-        )
         return result_batch
 
     def _screen_mode_from_background(self, background):
@@ -2789,10 +2847,11 @@ class VNCCS_CharacterGenerator:
                 sheets_path = cached_inputs.get("sheets_path", sheets_path)
             if not regenerate_from:
                 _rotate_preview_cache(cache_dir)
+            is_qi2 = self._is_qi2_pipe(self._extract_pipe(pipe))
             _save_run_inputs(
                 cache_dir,
-                poses=self._list_to_batch(poses),
-                character=self._list_to_batch(character),
+                poses=self._image_list(poses) if is_qi2 else self._list_to_batch(poses),
+                character=character if is_qi2 else self._list_to_batch(character),
                 prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
@@ -2840,12 +2899,12 @@ class VNCCS_CharacterGenerator:
 
             up_total = pose_total
             if not self._should_regenerate_stage(order, regenerate_from, "upscaler"):
-                upscaled = self._load_cached_stage(cache_dir, "upscaler", unique_id, "Using cached upscaler")
+                upscaled = self._load_cached_stage(cache_dir, "upscaler", unique_id, "Using saved upscaler images", expected_count=pose_total)
             else:
                 upscaled = None
             if upscaled is None:
                 upscaler_input = self._slice_batch_item(pose_images, regenerate_index) if regenerate_index is not None else pose_images
-                self._emit(unique_id, "upscaler", "running", upscaler_input, f"Preparing upscaler for {1 if regenerate_index is not None else up_total} images", 0, 1 if regenerate_index is not None else up_total, cache_dir=cache_dir)
+                self._emit(unique_id, "upscaler", "running", None, f"Preparing upscaler for {1 if regenerate_index is not None else up_total} images", 0, 1 if regenerate_index is not None else up_total, cache_dir=cache_dir)
                 upscaled = self._run_upscaler(
                     upscaler_input,
                     background,
@@ -2856,8 +2915,8 @@ class VNCCS_CharacterGenerator:
                     bg_remove_settings=settings["bg_remove"],
                 )
                 if regenerate_index is not None:
-                    upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, "upscaler"), regenerate_index, upscaled)
-                self._save_stage(cache_dir, "upscaler", upscaled)
+                    upscaled = self._replace_batch_item(_load_upscaled_images(cache_dir, "upscaler", pose_total), regenerate_index, upscaled)
+                self._save_upscaled_stage(cache_dir, "upscaler", upscaled, unique_id)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
@@ -2991,13 +3050,13 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         )
 
         if not self._should_regenerate_stage(order, regenerate_from, up_stage):
-            upscaled = self._load_cached_stage(cache_dir, up_stage, unique_id, f"Using cached {up_stage}")
+            upscaled = self._load_cached_stage(cache_dir, up_stage, unique_id, f"Using saved {up_stage} images", expected_count=pose_total)
         else:
             upscaled = None
         if upscaled is None:
             upscaler_input = self._slice_batch_item(pose_images, regenerate_index) if regenerate_index is not None else pose_images
             up_total = 1 if regenerate_index is not None else pose_total
-            self._emit(unique_id, up_stage, "running", upscaler_input, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
+            self._emit(unique_id, up_stage, "running", None, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
             upscaled = self._run_upscaler(
                 upscaler_input,
                 background,
@@ -3009,8 +3068,8 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 bg_remove_settings=settings["bg_remove"],
             )
             if regenerate_index is not None:
-                upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, up_stage), regenerate_index, upscaled)
-            self._save_stage(cache_dir, up_stage, upscaled)
+                upscaled = self._replace_batch_item(_load_upscaled_images(cache_dir, up_stage, pose_total), regenerate_index, upscaled)
+            self._save_upscaled_stage(cache_dir, up_stage, upscaled, unique_id)
 
         bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
         bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
@@ -3074,10 +3133,11 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 sheets_path = cached_inputs.get("sheets_path", sheets_path)
             if not regenerate_from:
                 _rotate_preview_cache(cache_dir)
+            is_qi2 = self._is_qi2_pipe(self._extract_pipe(pipe))
             _save_run_inputs(
                 cache_dir,
-                poses=self._list_to_batch(poses),
-                character=self._list_to_batch(character),
+                poses=self._image_list(poses) if is_qi2 else self._list_to_batch(poses),
+                character=character if is_qi2 else self._list_to_batch(character),
                 prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
@@ -3225,10 +3285,11 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 sheets_path = cached_inputs.get("sheets_path", sheets_path)
             if not regenerate_from:
                 _rotate_preview_cache(cache_dir)
+            is_qi2 = self._is_qi2_pipe(self._extract_pipe(pipe))
             _save_run_inputs(
                 cache_dir,
-                poses=self._list_to_batch(poses),
-                character=self._list_to_batch(character),
+                poses=self._image_list(poses) if is_qi2 else self._list_to_batch(poses),
+                character=character if is_qi2 else self._list_to_batch(character),
                 prompt=prompt if isinstance(prompt, list) else str(prompt or ""),
                 background=str(background or ""),
                 sheets_path=str(sheets_path or ""),
@@ -3241,7 +3302,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             pose_input = self._slice_batch_item(poses, regenerate_index) if regenerate_index is not None else poses
             pose_total = len(self._image_list(pose_input))
             if not self._should_regenerate_stage(order, regenerate_from, "source_upscaler"):
-                source_upscaled = self._load_cached_stage(cache_dir, "source_upscaler", unique_id, "Using cached source upscaler")
+                source_upscaled = self._load_cached_stage(cache_dir, "source_upscaler", unique_id, "Using saved source upscaler image", expected_count=source_total)
             else:
                 source_upscaled = None
             if source_upscaled is None:
@@ -3249,7 +3310,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     unique_id,
                     "source_upscaler",
                     "running",
-                    character,
+                    None,
                     f"Preparing source upscaler for {source_total} image",
                     0,
                     source_total,
@@ -3275,7 +3336,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     cache_dir=cache_dir,
                     stage="source_upscaler",
                 )
-                self._save_stage(cache_dir, "source_upscaler", source_upscaled)
+                self._save_upscaled_stage(cache_dir, "source_upscaler", source_upscaled, unique_id)
 
             if not self._should_regenerate_stage(order, regenerate_from, "pose_generation"):
                 pose_images = self._load_cached_stage(cache_dir, "pose_generation", unique_id, "Using cached pose generation")
@@ -3295,7 +3356,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 )
                 pose_images = self._run_pose_generation(
                     pose_input,
-                    source_upscaled,
+                    character if is_qi2 else source_upscaled,
                     pipe,
                     self._slice_pose_prompt(prompt, regenerate_index),
                     settings["pose_generation"],
@@ -3307,6 +3368,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     unique_id=unique_id,
                     publish_each=regenerate_index is None,
                     preview_cache_dir=cache_dir,
+                    align_image1=True,
                 )
                 if regenerate_index is not None:
                     pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
@@ -3315,13 +3377,13 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} clothed pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
 
             if not self._should_regenerate_stage(order, regenerate_from, "upscaler"):
-                upscaled = self._load_cached_stage(cache_dir, "upscaler", unique_id, "Using cached upscaler")
+                upscaled = self._load_cached_stage(cache_dir, "upscaler", unique_id, "Using saved upscaler images", expected_count=pose_total)
             else:
                 upscaled = None
             if upscaled is None:
                 upscaler_input = self._slice_batch_item(pose_images, regenerate_index) if regenerate_index is not None else pose_images
                 up_total = 1 if regenerate_index is not None else pose_total
-                self._emit(unique_id, "upscaler", "running", upscaler_input, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
+                self._emit(unique_id, "upscaler", "running", None, f"Preparing upscaler for {up_total} images", 0, up_total, cache_dir=cache_dir)
                 upscaled = self._run_upscaler(
                     upscaler_input,
                     background,
@@ -3332,8 +3394,8 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     bg_remove_settings=settings["bg_remove"],
                 )
                 if regenerate_index is not None:
-                    upscaled = self._replace_batch_item(_load_cached_tensor(cache_dir, "upscaler"), regenerate_index, upscaled)
-                self._save_stage(cache_dir, "upscaler", upscaled)
+                    upscaled = self._replace_batch_item(_load_upscaled_images(cache_dir, "upscaler", pose_total), regenerate_index, upscaled)
+                self._save_upscaled_stage(cache_dir, "upscaler", upscaled, unique_id)
 
             bg_total = upscaled.shape[0] if torch.is_tensor(upscaled) and upscaled.ndim == 4 else 0
             bg_input = self._slice_batch_item(upscaled, regenerate_index) if regenerate_index is not None else upscaled
@@ -4147,6 +4209,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             detailer_positive_text = self._detailer_positive_prompt(emotion_prompt, face_details)
         log_event("emotion_prompt", level="debug", prompt=detailer_positive_text)
         if not is_qi2:
+            log_prompts("Emotion detailer", positive=detailer_positive_text, negative=str(negative_prompt or ""))
             positive = _call_comfy_node(
                 "CLIPTextEncode", clip=pipe_values["clip"], text=detailer_positive_text,
             )[0]

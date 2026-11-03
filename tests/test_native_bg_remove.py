@@ -8,6 +8,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from PIL import Image
+import numpy as np
 from nodes import character_generator as cg
 
 
@@ -86,11 +87,20 @@ def test_bg_output_reuses_normalized_batch_and_saved_previews(tmp_path, monkeypa
         encodings.clear()
         normalizations.clear()
         active_bg = False
+        expected_stages = {stage: expected.clone() for stage in bg_stages}
         if regenerate_index is not None:
             payload.update(regenerate_from=bg_stages[-1], regenerate_index=regenerate_index)
+            up_stage = bg_stages[-1].replace("bg_remove", "upscaler")
+            with Image.open(next(root.rglob(f"{up_stage}_{regenerate_index + 1:02d}.png"))) as image:
+                restored = torch.from_numpy(np.array(image, dtype=np.float32) / 255.0)
+            if not bypass:
+                restored[..., 3] *= 0.5
+            expected_stages[bg_stages[-1]][regenerate_index] = restored
         result = node.process(images, images[:1], object(), "Pose", widget_data=json.dumps(payload),
                               sheets_path=str(sheets), unique_id="native-output")
-        assert torch.equal(result[0], expected)
+        assert torch.equal(result[0], expected_stages[bg_stages[0]])
+        if mode == "clone":
+            assert torch.equal(result[2], expected_stages[bg_stages[-1]])
         if bypass and regenerate_index is None:
             assert result[0] is images
             assert normalizations == []
@@ -102,7 +112,7 @@ def test_bg_output_reuses_normalized_batch_and_saved_previews(tmp_path, monkeypa
             final = next(event for event in reversed(events) if event["stage"] == stage and event["status"] == "done")
             assert len(final["images"]) == images.shape[0]
             cached = torch.load(next(root.rglob(f"{stage}.pt")), weights_only=True)
-            assert torch.equal(cached, expected)
+            assert torch.equal(cached, expected_stages[stage])
             if bypass:
                 assert all("images" not in event for event in events
                            if event["stage"] == stage and event["status"] == "running")

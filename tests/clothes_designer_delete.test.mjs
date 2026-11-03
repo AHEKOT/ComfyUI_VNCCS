@@ -171,6 +171,38 @@ test('deletion waits for earlier field saves and blocks conflicting controls', a
     assert.equal(h.els.btnGen.disabled, false);
 });
 
+test('a workflow starting while deletion waits for saves prevents the delete request', async () => {
+    const save = deferred();
+    const h = setup();
+    h.pendingCostumeSaves.add(save.promise);
+    h.open();
+    const deleting = h.confirm();
+    h.node._vnccsClothesWorkflowBusy = true;
+    vm.runInContext('syncCostumeEditControls()', h.context);
+    save.resolve();
+    assert.equal(await deleting, true);
+    assert.equal(h.requests.length, 0);
+    assert.equal(h.state.costume, 'Dress');
+    assert.equal(h.els.btnGen.disabled, true);
+    assert.equal(h.els.btnDel.disabled, true);
+});
+
+test('a failed deletion cannot restore enabled controls after a workflow starts', async () => {
+    const task = deferred();
+    const h = setup({ deletion: () => task.promise });
+    h.open();
+    const deleting = h.confirm();
+    await new Promise(resolve => setImmediate(resolve));
+    h.node._vnccsClothesWorkflowBusy = true;
+    vm.runInContext('syncCostumeEditControls()', h.context);
+    task.resolve({ ok: false, status: 500, json: async () => ({ error: 'Delete denied' }) });
+    await assert.rejects(deleting, /Delete denied/);
+    assert.equal(h.state.costume, 'Dress');
+    assert.equal(h.els.btnGen.disabled, true);
+    assert.equal(h.els.btnDel.disabled, true);
+    assert.equal(h.els.costSel.disabled, true);
+});
+
 test('an active preview blocks deletion before opening a confirmation', () => {
     const h = setup();
     h.els.btnGen.disabled = true;

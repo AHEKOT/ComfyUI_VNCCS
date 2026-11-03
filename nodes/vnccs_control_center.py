@@ -938,11 +938,16 @@ def _enrich_config_entries(entries, category, installed=None):
         active_ver = installed.get(key)
         _, on_disk = _find_model_on_disk(entry["local_path"])
         target_ver = entry.get("version", "")
+        if on_disk and active_ver and active_ver != target_ver:
+            active_path = _find_active_installed_local_path(entry, active_ver)
+            if active_path and active_path != entry["local_path"].replace("\\", "/"):
+                active_ver = target_ver
         if on_disk and not active_ver:
             active_ver = target_ver
         status = "missing"
         if on_disk:
-            status = "outdated" if active_ver and target_ver and active_ver != target_ver else "installed"
+            older = active_ver and target_ver and _version_sort_key(active_ver) < _version_sort_key(target_ver)
+            status = "outdated" if older else "installed"
         result.append({
             **entry,
             "status": status,
@@ -1060,6 +1065,7 @@ def _find_model_on_disk(local_path):
 
 def _entry_family_stem(local_path):
     stem = os.path.splitext(os.path.basename(str(local_path or "").replace("\\", "/")))[0]
+    stem = re.sub(r"(?<=[a-z0-9])v\d+(?:[._]\d+)*$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[-_](?:RC|V)?\d+(?:[._]\d+)*$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"[-_]V\d+[-_]\d+$", "", stem, flags=re.IGNORECASE)
     return stem.lower()
@@ -1126,7 +1132,8 @@ def _apply_active_installed_paths(config):
                 continue
             key = f"cc_{category}_{entry.get('name', '')}"
             active_version = installed.get(key)
-            if active_version and active_version != entry.get("version"):
+            if (active_version and active_version != entry.get("version")
+                    and not _find_model_on_disk(entry.get("local_path", ""))[1]):
                 active_path = _find_active_installed_local_path(entry, active_version)
                 if active_path:
                     entry = {**entry, "local_path": active_path, "version": active_version}

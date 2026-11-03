@@ -13,6 +13,103 @@ from _vnccs.nodes import character_generator as cg
 from _vnccs.nodes import clothes_designer as cd
 
 
+@pytest.mark.parametrize("kind", ["qi2", "klein9b", "minimaxh3"])
+@pytest.mark.parametrize("background,rgb", [
+    ("Green", (0.0, 1.0, 0.0)),
+    ("Blue", (0.0, 0.0, 1.0)),
+    ("White", (1.0, 1.0, 1.0)),
+])
+@pytest.mark.parametrize("publish_each", [False, True])
+def test_pose_references_use_white_for_qi2_and_selected_background_for_other_models(monkeypatch, kind, background, rgb, publish_each):
+    node = cg.VNCCS_CharacterGenerator()
+    pose = torch.zeros(1, 32, 32, 3)
+    character = torch.full((1, 32, 3, 4), 0.25)
+    character[..., 3] = torch.tensor([0.0, 0.5, 1.0])
+    original = character.clone()
+    if kind == "qi2":
+        pose = character.clone()
+    pipe = SimpleNamespace(lora_entries=[], lora_states=[])
+    values = {
+        "model": "model", "clip": "clip", "vae": "vae", "audio_vae": "audio",
+        "model_kind": kind, "seed": 1, "steps": 4, "cfg": 1.0,
+        "sampler": "euler", "scheduler": "simple",
+    }
+    monkeypatch.setattr(node, "_extract_pipe", lambda pipe: values)
+    monkeypatch.setattr(node, "_apply_pose_lora_to_model", lambda model, *args: model)
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+    references = []
+
+    class EncodingReached(Exception):
+        pass
+
+    def capture(name, **kwargs):
+        if name == "ImageScaleToTotalPixels":
+            return (kwargs["image"],)
+        if name in {"QwenImage21Cache", "KSamplerSelect", "BasicScheduler"}:
+            return ("prepared",)
+        if name == "TextEncodeQwenImage21":
+            torch.testing.assert_close(kwargs["images"]["image_1"],
+                                       original[..., :3] * original[..., 3:4] + 1.0 - original[..., 3:4])
+            references.append(kwargs["images"]["image_2"])
+        elif name == "VNCCS_Flux_Klein_Encoder":
+            references.append(kwargs["image2"])
+        elif name == "MiniMaxH3ReferenceToVideo":
+            references.append(kwargs["ref_images"]["ref_image_2"])
+        else:
+            raise AssertionError(name)
+        raise EncodingReached()
+
+    monkeypatch.setattr(cg, "_call_comfy_node", capture)
+    with pytest.raises(EncodingReached):
+        node._run_pose_generation(
+            pose, character, pipe, "Pose prompt", {}, background=background,
+            publish_each=publish_each,
+        )
+
+    assert len(references) == 1
+    expected = (
+        original[..., :3] * original[..., 3:4]
+        + torch.tensor((1.0, 1.0, 1.0) if kind == "qi2" else rgb) * (1.0 - original[..., 3:4])
+    )
+    torch.testing.assert_close(references[0], expected)
+    assert torch.equal(character, original)
+
+
+@pytest.mark.parametrize("kind,background", [("qi2", (1.0, 1.0, 1.0)), ("klein9b", (0.0, 1.0, 0.0))])
+def test_remove_clothes_prepares_white_reference_only_for_qi2(monkeypatch, kind, background):
+    node = cg.VNCCS_CharacterGenerator()
+    image = torch.full((1, 32, 3, 4), 0.25)
+    image[..., 3] = torch.tensor([0.0, 0.5, 1.0])
+    original = image.clone()
+    monkeypatch.setattr(node, "_extract_pipe", lambda _pipe: {
+        "model_kind": kind, "clip": "clip", "vae": "vae", "seed": 1, "steps": 8, "cfg": 1.0,
+        "sampler": "euler", "scheduler": "simple",
+    })
+    monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
+
+    class EncodingReached(Exception):
+        pass
+
+    def encode(name, **kwargs):
+        if name == "ImageScaleToTotalPixels":
+            return (kwargs["image"],)
+        if kind == "qi2":
+            assert name == "TextEncodeQwenImage21"
+            assert kwargs["resolution"] == 1632
+            image1 = kwargs["images"]["image_1"]
+        else:
+            assert name == "VNCCS_Flux_Klein_Encoder"
+            image1 = kwargs["image1"]
+        expected = original[..., :3] * original[..., 3:4] + torch.tensor(background) * (1.0 - original[..., 3:4])
+        torch.testing.assert_close(image1, expected)
+        raise EncodingReached()
+
+    monkeypatch.setattr(cg, "_call_comfy_node", encode)
+    with pytest.raises(EncodingReached):
+        node._run_remove_clothes(image, object(), {"prompt": "Keep the character", "target_size": 2560})
+    assert torch.equal(image, original)
+
+
 def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch):
     node = cg.VNCCS_CharacterGenerator()
     image = torch.zeros(1, 96, 64, 3)
@@ -33,7 +130,7 @@ def test_h3_body_preparation_uses_clothes_lora_and_returns_one_frame(monkeypatch
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: events.append((args, kwargs)))
     monkeypatch.setattr(node, "_apply_lora_to_model", lambda model, clip, pipe, lora, stage:
                         applied.append((lora, stage)) or clothes_model)
-    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda x: (x,))}))
+    monkeypatch.setattr(cg, "VNCCS_MaskExtractor", type("MaskExtractor", (), {"fill_alpha_with_color": staticmethod(lambda x, background_color="Green": (x,))}))
 
     def call(name, **kwargs):
         calls.append((name, kwargs))
@@ -121,6 +218,74 @@ def test_legacy_clothes_without_seed_inherits_pipe(designer_run):
     data["gen_settings"].pop("seed")
     node.process(pipe=pipe, widget_data=json.dumps(data))
     assert seeds == [77]
+
+
+def test_clothes_qi2_passes_original_target_and_donor_to_shared_encoder(designer_run, monkeypatch):
+    node, pipe, data, _ = designer_run
+    data["gen_settings"]["background_color"] = "Transparent"
+    target = torch.full((1, 32, 32, 4), 0.2)
+    target[..., 3] = 0.5
+    original = target.clone()
+    monkeypatch.setattr(node, "get_reference_sprite", lambda *args: target)
+    donor_path = cd.resolve_comfy_image_path(data["clone_image"])
+    Image.new("RGBA", (32, 32), (51, 102, 153, 128)).save(donor_path)
+    references = []
+
+    def encode(self, pipe_values, prompt, images, **kwargs):
+        references.extend(images)
+        return None, None, {}
+
+    monkeypatch.setattr(cg.VNCCS_CharacterGenerator, "_qi2_encode", encode)
+    node.process(pipe=pipe, widget_data=json.dumps(data))
+    assert references[0] is target
+    assert references[1].shape == (1, 32, 32, 4)
+    expected_donor = torch.tensor([51, 102, 153, 128]) / 255
+    torch.testing.assert_close(references[1][0, 0, 0], expected_donor)
+    assert torch.equal(target, original)
+
+
+@pytest.mark.parametrize("legacy", ["transparent_rgba", "modified_donor"])
+def test_clothes_rebuilds_preview_cached_with_old_reference_preparation(designer_run, monkeypatch, legacy):
+    node, pipe, data, seeds = designer_run
+    dumps = json.dumps
+
+    def legacy_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and "source_reference" in value:
+            value = copy.deepcopy(value)
+            if legacy == "transparent_rgba":
+                value["qi2_reference_alpha"] = "straight"
+            else:
+                value.pop("reference_preparation")
+        return dumps(value, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cd.json, "dumps", legacy_dumps)
+        node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    assert seeds == [123, 123]
+
+
+@pytest.mark.parametrize("old_latent", ["scaled_encoder", "image1_aspect", "upscaled_encoder_latent", "scale_to_total_pixels"])
+def test_clothes_rebuilds_preview_cached_with_old_latent(designer_run, monkeypatch, old_latent):
+    node, pipe, data, seeds = designer_run
+    data["gen_settings"]["target_size"] = 2560
+    dumps = json.dumps
+
+    def legacy_dumps(value, *args, **kwargs):
+        if isinstance(value, dict) and "source_reference" in value:
+            value = copy.deepcopy(value)
+            value["resolution"] = {"latent": old_latent, "target_size": 2560}
+            if old_latent != "scaled_encoder":
+                value["resolution"]["encoder"] = 1024
+        return dumps(value, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(cd.json, "dumps", legacy_dumps)
+        node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    node.process(pipe=pipe, widget_data=data)
+    assert seeds == [123, 123]
 
 
 @pytest.mark.parametrize("change", ["model", "lora_states", "custom"])

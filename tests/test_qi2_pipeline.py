@@ -19,78 +19,95 @@ def test_resolution_scale_preserves_fractional_legacy_presets():
     assert cg._resolution_scale_value(768) == 1024
 
 
-def test_qi2_system_encoder_scales_references_and_uses_separate_empty_latent(monkeypatch):
+@pytest.mark.parametrize("shape", [(97, 65), (65, 97), (3840, 1590)])
+@pytest.mark.parametrize("channels", [3, 4])
+@pytest.mark.parametrize("batched", [False, True])
+def test_qi2_encoder_only_flattens_alpha_and_builds_a_separate_latent(monkeypatch, shape, channels, batched):
     calls = []
-    encoder_latent = object()
-    sampler_latent = object()
-    scaled_pose = torch.zeros(1, 836, 1254, 3)
+    sampling_latent = object()
+    source = torch.full((*shape, channels), 0.25)
+    donor = torch.full((73, 151, channels), 0.5)
+    if channels == 4:
+        source[..., 3] = torch.linspace(0, 1, shape[1])
+    if batched:
+        source, donor = source.unsqueeze(0), donor.unsqueeze(0)
+    originals = [image.clone() for image in (source, donor)]
 
-    def fake_node(name, **kwargs):
+    def call(name, **kwargs):
         calls.append((name, kwargs))
         if name == "ImageScaleToTotalPixels":
-            return (scaled_pose,)
+            return (torch.empty(1, 53, 71, 3),)
         if name == "TextEncodeQwenImage21":
-            return ("positive", "negative", encoder_latent)
-        if name == "EmptyLatentImage":
-            return (sampler_latent,)
-        raise AssertionError(name)
+            return "positive", "negative", object()
+        assert name == "EmptyLatentImage"
+        return (sampling_latent,)
 
-    monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
-    generator = cg.VNCCS_CharacterGenerator()
-    pose = torch.zeros(1, 512, 768, 3)
-    character = torch.zeros(1, 1024, 1024, 3)
-    positive, negative, latent = generator._qi2_encode(
-        {"clip": "clip", "vae": "vae"}, "pose prompt", (pose, character), target_size=1024,
+    monkeypatch.setattr(cg, "_call_comfy_node", call)
+    result = cg.VNCCS_CharacterGenerator()._qi2_encode(
+        {"clip": "clip", "vae": "vae"}, "outfit prompt", (source, None, donor),
+        target_size=2048, negative_prompt="negative",
     )
+    assert result == ("positive", "negative", sampling_latent)
+    assert [name for name, _ in calls] == ["ImageScaleToTotalPixels", "TextEncodeQwenImage21", "EmptyLatentImage"]
+    sizing, encoder, empty = (kwargs for _, kwargs in calls)
+    assert (sizing["upscale_method"], sizing["megapixels"], sizing["resolution_steps"]) == ("nearest-exact", 2.0, 1)
+    expected_image = encoder["images"]["image_1"]
+    torch.testing.assert_close(sizing["image"], expected_image if batched else expected_image.unsqueeze(0))
+    assert empty == {"width": 71, "height": 53, "batch_size": 1}
+    assert encoder["resolution"] == 1440
+    assert encoder["negative_prompt"] == "negative"
+    assert set(encoder["images"]) == {"image_1", "image_3"}
+    for key, image, original in zip(("image_1", "image_3"), (source, donor), originals):
+        reference = encoder["images"][key]
+        assert reference.shape == (*image.shape[:-1], 3)
+        if channels == 3:
+            assert reference is image
+        else:
+            torch.testing.assert_close(reference, image[..., :3] * image[..., 3:4] + (1 - image[..., 3:4]))
+        assert torch.equal(image, original)
 
-    assert (positive, negative, latent) == ("positive", "negative", sampler_latent)
-    assert [name for name, _ in calls] == [
-        "ImageScaleToTotalPixels", "TextEncodeQwenImage21", "EmptyLatentImage",
-    ]
-    scale = calls[0][1]
-    assert scale == {
-        "image": pose,
-        "upscale_method": "lanczos",
-        "megapixels": 1.0,
-        "resolution_steps": 1,
-    }
-    encode = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
-    assert encode["images"]["image_1"] is scaled_pose
-    assert encode["images"]["image_2"] is character
-    assert encode["resolution"] == 1024
-    assert encode["negative_prompt"] == ""
-    empty = next(kwargs for name, kwargs in calls if name == "EmptyLatentImage")
-    assert empty == {"width": 1254, "height": 836, "batch_size": 1}
 
-
-def test_qi2_2048_setting_means_two_megapixels_not_2048_squared(monkeypatch):
-    calls = []
-    scaled_pose = torch.zeros(1, 2243, 935, 1)
-
-    def fake_node(name, **kwargs):
-        calls.append((name, kwargs))
+@pytest.mark.parametrize("target_size,megapixels,resolution", [
+    (1024, 1.0, 1024), (1229, 1.2, 1120), (1280, 1.3, 1152), (1344, 1.3, 1152),
+    (1536, 1.5, 1248), (2048, 2.0, 1440), (2560, 2.5, 1632), (3072, 3.0, 1760), (4096, 4.0, 2048),
+])
+@pytest.mark.parametrize("donor_shape", [(1, 16, 4096, 3), (1, 4096, 16, 3)])
+def test_qi2_scale_controls_canvas_and_encoder(monkeypatch, target_size, megapixels, resolution, donor_shape):
+    image = torch.tensor([[[[-0.1, 1.1, 0.5]]]], dtype=torch.float64).expand(1, 1024, 512, 3)
+    donor = torch.zeros(donor_shape)
+    latent = object()
+    def call(name, **kwargs):
         if name == "ImageScaleToTotalPixels":
-            return (scaled_pose,)
-        if name == "TextEncodeQwenImage21":
-            return ("positive", "negative", "encoder latent")
+            assert kwargs["image"] is image
+            assert kwargs["megapixels"] == megapixels
+            assert kwargs["upscale_method"] == "nearest-exact" and kwargs["resolution_steps"] == 1
+            return (torch.empty(1, 127, 63, 3),)
         if name == "EmptyLatentImage":
-            return ("empty latent",)
-        raise AssertionError(name)
-
-    monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
-    pose = torch.zeros(1, 1536, 640, 3)
-    character = torch.zeros(1, 1536, 640, 3)
-
-    cg.VNCCS_CharacterGenerator()._qi2_encode(
-        {"clip": "clip", "vae": "vae"}, "pose prompt", (pose, character), target_size=2048,
+            assert kwargs == {"width": 63, "height": 127, "batch_size": 1}
+            return (latent,)
+        assert name == "TextEncodeQwenImage21"
+        assert kwargs["resolution"] == resolution
+        assert kwargs["images"]["image_1"] is image
+        assert kwargs["images"]["image_2"] is donor
+        return "positive", "negative", object()
+    monkeypatch.setattr(cg, "_call_comfy_node", call)
+    result = cg.VNCCS_CharacterGenerator()._encoder_call(
+        {"model_kind": "qi2", "clip": "clip", "vae": "vae"}, "prompt", image1=image, image2=donor,
+        qwen_settings={"target_size": target_size, "crop_method": "center", "upscale_method": "lanczos"},
     )
+    assert result[2] is latent
 
-    assert calls[0][0] == "ImageScaleToTotalPixels"
-    assert calls[0][1]["megapixels"] == 2.0
-    encoder = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
-    assert encoder["resolution"] == 1024
-    empty = next(kwargs for name, kwargs in calls if name == "EmptyLatentImage")
-    assert empty == {"width": 935, "height": 2243, "batch_size": 1}
+
+@pytest.mark.parametrize("with_donor", [False, True])
+def test_qi2_reference_generation_requires_image1(with_donor):
+    images = (None, torch.zeros(1, 32, 64, 3)) if with_donor else ()
+    with pytest.raises(ValueError, match="requires image_1"):
+        cg.VNCCS_CharacterGenerator()._qi2_encode({"clip": "clip", "vae": "vae"}, "prompt", images)
+
+
+def test_qi2_rejects_empty_reference_before_scaling():
+    with pytest.raises(ValueError, match="non-empty image"):
+        cg.VNCCS_CharacterGenerator()._qi2_encode({}, "prompt", (torch.empty(1, 0, 32, 3),))
 
 
 def test_viggle_turbo_uses_native_lora_cache_and_latent_dependent_sigmas(monkeypatch):
@@ -191,7 +208,8 @@ def test_qi2_emotion_crop_alignment_is_square_symmetric_and_reversible():
 
 @pytest.mark.parametrize("bbox_settings", [{}, {"bbox_dilation": 10, "feather": 5},
                                          {"bbox_dilation": 0, "feather": 0}])
-def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch, bbox_settings):
+@pytest.mark.parametrize("target_size,mp,resolution", [(2048, 2.0, 1440), (2560, 2.5, 1632)])
+def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch, bbox_settings, target_size, mp, resolution):
     calls = []
     dilation = bbox_settings.get("bbox_dilation", 50)
     feather = bbox_settings.get("feather", 50)
@@ -245,7 +263,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
     full_image, generated_crop, detailer_mask = Generator()._run_emotion_generation_one(
         image, mask, object(), "warm happy smile", "ignored face tags", "", 42,
-        detailer_settings={"face_denoise": 0.25, "target_size": 2048, **bbox_settings},
+        detailer_settings={"face_denoise": 0.25, "target_size": target_size, **bbox_settings},
         bg_remove_settings={"preset": "Native"},
     )
 
@@ -255,7 +273,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
         "TextEncodeQwenImage21", "EmptyLatentImage", "QwenImage21Cache", "KSampler", "VAEDecode",
     ]
     scale = next(kwargs for name, kwargs in calls if name == "ImageScaleToTotalPixels")
-    assert scale["megapixels"] == 2.0
+    assert scale["megapixels"] == mp
     cache = next(kwargs for name, kwargs in calls if name == "QwenImage21Cache")
     assert (cache["device"], cache["dtype"]) == ("cpu", "int4")
     encoder = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
@@ -266,7 +284,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
         "keep character's clothes\n"
         "Transparent background with alpha channel."
     )
-    assert encoder["resolution"] == 1024
+    assert encoder["resolution"] == resolution
     aligned_side = ((100 + 2 * dilation + 31) // 32) * 32
     assert encoder["images"]["image_1"].shape == (1, aligned_side, aligned_side, 4)
     assert torch.allclose(
@@ -355,10 +373,21 @@ def test_qi2_decode_uses_standard_vae_decode(monkeypatch):
 
 @pytest.mark.parametrize("native", [False, True])
 @pytest.mark.parametrize("publish_each", [False, True])
-def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch, native, publish_each):
+@pytest.mark.parametrize("align_image1", [False, True])
+@pytest.mark.parametrize("pose_prompt,pose_settings,mp,encoder_resolution", [
+    ("pose prompt", {"target_size": 1024}, 1.0, 1024),
+    ("", {"target_size": 2048, "resolution": 1024}, 2.0, 1440),
+    ("pose prompt", {"target_size": 2560, "resolution": 1024}, 2.5, 1632),
+    ("pose prompt", {"target_size": 3072, "resolution": 0}, 3.0, 1760),
+    ("", {"target_size": 4096, "override_resolution": False, "resolution": 1536}, 4.0, 2048),
+    ("pose prompt", {"target_size": 1280}, 1.3, 1152),
+    ("", {"target_size": 2048, "override_resolution": True, "resolution": 0}, 2.0, 0),
+    ("pose prompt", {"target_size": 2048, "override_resolution": True, "resolution": 1536}, 2.0, 1536),
+])
+def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatch, native, publish_each, align_image1, pose_prompt, pose_settings, mp, encoder_resolution):
     calls = []
     pose = torch.zeros(1, 640, 384, 3)
-    character = torch.ones(1, 640, 384, 4)
+    character = torch.full((1, 736, 512, 4), 0.4)
     character[..., 3] = 0.25
     decoded = torch.full((1, 640, 384, 4), 0.5)
 
@@ -378,9 +407,9 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
     def fake_node(name, **kwargs):
         calls.append((name, kwargs))
         outputs = {
-            "ImageScaleToTotalPixels": (kwargs.get("image"),),
+            "ImageScaleToTotalPixels": (pose,),
             "TextEncodeQwenImage21": ("positive", "negative", "encoder latent"),
-            "EmptyLatentImage": ("empty latent",),
+            "EmptyLatentImage": ("sampling latent",),
             "QwenImage21Cache": ("cached model",),
             "KSampler": ("sampled latent",),
             "VAEDecode": (decoded,),
@@ -391,9 +420,10 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
 
     result = Generator()._run_pose_generation(
-        pose, character, pipe, "pose prompt", {"target_size": 1024},
+        pose, character, pipe, pose_prompt, pose_settings,
         bg_remove_settings={"preset": "Native" if native else "balanced"},
         publish_each=publish_each,
+        align_image1=align_image1,
     )
 
     assert torch.equal(result, decoded)
@@ -405,14 +435,28 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
         "KSampler",
         "VAEDecode",
     ]
-    encoder = calls[2][1]
-    assert encoder["resolution"] == 1024
+    torch.testing.assert_close(dict(calls)["ImageScaleToTotalPixels"]["image"], pose)
+    assert dict(calls)["ImageScaleToTotalPixels"]["megapixels"] == mp
+    encoder = dict(calls)["TextEncodeQwenImage21"]
+    assert encoder["resolution"] == encoder_resolution
     assert torch.equal(encoder["images"]["image_1"], pose)
-    assert torch.equal(encoder["images"]["image_2"], character)
-    if native:
-        assert encoder["prompt"].endswith(cg.NATIVE_BACKGROUND_PROMPT)
-        assert "green" not in encoder["prompt"].lower()
-    else:
-        assert encoder["prompt"].endswith("Change background to solid Green color")
-    assert calls[1][1]["megapixels"] == 1.0
+    expected_character = character[..., :3] * character[..., 3:4] + (1.0 - character[..., 3:4])
+    torch.testing.assert_close(encoder["images"]["image_2"], expected_character)
+    assert dict(calls)["KSampler"]["latent_image"] == "sampling latent"
+    assert dict(calls)["KSampler"]["seed"] == 7
+    background_prompt = cg.NATIVE_BACKGROUND_PROMPT if native else "Change background to solid Green color"
+    assert encoder["prompt"] == (f"{pose_prompt}, {background_prompt}" if pose_prompt else background_prompt)
     assert calls[-1][1] == {"samples": "sampled latent", "vae": "vae"}
+
+
+def test_qi2_regeneration_preserves_individual_reference_sizes_and_pixels(monkeypatch, tmp_path):
+    cache = str(tmp_path / "cache")
+    monkeypatch.setattr(cg, "_safe_cache_dir", lambda path: path)
+    monkeypatch.setattr(cg, "_safe_torch_load_tensor", lambda path: torch.load(path, weights_only=True))
+    images = [torch.rand(1, 97, 65, 3), torch.rand(1, 72, 151, 4)]
+    assert cg._save_run_inputs(cache, poses=images, prompt=["front", "back"])
+    restored = cg._load_run_inputs(cache)
+    assert restored["prompt"] == ["front", "back"]
+    for index, image in enumerate(images):
+        result = cg.VNCCS_CharacterGenerator()._slice_batch_item(restored["poses"], index)
+        assert torch.equal(result, image)

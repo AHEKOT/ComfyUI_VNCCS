@@ -21,6 +21,8 @@ const DEFAULT_DATA = {
     },
     pose_generation: {
         target_size: 1024,
+        override_resolution: false,
+        resolution: 1024,
         upscale_method: "lanczos",
         crop_method: "disabled",
         image1_name: "image 1",
@@ -1789,6 +1791,11 @@ class CharacterGeneratorWidget {
                 fields: isQI2 ? [
                     resolutionScale(poseTargetSection),
                     select("pose_generation", "background_color", "background_color", ["from_generator", "White", "Green", "Blue"]),
+                    number("pose_generation", "resolution", "resolution", 0, 4096, 32, {
+                        snapToStep: true,
+                        help: "Follows resolution scale unless overridden. A manual value of 0 keeps each reference's dimensions rounded to multiples of 32.",
+                    }),
+                    check("pose_generation", "override_resolution", "Override encoder resolution"),
                 ] : [
                     resolutionScale(poseTargetSection),
                     select("pose_generation", "upscale_method", "upscale_method", ["lanczos", "bicubic", "area"]),
@@ -2091,7 +2098,8 @@ class CharacterGeneratorWidget {
                 const text = String(input.value).trim().replace(",", ".");
                 const value = Number(text);
                 if (!text || !Number.isFinite(value) || (field.step >= 1 && !Number.isInteger(value))) return;
-                draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, value));
+                const stepped = field.snapToStep ? Math.round(value / field.step) * field.step : value;
+                draft[field.section][field.key] = Math.max(field.min, Math.min(field.max, stepped));
             };
             if (field.type === "number") {
                 input.onblur = () => { input.value = String(draft[field.section][field.key] ?? ""); };
@@ -2100,6 +2108,7 @@ class CharacterGeneratorWidget {
         }
         input.dataset.focusKey = `advanced-${field.section}-${field.key}`;
         input.ariaLabel = field.label;
+        if (field.help) setHelpText(wrap, field.help);
         this.protectNativeControl(input);
         return wrap;
     }
@@ -2137,6 +2146,19 @@ class CharacterGeneratorWidget {
                 fields.className = "vnccs-pipe-settings-group-fields";
                 for (const field of group.fields) {
                     fields.appendChild(this.createGeneratorSettingsField(field, draft));
+                }
+                if (group.fields.some(field => field.key === "override_resolution")) {
+                    const scale = fields.querySelector(`[data-focus-key="advanced-${this.isClone ? "common" : "pose_generation"}-target_size"]`);
+                    const override = fields.querySelector('[data-focus-key="advanced-pose_generation-override_resolution"]');
+                    const resolution = fields.querySelector('[data-focus-key="advanced-pose_generation-resolution"]');
+                    const syncResolution = () => {
+                        resolution.disabled = !override.checked;
+                        resolution.value = override.checked ? draft.pose_generation.resolution
+                            : 32 * Math.round(32 * Math.sqrt(Number(scale.value)));
+                    };
+                    scale.addEventListener("input", syncResolution);
+                    override.addEventListener("change", syncResolution);
+                    syncResolution();
                 }
                 if (group.note) {
                     const note = document.createElement("div");

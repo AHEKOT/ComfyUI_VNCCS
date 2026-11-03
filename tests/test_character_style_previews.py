@@ -41,7 +41,7 @@ def test_real_preview_path_samples_a_square_at_selected_scale_and_writes_only_we
     monkeypatch.setattr(creator, "create_generation_latent", lambda model, width, height, settings: dimensions.append((width, height)) or "latent")
     sampled = []
     def sample(**kwargs):
-        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        assert not hasattr(prompt_server, "last_prompt_id")
         sampled.append(kwargs)
         return "sampled"
     monkeypatch.setattr(creator, "sample_generation_latent", sample)

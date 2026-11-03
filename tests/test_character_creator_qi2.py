@@ -167,7 +167,9 @@ def test_builtin_qi2_turbo_defaults_use_base_sampler_and_preserve_user_parameter
     assert (custom["steps"], custom["cfg"]) == (10, 1.5)
 
 
-def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch):
+@pytest.mark.parametrize("cfg", [1.0, 3.0])
+@pytest.mark.parametrize("target_size,resolution", [(2048, 1440), (2560, 1632)])
+def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch, cfg, target_size, resolution):
     calls = []
 
     def fake_node(name, **kwargs):
@@ -184,7 +186,7 @@ def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeyp
         "vae",
         "anime character prompt",
         "negative prompt",
-        {"generation_mode": "qi2"},
+        {"generation_mode": "qi2", "target_size": target_size, "cfg": cfg},
     )
 
     assert (positive, negative, rewritten) == (
@@ -215,7 +217,7 @@ def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeyp
     encoder = calls[1][1]
     assert encoder["prompt"] == "A rewritten character portrait."
     assert encoder["negative_prompt"] == "negative prompt"
-    assert encoder["resolution"] == 1024
+    assert encoder["resolution"] == resolution
     assert encoder["images"] == {}
 
 
@@ -228,13 +230,17 @@ def test_qi2_prompt_rewriter_has_builtin_fallback(monkeypatch):
     assert '"fields"' in prompt
 
 
-def test_generate_text_initializes_preview_progress_context(monkeypatch):
+@pytest.mark.parametrize("prompt_id", [None, "queued-workflow"])
+def test_generate_text_preserves_workflow_progress_context(monkeypatch, prompt_id):
     prompt_server = creator.server.PromptServer.instance
-    monkeypatch.delattr(prompt_server, "last_prompt_id", raising=False)
+    if prompt_id is None:
+        monkeypatch.delattr(prompt_server, "last_prompt_id", raising=False)
+    else:
+        monkeypatch.setattr(prompt_server, "last_prompt_id", prompt_id, raising=False)
 
     def fake_node(name, **_kwargs):
         assert name == "TextGenerate"
-        assert prompt_server.last_prompt_id == "vnccs_character_creator_v2"
+        assert getattr(prompt_server, "last_prompt_id", None) == prompt_id
         return (json.dumps({"rewritten_prompt": "Character portrait."}),)
 
     monkeypatch.setattr(generator, "_call_comfy_node", fake_node)
@@ -369,12 +375,15 @@ def test_empty_custom_style_does_not_create_an_empty_reference_block(monkeypatch
 
 
 @pytest.mark.parametrize("mode", ["illustrious", "anima"])
-def test_non_qi2_conditioning_keeps_direct_style_prompt(monkeypatch, mode):
+def test_non_qi2_conditioning_keeps_direct_style_prompt(monkeypatch, caplog, mode):
     info = {"style": "fortiche_arcane", "age": 30, "eyes": "blue eyes"}
     positive, negative = creator.CharacterCreatorV2.construct_prompt(info, mode)
     encoded = []
 
     def encode(_clip, text, _settings):
+        record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
+        assert record.vnccs["positive"] == positive and record.vnccs["negative"] == negative
+        assert text in record.getMessage()
         encoded.append(text)
         return text
 

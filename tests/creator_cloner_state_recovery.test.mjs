@@ -101,7 +101,7 @@ for (const phase of ['restored_reference', 'restored_preview', 'pending_metadata
                 state.source_images.push(reference);
                 context.render();
             }
-            loaders[0]?.onload?.();
+            for (const loader of [...loaders]) loader.onload?.();
         }
         if (phase === 'no_reference' || phase === 'restored_preview') {
             assert.match(image.src, /get_character_pose_preview/);

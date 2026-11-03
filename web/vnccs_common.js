@@ -2,7 +2,7 @@
  * VNCCS Common Utilities — shared patterns for all VNCCS widgets.
  * Import: import { debounce, showModal, ... } from "./vnccs_common.js";
  */
-import { vnccsApi as api, mediaURL, storage, serverRegistry } from "./vnccs_transport.js";
+import { vnccsApi as api, mediaURL, storage, serverRegistry, cacheIdentity } from "./vnccs_transport.js";
 import { app } from "../../scripts/app.js";
 import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 
@@ -663,6 +663,41 @@ export function createTraitInput({ prefix, label: lbl, key, target: targetObj, s
     return { element: wrap, input: inp, display: values };
 }
 
+const wizardRequests = new Map();
+const wizardOwners = new WeakSet();
+const wizardStageLabels = { queued: "WAITING...", running: "THINKING...", done: "APPLYING...", error: "FAILED" };
+// Register once, including when a different tab starts the wizard.
+api.addEventListener("vnccs.wizard.stage", event => {
+    const data = event.detail;
+    const request = wizardRequests.get(data?.request_id);
+    const label = wizardStageLabels[data?.status];
+    if (request && String(data.node_id) === String(request.node.id) && request.isCurrent() && typeof label === "string") {
+        request.onStage(label);
+    }
+});
+
+export async function requestWizard(node, route, payload, isCurrent, onStage) {
+    if (!wizardOwners.has(node)) {
+        wizardOwners.add(node);
+        registerCleanup(node, () => {
+            for (const [id, request] of wizardRequests) {
+                if (request.node === node) wizardRequests.delete(id);
+            }
+        });
+    }
+    const request_id = cacheIdentity();
+    wizardRequests.set(request_id, { node, isCurrent, onStage });
+    try {
+        return await api.fetchApi(route, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ...payload, node_id: node.id, request_id }),
+        });
+    } finally {
+        wizardRequests.delete(request_id);
+    }
+}
+
 // ── Debounce ──────────────────────────────────────────────────────────────────
 export function debounce(fn, delay = 300) {
     let timer;
@@ -760,8 +795,13 @@ export function createSpritePreviewNavigator({
         requestId: 0,
     };
     let disposed = false;
+    let cancelImageLoad = () => {};
     const isCurrent = (requestId) => !disposed && requestId === state.requestId && isSelectionCurrent(state);
-    const invalidate = () => { state.requestId += 1; };
+    const invalidate = () => {
+        state.requestId += 1;
+        cancelImageLoad();
+        setLoading(false);
+    };
     if (node) registerCleanup(node, () => { disposed = true; invalidate(); });
 
     const setLoading = (value) => {
@@ -803,14 +843,38 @@ export function createSpritePreviewNavigator({
         onLoaded?.(url, { ...state });
     };
 
-    const applyMissing = () => {
-        if (image && interactions) interactions.emptyPreview(image, placeholder, state.character, "No preview available");
+    const applyMissing = (message = "No preview available") => {
+        setLoading(false);
+        if (image && interactions) interactions.emptyPreview(image, placeholder, state.character, message);
         else {
             if (image) image.style.display = "none";
             if (placeholder) placeholder.style.display = "flex";
         }
         hideNav();
         onMissing?.({ ...state });
+    };
+
+    const loadImage = (url, requestId, onLoad, onFailure) => {
+        const loader = new Image();
+        let settled = false;
+        const finish = (callback) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (isCurrent(requestId)) callback();
+        };
+        const timeout = setTimeout(() => {
+            finish(onFailure);
+            loader.src = "";
+        }, 30000);
+        cancelImageLoad = () => {
+            settled = true;
+            clearTimeout(timeout);
+            loader.src = "";
+        };
+        loader.onload = () => finish(onLoad);
+        loader.onerror = () => finish(onFailure);
+        loader.src = url;
     };
 
     const prefetch = (index) => {
@@ -823,6 +887,7 @@ export function createSpritePreviewNavigator({
     const showFallback = (url, { character = state.character, costume = state.costume } = {}) => {
         url = mediaURL(url);
         if (disposed || !isSelectionCurrent({ ...state, character, costume })) return;
+        invalidate();
         state.character = character;
         state.costume = costume;
         const requestId = state.requestId + 1;
@@ -833,23 +898,19 @@ export function createSpritePreviewNavigator({
         }
         hideNav();
         setLoading(true);
-        const loader = new Image();
-        loader.onerror = () => {
-            if (!isCurrent(requestId)) return;
-            setLoading(false);
-            applyMissing();
-        };
-        loader.onload = () => {
-            if (!isCurrent(requestId)) return;
+        loadImage(url, requestId, () => {
             setLoading(false);
             applyImage(url);
-        };
-        loader.src = url;
+        }, () => {
+            applyMissing("Preview unavailable. Select again to retry.");
+            onError?.({ ...state });
+        });
     };
 
     const show = (index) => {
         if (disposed || !isSelectionCurrent(state)) return;
         if (!state.character || state.count <= 0) return;
+        invalidate();
         const normalized = ((Number(index || 0) % state.count) + state.count) % state.count;
         const requestId = state.requestId + 1;
         const url = spriteUrl(state.character, normalized, state.costume);
@@ -858,26 +919,21 @@ export function createSpritePreviewNavigator({
         setLoading(true);
         updateNav();
 
-        const loader = new Image();
-        loader.onerror = () => {
-            if (!isCurrent(requestId)) return;
-            setLoading(false);
-            showFallback(state.fallbackUrl);
-            onError?.({ ...state });
-        };
-        loader.onload = () => {
-            if (!isCurrent(requestId)) return;
+        loadImage(url, requestId, () => {
             setLoading(false);
             applyImage(url);
             updateNav();
             prefetch(normalized - 1);
             prefetch(normalized + 1);
-        };
-        loader.src = url;
+        }, () => {
+            showFallback(state.fallbackUrl);
+            onError?.({ ...state });
+        });
     };
 
     const load = async (character, { costume = "", index, fallbackUrl = "" } = {}) => {
         if (disposed) return;
+        invalidate();
         const sameSelection = character === state.character && costume === state.costume;
         const currentIndex = sameSelection ? state.index : 0;
         if (interactions && !sameSelection) {
@@ -887,9 +943,6 @@ export function createSpritePreviewNavigator({
         state.costume = costume || "";
         state.fallbackUrl = mediaURL(fallbackUrl || "");
         state.cacheBust = `${state.character}:${state.costume}:${Date.now()}`;
-        const loadRequestId = state.requestId + 1;
-        state.requestId = loadRequestId;
-
         if (!state.character) {
             setLoading(false);
             applyMissing();
@@ -897,6 +950,10 @@ export function createSpritePreviewNavigator({
         }
 
         setLoading(true);
+        // Display the image independently of the optional navigation count, including retries.
+        const loadingFallback = !!state.fallbackUrl;
+        if (loadingFallback) showFallback(state.fallbackUrl);
+        const loadRequestId = state.requestId;
         try {
             const params = new URLSearchParams({ character: state.character, t: String(Date.now()) });
             if (state.costume) params.set("costume", state.costume);
@@ -906,16 +963,14 @@ export function createSpritePreviewNavigator({
             if (!isCurrent(loadRequestId)) return;
             state.count = Number(meta.count || 0);
             if (state.count <= 0) {
-                setLoading(false);
-                showFallback(state.fallbackUrl);
+                if (!loadingFallback) showFallback(state.fallbackUrl);
                 return;
             }
             show(index ?? currentIndex);
         } catch (error) {
             if (!isCurrent(loadRequestId)) return;
             console.warn("[VNCCS] Failed to load sprite preview metadata:", error);
-            setLoading(false);
-            showFallback(state.fallbackUrl);
+            if (!loadingFallback) showFallback(state.fallbackUrl);
             onError?.({ ...state, error });
         }
     };

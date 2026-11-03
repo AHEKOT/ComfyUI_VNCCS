@@ -2,6 +2,7 @@
 
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -119,6 +120,22 @@ def test_no_images_skips_every_reference_processing_block(monkeypatch):
     ]
 
 
+def test_full_prompt_is_logged_before_encoder_failure(monkeypatch, caplog):
+    prompt = "A tailored winter coat\n" + "fine wool texture " * 300
+
+    def fail(name, **kwargs):
+        assert name == "CLIPTextEncode" and kwargs["text"] == prompt
+        record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
+        assert record.vnccs["positive"] == prompt
+        assert prompt in record.getMessage()
+        assert "negative" not in record.vnccs
+        raise RuntimeError("encoder failed")
+
+    monkeypatch.setattr(encoder_module, "_call_comfy_node", fail)
+    with pytest.raises(RuntimeError, match="encoder failed"):
+        VNCCS_Flux_Klein_Encoder().encode("clip", prompt, "vae")
+
+
 @pytest.mark.parametrize("image_key", ["image1", "image2", "image3"])
 def test_sparse_image_inputs_only_run_their_own_blocks(monkeypatch, image_key):
     calls = _install_fake_nodes(monkeypatch)
@@ -182,3 +199,43 @@ def test_three_images_chain_reference_conditioning_in_input_order(monkeypatch):
     assert "GetImageSize" not in [name for name, _ in calls]
     latent_call = next(kwargs for name, kwargs in calls if name == "EmptyFlux2LatentImage")
     assert (latent_call["width"], latent_call["height"]) == (768, 1152)
+
+
+@pytest.mark.parametrize("height,width", [(836, 1254), (2243, 935), (1152, 768)])
+def test_clothes_alignment_applies_after_scaling_image1_only(monkeypatch, height, width):
+    calls = []
+    image1 = object()
+    image2 = SimpleNamespace(shape=(1, 677, 999, 4))
+    image3 = SimpleNamespace(shape=(1, 90, 270, 3))
+    scaled1 = SimpleNamespace(shape=(1, height, width, 3))
+
+    def call(name, **kwargs):
+        calls.append((name, kwargs))
+        if name == "ImageScaleToTotalPixels":
+            assert kwargs["image"] is image1
+            assert kwargs["megapixels"] == 1.5
+            return (scaled1,)
+        if name == "ImageScale":
+            assert kwargs["image"] is scaled1
+            assert kwargs["crop"] == "disabled"
+            return (SimpleNamespace(shape=(1, kwargs["height"], kwargs["width"], 3)),)
+        return (name,)
+
+    monkeypatch.setattr(encoder_module, "_call_comfy_node", call)
+    VNCCS_Flux_Klein_Encoder().encode(
+        "clip", "prompt", "vae", image1, image2, image3, megapixels=1.5, align_image1=True,
+    )
+    pixels = [kwargs["pixels"] for name, kwargs in calls if name == "VAEEncode"]
+    assert pixels[0].shape == (1, height // 32 * 32, width // 32 * 32, 3)
+    assert pixels[1] is image2
+    assert pixels[2] is image3
+    assert dict(calls)["EmptyFlux2LatentImage"] == {
+        "width": width // 32 * 32, "height": height // 32 * 32, "batch_size": 1,
+    }
+    assert sum(name == "ImageScale" for name, _ in calls) == int(width % 32 != 0 or height % 32 != 0)
+    assert sum(name == "ImageScaleToTotalPixels" for name, _ in calls) == 1
+
+
+def test_alignment_rejects_a_zero_sized_result():
+    with pytest.raises(ValueError, match="at least 32 pixels"):
+        encoder_module._image_dimensions(SimpleNamespace(shape=(1, 31, 64, 3)), multiple=32)
