@@ -164,16 +164,21 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
         for group in groups:
             if group == "breast_size" and (info["sex"] != "female" or info["age"] < 18):
                 continue
-            options = [item["tag"] for item in tags[group]]
+            options = [item["tag"] for item in tags.get(group, [])]
+            if not options:
+                continue
             # Identity groups have one choice; decorative details can form a set.
             count = random.randint(1, min(3, len(options))) if group in {"details", "face_details", "eye_features"} else 1
             selected.extend(random.sample(options, count))
-        info[field] = ", ".join(selected)
+        if selected:
+            info[field] = ", ".join(selected)
     styles = [style for group in CHARACTER_STYLE_CATALOG["groups"] for style in group["styles"]]
     if mode == "anima" and anima_style_override:
         artist = random.choice(_ANIMA_ARTISTS) if randomize.get("style", True) else _ANIMA_ARTISTS[0]
         info.update(style="custom", custom_style=f"@{artist}")
         style_id = "artist_" + re.sub(r"[^a-z0-9]+", "_", artist.lower()).strip("_")
+    elif not styles:
+        info["style"] = style_id = "none"
     else:
         style = random.choice(styles) if randomize.get("style", True) else next(
             style for style in styles if style["id"] == CHARACTER_STYLE_CATALOG["default_style"]
@@ -185,7 +190,7 @@ def _random_character_info(mode, background, age_min, age_max, anima_style_overr
 def _set_observed_breast_size(info, size):
     """Replace provisional size tags inside body, retaining other body traits."""
     size_tags = {
-        item["tag"] for item in CHARACTER_PRESETS["tags"]["breast_size"]
+        item["tag"] for item in CHARACTER_PRESETS["tags"].get("breast_size", [])
         if item["tag"] != "mole_on_breast"
     }
     body = [tag.strip() for tag in info["body"].split(",") if tag.strip()]

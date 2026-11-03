@@ -13,6 +13,8 @@ import queue
 import threading
 import time
 import inspect
+import asyncio
+import sys
 import re
 import platform
 import tempfile
@@ -2455,6 +2457,31 @@ async def vnccs_manager_enable_personal_cloud(request):
         return web.json_response({"error": str(exc)}, status=409)
     except Exception as exc:
         return web.json_response({"error": str(exc)}, status=500)
+
+
+@server.PromptServer.instance.routes.get("/vnccs/module_versions/{package}")
+async def vnccs_module_versions(request):
+    package = request.match_info["package"]
+    if package not in {"vnccs", "vnccs-utils"}:
+        return web.json_response({"error": "Unknown module"}, status=404)
+    try:
+        manager = sys.modules.get("comfyui_manager.common.manager_util") or sys.modules.get("manager_util")
+        if manager is None or _get_manager_install_policy()["network_mode"] not in {"public", "personal_cloud"}:
+            return web.json_response({"error": "Registry lookup unavailable"}, status=503)
+        # Manager's version picker can omit releases that are still under review.
+        versions = await asyncio.wait_for(manager.get_data(
+            f"https://api.comfy.org/nodes/{package}/versions", silent=True,
+        ), timeout=7)
+        if not isinstance(versions, list):
+            raise ValueError("Invalid Registry version list")
+        return web.json_response([
+            {"version": item.get("version")}
+            for item in versions if isinstance(item, dict) and not item.get("deprecated")
+            and isinstance(item.get("downloadUrl"), str) and item["downloadUrl"].strip()
+        ])
+    except Exception as exc:
+        log_event("warning", component="ControlCenter", level="warning", message=f"Registry lookup failed for {package}: {exc}")
+        return web.json_response({"error": "Registry lookup unavailable"}, status=503)
 
 
 @server.PromptServer.instance.routes.get("/vnccs/module_status")

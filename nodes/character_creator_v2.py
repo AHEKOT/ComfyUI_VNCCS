@@ -281,6 +281,9 @@ def _load_character_style_catalog(path=CHARACTER_STYLE_CATALOG_PATH):
     try:
         with open(path, "r", encoding="utf-8") as catalog_file:
             catalog = json.load(catalog_file)
+    except FileNotFoundError:
+        log_event("warning", component="Creator", level="warning", message=f"Bundled styles unavailable: {path}")
+        return {"groups": [], "aliases": {}, "default_style": "none"}, {}, {}, "none"
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Failed to load character style catalog '{path}': {exc}") from exc
 
@@ -435,7 +438,7 @@ def _extract_character_tag_options(tags_data):
     }
 
 
-SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"]["skin_color"]]
+SKIN_COLOR_OPTIONS = [item["tag"] for item in CHARACTER_PRESETS["tags"].get("skin_color", [])]
 
 SKIN_COLOR_HINT_RE = re.compile(
     r"\b(skin|complexion|[a-z]+[- ]skinned)\b",
@@ -521,7 +524,7 @@ def _character_style_prompt(info, *, include_secondary=False):
             return match["prompt"]
     if style_key not in ALL_CHARACTER_STYLE_PROMPTS and info.get("style_prompt"):
         return str(info["style_prompt"])[:16000].strip()
-    return ALL_CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS[DEFAULT_CHARACTER_STYLE])
+    return ALL_CHARACTER_STYLE_PROMPTS.get(style_key, CHARACTER_STYLE_PROMPTS.get(DEFAULT_CHARACTER_STYLE, ""))
 
 
 def _infer_skin_color_from_description(description):

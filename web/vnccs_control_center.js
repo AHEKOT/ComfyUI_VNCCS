@@ -1384,7 +1384,9 @@ ${SAKURA_INTERACTION_CSS}
     background: rgba(255,170,0,0.1);
     border-color: rgba(255,170,0,0.3);
     color: #ffaa00;
-    cursor: default;
+}
+.vnccs-cc-pill--update:enabled {
+    cursor: pointer;
 }
 .vnccs-cc-pill--error {
     background: rgba(255,71,87,0.08);
@@ -1411,19 +1413,6 @@ ${SAKURA_INTERACTION_CSS}
     border-color: rgba(255,170,0,0.25);
     color: #ffaa00;
 }
-.vnccs-cc-update-banner {
-    overflow-wrap: anywhere;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 10px 4px;
-    background: rgba(255,170,0,0.07);
-    border-top: 1px solid rgba(255,170,0,0.12);
-    font-size: 9px;
-    color: #ffaa00;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-}
 .vnccs-cc-root :is(button, input, select, summary, [tabindex]):focus-visible {
     outline: 2px solid #ff8fa3;
     outline-offset: -2px;
@@ -1432,7 +1421,7 @@ ${SAKURA_INTERACTION_CSS}
     outline: 2px solid #ff8fa3;
     outline-offset: 2px;
 }
-.vnccs-cc-root button:disabled {
+.vnccs-cc-root button:disabled:not(.vnccs-cc-pill) {
     opacity: 0.5;
     cursor: not-allowed;
     transform: none;
@@ -2113,10 +2102,11 @@ class VNCCSControlCenterWidget {
         const btns = document.createElement("div");
         btns.className = "vnccs-cc-header-btns";
         btns.appendChild(this._btn("↺", () => {
+            this._fetchModuleStatus();
             const r = this._getRepoId();
             if (r) this.fetchConfig(r, true);
             else this.showMessage("Enter repo_id first.", true);
-        }, "Refresh config"));
+        }, "Refresh config and module versions"));
         btns.appendChild(this._btn("⚙", () => this._showSettings(), "Settings"));
 
         h.append(this.statusText, btns);
@@ -2207,39 +2197,37 @@ class VNCCSControlCenterWidget {
         lbl.textContent = "Modules";
         pills.appendChild(lbl);
 
-        this._pillMain = this._makePill("VNCCS", null, "loading");
-        this._pillUtils = this._makePill("Utils", null, "loading");
+        this._pillMain = this._makePill("VNCCS", "button");
+        this._pillUtils = this._makePill("Utils", "button");
         pills.append(this._pillMain, this._pillUtils);
         this._statusPills = pills;
         this._dependencyPills = {};
 
         this.statusStrip.appendChild(pills);
-        this._updateBanner = null; // created lazily
         this.container.appendChild(this.statusStrip);
     }
 
-    _makePill(name, version, state, extra = "") {
-        const p = document.createElement("span");
-        p.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
-        p.textContent = version
-            ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
-            : `${name} ${icons[state] ?? ""}${extra ? " " + extra : ""}`;
-        if (state === "update") p.title = `Update available: ${extra}`;
-        if (state === "dup")   p.title = `Duplicate install detected: ${extra}`;
-        if (state === "partial") p.title = extra || "Installed but node classes are not loaded";
-        if (state === "warning") p.title = extra || "Installed with warnings";
-        if (state === "error") p.title = extra || "Module not found";
+    _makePill(name, tag = "span") {
+        const p = document.createElement(tag);
+        if (tag === "button") {
+            p.type = "button";
+            p.disabled = true;
+        }
+        this._updatePill(p, name, null, "loading");
         return p;
     }
 
     _updatePill(pillEl, name, version, state, extra = "") {
-        const icons = { ok: "●", update: "↑", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
         pillEl.className = `vnccs-cc-pill vnccs-cc-pill--${state}`;
+        if (state === "update") {
+            pillEl.textContent = `${name} v${version} is outdated`;
+            pillEl.title = `Update to v${extra}`;
+            return;
+        }
+        const icons = { ok: "●", error: "✕", loading: "…", dup: "⚠", partial: "⚠", warning: "⚠" };
         pillEl.textContent = version
             ? `${name} v${version} ${icons[state] ?? ""}${extra ? " " + extra : ""}`
             : `${name} ${icons[state] ?? ""}${extra ? " " + extra : ""}`;
-        if (state === "update") pillEl.title = `Update available: v${extra}`;
         if (state === "dup")   pillEl.title = `Duplicate install: ${extra}`;
         if (state === "partial") pillEl.title = extra || "Installed but node classes are not loaded";
         if (state === "warning") pillEl.title = extra || "Installed with warnings";
@@ -2248,7 +2236,7 @@ class VNCCSControlCenterWidget {
 
     _ensureDependencyPill(key, label) {
         if (this._dependencyPills[key]) return this._dependencyPills[key];
-        const pill = this._makePill(label, null, "loading");
+        const pill = this._makePill(label);
         pill.classList.add("vnccs-cc-pill--dependency");
         this._dependencyPills[key] = pill;
         this._statusPills?.appendChild(pill);
@@ -2316,8 +2304,7 @@ class VNCCSControlCenterWidget {
 
         let queued = 0;
         for (const item of pending) {
-            const statusButton = document.createElement("button");
-            statusButton.textContent = "Resuming…";
+            const statusButton = item.updateButton || document.createElement("button");
             if (await this._installDependency(item, statusButton, { skipPolicyCheck: true })) queued += 1;
         }
         if (queued) this.showMessage(`Resumed installation of ${queued} custom node package${queued === 1 ? "" : "s"}.`);
@@ -2402,7 +2389,7 @@ class VNCCSControlCenterWidget {
             version: item.manager_version || "latest",
             ui_id: uiId,
             title: item.label || item.key,
-            selected_version: "latest",
+            selected_version: item.manager_version || "latest",
             channel: "default",
             mode: "remote",
             skip_post_install: false,
@@ -2443,7 +2430,7 @@ class VNCCSControlCenterWidget {
                 id: item.manager_id,
                 version: item.manager_version || "latest",
                 ui_id: uiId,
-                selected_version: "latest",
+                selected_version: item.manager_version || "latest",
                 repository: item.github_url || null,
                 mode: "remote",
                 channel: "default",
@@ -2480,7 +2467,7 @@ class VNCCSControlCenterWidget {
                 }
             }
 
-            if (this._dependencyInstallTasks.has(uiId)) button.textContent = "Installing…";
+            if (this._dependencyInstallTasks.has(uiId)) button.textContent = item.updateButton ? "Updating…" : "Installing…";
             return mode;
         } catch (error) {
             this._dependencyInstallTasks.delete(uiId);
@@ -2489,13 +2476,20 @@ class VNCCSControlCenterWidget {
     }
 
     async _installDependency(item, button, options = {}) {
-        if (this._removed) return false;
+        if (this._removed || button.disabled) return false;
         const originalLabel = button.textContent;
-        if (!options.skipPolicyCheck && !await this._ensureManagerInstallPolicy([item])) return false;
         button.disabled = true;
-        button.textContent = "Queueing…";
         try {
-            if (!await this._queueDependencyInstall(item, button)) return false;
+            if (!options.skipPolicyCheck && !await this._ensureManagerInstallPolicy([item])) {
+                button.disabled = false;
+                return false;
+            }
+            button.textContent = "Queueing…";
+            if (!await this._queueDependencyInstall(item, button)) {
+                button.disabled = false;
+                button.textContent = originalLabel;
+                return false;
+            }
             return true;
         } catch (error) {
             button.disabled = false;
@@ -2681,7 +2675,7 @@ class VNCCSControlCenterWidget {
         const detail = event?.detail || {};
         if (detail.status === "in_progress") {
             const tracked = this._dependencyInstallTasks.get(detail.target);
-            if (tracked?.mode === "legacy") tracked.button.textContent = "Installing…";
+            if (tracked?.mode === "legacy") tracked.button.textContent = tracked.item.updateButton ? "Updating…" : "Installing…";
             return;
         }
         if (detail.status !== "done") return;
@@ -2792,17 +2786,6 @@ class VNCCSControlCenterWidget {
         this._mountOverlay(ov, panel, title.textContent);
     }
 
-    _showUpdateBanner(lines) {
-        if (this._updateBanner) this._updateBanner.remove();
-        if (!lines.length) return;
-        const b = document.createElement("div");
-        b.className = "vnccs-cc-update-banner";
-        b.textContent = "↑ " + lines.join("  ·  ");
-        b.title = "Updates are available. Restart ComfyUI after updating.";
-        this.statusStrip.appendChild(b);
-        this._updateBanner = b;
-    }
-
     _semverGt(a, b) {
         // true if a > b (both "x.y.z" strings)
         const pa = String(a).split(".").map(Number);
@@ -2817,14 +2800,14 @@ class VNCCSControlCenterWidget {
 
     async _fetchLatestModuleVersion(managerId) {
         try {
-            const response = await api.fetchApi(`/customnode/versions/${encodeURIComponent(managerId)}`, {
+            const response = await api.fetchApi(`/vnccs/module_versions/${encodeURIComponent(managerId)}`, {
                 cache: "no-store", signal: AbortSignal.timeout(8000),
             });
             if (!response.ok) return null;
             const versions = await response.json();
             if (!Array.isArray(versions)) return null;
-            return versions.map(item => item?.version).filter(version => /^\d+\.\d+\.\d+$/.test(version))
-                .reduce((latest, version) => !latest || this._semverGt(version, latest) ? version : latest, null);
+            return versions.filter(item => /^\d+\.\d+\.\d+$/.test(item?.version))
+                .reduce((latest, item) => !latest || this._semverGt(item.version, latest.version) ? item : latest, null);
         } catch {
             return null;
         }
@@ -2845,22 +2828,26 @@ class VNCCSControlCenterWidget {
         this._h3Runtime = local.comfyui;
         this._checkH3Compatibility();
 
+        const managerIds = { main: "vnccs", utils: "vnccs-utils" };
         const latestVersions = Object.fromEntries(await Promise.all(
-            Object.entries({ main: "vnccs", utils: "vnccs-utils" }).map(async ([key, managerId]) => [
+            Object.entries(managerIds).map(async ([key, managerId]) => [
                 key, local[key]?.version && !local[key].error && !local[key].duplicate
                     ? await this._fetchLatestModuleVersion(managerId) : null,
             ])
         ));
         if (!isCurrent()) return;
 
-        const updateNeeded = [];
-
+        const moduleUpdates = [];
         for (const key of ["main", "utils"]) {
             const info   = local[key] ?? {};
             const label  = LABELS[key];
             const pill   = PILLS[key];
             const locVer = info.version ?? null;
 
+            // Keep queued and completed updates disabled until Manager finishes or ComfyUI restarts.
+            if (pill.onclick && pill.disabled) continue;
+            pill.onclick = null;
+            pill.disabled = true;
             if (info.error === "not_found") {
                 this._updatePill(pill, label, null, "error", "not installed");
                 continue;
@@ -2869,7 +2856,6 @@ class VNCCSControlCenterWidget {
             if (info.duplicate) {
                 this._updatePill(pill, label, locVer, "dup",
                     info.duplicate_folders?.join(" & ") ?? "");
-                updateNeeded.push(`${label}: duplicate folders (${info.duplicate_folders?.join(", ")})`);
                 continue;
             }
 
@@ -2881,12 +2867,19 @@ class VNCCSControlCenterWidget {
             const latest = latestVersions[key];
             if (!latest || !/^\d+\.\d+\.\d+$/.test(locVer)) {
                 this._updatePill(pill, label, locVer, "warning", "update check unavailable");
-            } else if (this._semverGt(latest, locVer)) {
-                this._updatePill(pill, label, locVer, "update", latest);
-                updateNeeded.push(`${label} v${locVer} → v${latest}`);
+            } else if (this._semverGt(latest.version, locVer)) {
+                this._updatePill(pill, label, locVer, "update", latest.version);
+                const id = managerIds[key];
+                const item = { key: id, manager_id: id, manager_version: latest.version, label, updateButton: pill };
+                moduleUpdates.push(item);
+                pill.disabled = false;
+                pill.onclick = () => this._installDependency(item, pill);
+            } else if (this._semverGt(locVer, latest.version)) {
+                this._updatePill(pill, label, locVer, "warning", "ahead of Registry");
+                pill.title = `Installed v${locVer}. The newest version returned by Comfy Registry is v${latest.version}.`;
             } else {
                 this._updatePill(pill, label, locVer, "ok");
-                pill.title = `No newer release in Comfy Registry (latest v${latest}).`;
+                pill.title = `Matches the latest Comfy Registry version (v${latest.version}).`;
             }
         }
 
@@ -2905,14 +2898,12 @@ class VNCCSControlCenterWidget {
             } else if (info.status === "warning") {
                 this._updatePill(pill, label, null, "warning", detail);
                 pill.title = detail || "Installed with warnings";
-                updateNeeded.push(`${label}: ${info.warning || "installed with warnings"}`);
             } else if (info.status === "partial") {
                 this._updatePill(pill, label, null, "partial");
                 pill.title = detail || "installed but not loaded";
             } else if (info.status === "unsupported") {
                 this._updatePill(pill, label, null, "warning", "unsupported");
                 pill.title = info.compatibility_note || "Unsupported on this platform";
-                updateNeeded.push(`${label}: unsupported on this platform`);
             } else {
                 this._updatePill(pill, label, null, "error");
                 pill.title = detail || "not installed";
@@ -2921,11 +2912,9 @@ class VNCCSControlCenterWidget {
                 missingDependencies.push({ key, ...info });
             }
         }
-        const resumedPendingInstalls = await this._resumePendingDependencyInstalls(missingDependencies);
+        const resumedPendingInstalls = await this._resumePendingDependencyInstalls([...missingDependencies, ...moduleUpdates]);
         if (!isCurrent()) return;
         if (!resumedPendingInstalls) this._showMissingDependenciesModal(missingDependencies);
-
-        this._showUpdateBanner(updateNeeded);
     }
 
     // ── Primitives ────────────────────────────────────────────────────────────

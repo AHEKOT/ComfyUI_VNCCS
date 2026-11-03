@@ -1,3 +1,20 @@
+# VNCCS 3.3.4 Changelog
+
+## Control Center updates
+
+- Control Center now checks Comfy Registry for newer downloadable versions of VNCCS and VNCCS Utils. A newer release appears once in the module badge as `VNCCS v<installed version> is outdated`. Hover over the badge to see the target version. The refresh button checks module versions again.
+- Click the badge to update that module through ComfyUI-Manager. The badge queues the exact version shown in the tooltip and disables repeat clicks while the update runs. After the update succeeds, Control Center offers to restart ComfyUI.
+
+## Node registration
+
+- A missing `character_presets_v2.json`, `character_styles.json`, or `anima_styles.json` no longer prevents VNCCS from loading. All 16 nodes register, and the startup log identifies the missing catalog. Character Creator can still use free-form traits and style prompts saved in workflows.
+- Style Preview Test keeps its default traits when a preset group is unavailable and can generate a preview without a bundled style when the style catalog is missing.
+
+## Package size
+
+- Resized all 868 bundled style previews from 1024 × 1024 to 720 × 720 pixels. Their combined size fell from 84.5 MB to 46.8 MB.
+- The Registry ZIP excludes the root `images/` directory used for repository artwork. With the smaller previews, the package is about 56 MB. The release check now measures the ZIP built by `comfy node pack` and blocks publication if it exceeds 100 MiB.
+
 # VNCCS 3.3.3 Changelog
 
 ## Qwen Image 2.1

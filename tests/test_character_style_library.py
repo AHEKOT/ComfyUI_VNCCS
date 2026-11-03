@@ -32,7 +32,7 @@ def test_packaged_catalog_is_unique_and_every_style_has_a_square_rgb_preview():
     assert {p.stem for p in directory.glob("*.webp") if not p.stem.startswith("user_") and p.stem != "custom"} == packaged_ids
     for style_id in packaged_ids:
         with Image.open(directory / (style_id + ".webp")) as image:
-            assert image.format == "WEBP" and image.size == (1024, 1024)
+            assert image.format == "WEBP" and image.size == (720, 720)
             assert image.mode == "RGB"
     assert catalog["default_style"] == "ghibli_miyazaki"
 

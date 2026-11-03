@@ -22,8 +22,12 @@ jobs:
       - name: Install test dependencies
         run: pip install pytest numpy Pillow
 
+      - name: Pack Registry archive
+        run: |
+          python -m pip install comfy-cli
+          comfy --skip-prompt --no-enable-telemetry node pack
       - name: Run mandatory security scan
-        run: python scripts/security_scan.py
+        run: python scripts/security_scan.py --archive node.zip
 
       - name: Run tests
         run: pytest tests/ -v --tb=short
