@@ -168,7 +168,8 @@ def test_builtin_qi2_turbo_defaults_use_base_sampler_and_preserve_user_parameter
 
 
 @pytest.mark.parametrize("cfg", [1.0, 3.0])
-def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch, cfg):
+@pytest.mark.parametrize("target_size,resolution", [(2048, 1440), (2560, 1632)])
+def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeypatch, cfg, target_size, resolution):
     calls = []
 
     def fake_node(name, **kwargs):
@@ -185,7 +186,7 @@ def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeyp
         "vae",
         "anime character prompt",
         "negative prompt",
-        {"generation_mode": "qi2", "target_size": 2048, "cfg": cfg},
+        {"generation_mode": "qi2", "target_size": target_size, "cfg": cfg},
     )
 
     assert (positive, negative, rewritten) == (
@@ -216,7 +217,7 @@ def test_qi2_prompt_uses_text_generate_without_media_then_system_encoder(monkeyp
     encoder = calls[1][1]
     assert encoder["prompt"] == "A rewritten character portrait."
     assert encoder["negative_prompt"] == "negative prompt"
-    assert encoder["resolution"] == 1024
+    assert encoder["resolution"] == resolution
     assert encoder["images"] == {}
 
 

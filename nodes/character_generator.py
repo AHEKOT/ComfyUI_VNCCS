@@ -1059,6 +1059,12 @@ def _resolution_scale_megapixels(value, default=1024):
     return _resolution_scale_value(value, default=default) / 1024.0
 
 
+def _qi2_scale(target_size):
+    """Return the displayed megapixels and the corresponding QI2 encoder resolution."""
+    megapixels = math.floor(_resolution_scale_megapixels(target_size) * 10 + 0.5) / 10
+    return megapixels, 32 * round(32 * math.sqrt(megapixels))
+
+
 class VNCCS_CharacterGenerator:
     OUTPUT_NODE = True
     INPUT_IS_LIST = True
@@ -1453,11 +1459,10 @@ class VNCCS_CharacterGenerator:
             sigmas=sigmas, latent_image=latent,
         )[0]
 
-    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt="", resolution=1024):
-        # Use the same rounded area for the pose encoder and sampling canvas.
-        megapixels = math.floor(_resolution_scale_megapixels(target_size) * 10 + 0.5) / 10
+    def _qi2_encode(self, pipe_values, prompt, images, target_size=1024, negative_prompt="", resolution=None):
+        megapixels, linked_resolution = _qi2_scale(target_size)
         if resolution is None:
-            resolution = 32 * round(32 * math.sqrt(megapixels))
+            resolution = linked_resolution
         if not isinstance(resolution, int) or resolution % 32 or not 0 <= resolution <= 4096:
             raise ValueError("QI2 encoder resolution must be a multiple of 32 from 0 to 4096.")
         references = {
@@ -1713,13 +1718,14 @@ class VNCCS_CharacterGenerator:
         if not torch.is_tensor(scaled_tensor) or scaled_tensor.ndim != 4:
             raise RuntimeError("QI2 emotion crop scaling did not return an IMAGE tensor.")
 
+        _, resolution = _qi2_scale(target_size)
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=pipe_values["clip"],
             vae=pipe_values["vae"],
             prompt=prompt,
             negative_prompt=str(negative_prompt or ""),
-            resolution=1024,
+            resolution=resolution,
             images={"image_1": aligned_crop},
         )
         latent = _call_comfy_node(

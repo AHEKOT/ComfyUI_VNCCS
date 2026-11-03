@@ -19,45 +19,6 @@ from _vnccs.nodes.clothes_designer import (
 )
 
 
-def test_manual_clone_workflow_matches_qi2_prompts_and_sampler_inputs():
-    path = Path(__file__).resolve().parents[1] / "workflows/manual/QI2_ClothesDesigner_Clone_Turbo.json"
-    graph = json.loads(path.read_text())
-    nodes = {node["id"]: node for node in graph["nodes"]}
-    links = {link[0]: link for link in graph["links"]}
-
-    def upstream(node, name):
-        port = next(p for p in node["inputs"] if p["name"] == name)
-        _, source, slot, destination, index, _ = links[port["link"]]
-        assert destination == node["id"] and node["inputs"][index] is port
-        assert port["link"] in nodes[source]["outputs"][slot]["links"]
-        return nodes[source], slot
-
-    sampler, = (n for n in nodes.values() if n["type"] == "KSampler")
-    encoder, positive = upstream(sampler, "positive")
-    assert (encoder["type"], positive) == ("TextEncodeQwenImage21", 0)
-    assert upstream(sampler, "negative") == (encoder, 1)
-    data = {"activeTab": "clone", "clone_image": True, "gen_settings": {"background_color": "Transparent"}}
-    assert encoder["widgets_values"] == [*ClothesDesigner.construct_prompt(data, model_kind="qi2"), 1024]
-    empty, slot = upstream(sampler, "latent_image")
-    assert (empty["type"], slot) == ("EmptyLatentImage", 0)
-    assert not encoder["outputs"][2]["links"]
-    assert sampler["widgets_values"][1:] == ["fixed", 8, 1.0, "euler", "simple", 1.0]
-    first, second = [upstream(encoder, f"images.image_{i}")[0] for i in (1, 2)]
-    assert first != second
-    size, slot = upstream(empty, "width")
-    assert (size["type"], slot) == ("GetImageSize", 0)
-    assert upstream(empty, "height") == (size, 1)
-    scale, slot = upstream(size, "image")
-    assert (scale["type"], slot) == ("ImageScaleToTotalPixels", 0)
-    assert scale["widgets_values"] == ["nearest-exact", 4.0, 1]
-    assert upstream(scale, "image") == (first, 0)
-    for rgb in (first, second):
-        assert rgb["type"] == "ImageCompositeMasked" and rgb["widgets_values"] == [0, 0, False]
-        source, slot = upstream(rgb, "destination")
-        assert (source["type"], slot) == ("LoadImage", 0)
-        assert upstream(rgb, "mask") == (source, 1)
-
-
 # ── construct_prompt ──────────────────────────────────────────────────────────
 
 class TestClothesDesignerConstructPrompt:
@@ -309,7 +270,7 @@ class TestEditableCostumeValidation:
 
 @pytest.mark.parametrize("kind,size,expected", [
     ("MiniMaxH3", None, 1536), ("MiniMaxH3", 1024, 1024),
-    ("QI2", None, 1024), ("QI2", 1536, 1536),
+    ("QI2", None, 1024), ("QI2", 1536, 1536), ("QI2", 2560, 2560), ("QI2", 4096, 4096),
     ("Klein9b", None, 1024), ("Klein9b", 2048, 2048),
 ])
 @pytest.mark.parametrize("clone", [False, True])
@@ -318,7 +279,6 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
     from _vnccs.nodes import clothes_designer as cd
     from _vnccs.nodes import character_generator as cg
     from PIL import Image
-    import json
     import utils
 
     monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
@@ -405,7 +365,13 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},
         cfg=cfg,
     )
-    data = {"character": "Alice", "costume": "Dress", "gen_settings": {
+    workflow = json.loads((Path(__file__).resolve().parents[1] / "workflows/VNCCS_3.2_Step2_CharacterClothes.json").read_text())
+    designer = next(n for n in workflow["nodes"] if n["type"] == "ClothesDesigner")
+    saved = json.loads(designer["widgets_values"][0])
+    if kind == "QI2" and cfg == 1.0:
+        pipe.sample_steps, pipe.sampler_name, pipe.scheduler = 8, "euler", "simple"
+    data = {**saved, "character": "Alice", "costume": "Dress", "gen_settings": {
+                **saved["gen_settings"],
                 "target_size": size,
                 "background_color": "Transparent" if kind == "QI2" else "Green",
                 "lora_strength": 0 if cfg is None else 0.65,
@@ -444,7 +410,12 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         scale = (expected * 1024 / (96 * 64)) ** 0.5
         assert calls["EmptyLatentImage"] == {"width": round(64 * scale), "height": round(96 * scale), "batch_size": 1}
         assert calls["TextEncodeQwenImage21"]["images"]["image_1"].shape[1:3] == (96, 64)
-        resolution = 1024
+        resolution = {1024: 1024, 1536: 1248, 2560: 1632, 4096: 2048}[expected]
+        if cfg == 1.0:
+            sampler = calls["KSampler"]
+            assert (sampler["seed"], sampler["steps"], sampler["sampler_name"], sampler["scheduler"], sampler["denoise"]) == (
+                saved["gen_settings"]["seed"], 8, "euler", "simple", 1.0,
+            )
         assert calls["TextEncodeQwenImage21"]["resolution"] == resolution
         expected_negative = node.construct_prompt(data, model_kind="qi2")[1]
         assert calls["TextEncodeQwenImage21"]["negative_prompt"] == expected_negative

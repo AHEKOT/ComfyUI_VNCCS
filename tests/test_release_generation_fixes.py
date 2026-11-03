@@ -95,7 +95,7 @@ def test_remove_clothes_prepares_white_reference_only_for_qi2(monkeypatch, kind,
             return (kwargs["image"],)
         if kind == "qi2":
             assert name == "TextEncodeQwenImage21"
-            assert kwargs["resolution"] == 1024
+            assert kwargs["resolution"] == 1632
             image1 = kwargs["images"]["image_1"]
         else:
             assert name == "VNCCS_Flux_Klein_Encoder"
@@ -106,7 +106,7 @@ def test_remove_clothes_prepares_white_reference_only_for_qi2(monkeypatch, kind,
 
     monkeypatch.setattr(cg, "_call_comfy_node", encode)
     with pytest.raises(EncodingReached):
-        node._run_remove_clothes(image, object(), {"prompt": "Keep the character"})
+        node._run_remove_clothes(image, object(), {"prompt": "Keep the character", "target_size": 2560})
     assert torch.equal(image, original)
 
 
@@ -266,15 +266,16 @@ def test_clothes_rebuilds_preview_cached_with_old_reference_preparation(designer
     assert seeds == [123, 123]
 
 
-@pytest.mark.parametrize("old_latent", ["scaled_encoder", "image1_aspect", "upscaled_encoder_latent"])
+@pytest.mark.parametrize("old_latent", ["scaled_encoder", "image1_aspect", "upscaled_encoder_latent", "scale_to_total_pixels"])
 def test_clothes_rebuilds_preview_cached_with_old_latent(designer_run, monkeypatch, old_latent):
     node, pipe, data, seeds = designer_run
+    data["gen_settings"]["target_size"] = 2560
     dumps = json.dumps
 
     def legacy_dumps(value, *args, **kwargs):
         if isinstance(value, dict) and "source_reference" in value:
             value = copy.deepcopy(value)
-            value["resolution"] = {"latent": old_latent, "target_size": 1024}
+            value["resolution"] = {"latent": old_latent, "target_size": 2560}
             if old_latent != "scaled_encoder":
                 value["resolution"]["encoder"] = 1024
         return dumps(value, *args, **kwargs)

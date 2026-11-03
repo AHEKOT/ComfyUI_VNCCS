@@ -54,7 +54,7 @@ def test_qi2_encoder_only_flattens_alpha_and_builds_a_separate_latent(monkeypatc
     expected_image = encoder["images"]["image_1"]
     torch.testing.assert_close(sizing["image"], expected_image if batched else expected_image.unsqueeze(0))
     assert empty == {"width": 71, "height": 53, "batch_size": 1}
-    assert encoder["resolution"] == 1024
+    assert encoder["resolution"] == 1440
     assert encoder["negative_prompt"] == "negative"
     assert set(encoder["images"]) == {"image_1", "image_3"}
     for key, image, original in zip(("image_1", "image_3"), (source, donor), originals):
@@ -67,11 +67,12 @@ def test_qi2_encoder_only_flattens_alpha_and_builds_a_separate_latent(monkeypatc
         assert torch.equal(image, original)
 
 
-@pytest.mark.parametrize("target_size,megapixels", [
-    (1024, 1.0), (1229, 1.2), (1280, 1.3), (1344, 1.3), (1536, 1.5), (2048, 2.0), (4096, 4.0),
+@pytest.mark.parametrize("target_size,megapixels,resolution", [
+    (1024, 1.0, 1024), (1229, 1.2, 1120), (1280, 1.3, 1152), (1344, 1.3, 1152),
+    (1536, 1.5, 1248), (2048, 2.0, 1440), (2560, 2.5, 1632), (3072, 3.0, 1760), (4096, 4.0, 2048),
 ])
 @pytest.mark.parametrize("donor_shape", [(1, 16, 4096, 3), (1, 4096, 16, 3)])
-def test_qi2_scale_only_controls_the_canvas(monkeypatch, target_size, megapixels, donor_shape):
+def test_qi2_scale_controls_canvas_and_encoder(monkeypatch, target_size, megapixels, resolution, donor_shape):
     image = torch.tensor([[[[-0.1, 1.1, 0.5]]]], dtype=torch.float64).expand(1, 1024, 512, 3)
     donor = torch.zeros(donor_shape)
     latent = object()
@@ -85,7 +86,7 @@ def test_qi2_scale_only_controls_the_canvas(monkeypatch, target_size, megapixels
             assert kwargs == {"width": 63, "height": 127, "batch_size": 1}
             return (latent,)
         assert name == "TextEncodeQwenImage21"
-        assert kwargs["resolution"] == 1024
+        assert kwargs["resolution"] == resolution
         assert kwargs["images"]["image_1"] is image
         assert kwargs["images"]["image_2"] is donor
         return "positive", "negative", object()
@@ -207,7 +208,8 @@ def test_qi2_emotion_crop_alignment_is_square_symmetric_and_reversible():
 
 @pytest.mark.parametrize("bbox_settings", [{}, {"bbox_dilation": 10, "feather": 5},
                                          {"bbox_dilation": 0, "feather": 0}])
-def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch, bbox_settings):
+@pytest.mark.parametrize("target_size,mp,resolution", [(2048, 2.0, 1440), (2560, 2.5, 1632)])
+def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypatch, bbox_settings, target_size, mp, resolution):
     calls = []
     dilation = bbox_settings.get("bbox_dilation", 50)
     feather = bbox_settings.get("feather", 50)
@@ -261,7 +263,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
     monkeypatch.setattr(cg, "_call_comfy_node", fake_node)
     full_image, generated_crop, detailer_mask = Generator()._run_emotion_generation_one(
         image, mask, object(), "warm happy smile", "ignored face tags", "", 42,
-        detailer_settings={"face_denoise": 0.25, "target_size": 2048, **bbox_settings},
+        detailer_settings={"face_denoise": 0.25, "target_size": target_size, **bbox_settings},
         bg_remove_settings={"preset": "Native"},
     )
 
@@ -271,7 +273,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
         "TextEncodeQwenImage21", "EmptyLatentImage", "QwenImage21Cache", "KSampler", "VAEDecode",
     ]
     scale = next(kwargs for name, kwargs in calls if name == "ImageScaleToTotalPixels")
-    assert scale["megapixels"] == 2.0
+    assert scale["megapixels"] == mp
     cache = next(kwargs for name, kwargs in calls if name == "QwenImage21Cache")
     assert (cache["device"], cache["dtype"]) == ("cpu", "int4")
     encoder = next(kwargs for name, kwargs in calls if name == "TextEncodeQwenImage21")
@@ -282,7 +284,7 @@ def test_qi2_emotion_uses_bbox_crop_qwen_encoder_and_exact_paste_region(monkeypa
         "keep character's clothes\n"
         "Transparent background with alpha channel."
     )
-    assert encoder["resolution"] == 1024
+    assert encoder["resolution"] == resolution
     aligned_side = ((100 + 2 * dilation + 31) // 32) * 32
     assert encoder["images"]["image_1"].shape == (1, aligned_side, aligned_side, 4)
     assert torch.allclose(
@@ -375,6 +377,7 @@ def test_qi2_decode_uses_standard_vae_decode(monkeypatch):
 @pytest.mark.parametrize("pose_prompt,pose_settings,mp,encoder_resolution", [
     ("pose prompt", {"target_size": 1024}, 1.0, 1024),
     ("", {"target_size": 2048, "resolution": 1024}, 2.0, 1440),
+    ("pose prompt", {"target_size": 2560, "resolution": 1024}, 2.5, 1632),
     ("pose prompt", {"target_size": 3072, "resolution": 0}, 3.0, 1760),
     ("", {"target_size": 4096, "override_resolution": False, "resolution": 1536}, 4.0, 2048),
     ("pose prompt", {"target_size": 1280}, 1.3, 1152),

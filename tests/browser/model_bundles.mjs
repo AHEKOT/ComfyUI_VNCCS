@@ -12,8 +12,9 @@ await mkdir(output, { recursive: true });
 const catalog = JSON.parse(await readFile(new URL('control_center.json', root), 'utf8'));
 let baseline = false;
 const details = process.argv.includes('--details');
+const previewScan = process.argv.includes('--preview-scan');
 const html = `<!doctype html><style>body{margin:0;background:#181820;padding:20px}#host{border:1px solid #69616d;background:#222;transform-origin:top left;position:relative;box-sizing:border-box}#label{height:30px;padding-left:10px;color:white;font:14px sans-serif}#mount{position:absolute;left:10px;top:40px}</style><div id="host"><div id="label"></div><div id="mount"></div></div><script type="module">
-import '/web/vnccs_character_creator_v2.js';import '/web/vnccs_emotion_v2.js';import '/web/vnccs_character_generator.js';import{app}from'/scripts/app.js';
+import '/web/vnccs_character_creator_v2.js';import '/web/vnccs_emotion_v2.js';import '/web/vnccs_character_generator.js';import '/web/vnccs_clothes_designer.js';import{app}from'/scripts/app.js';
 const catalog=${JSON.stringify(catalog)};window.fileState='missing';window.installs=0;window.longNames=()=>catalog.clip.forEach(entry=>entry.name+=' '+('long-component-name-'.repeat(12)));
 const reply=data=>Promise.resolve(new Response(JSON.stringify(data),{headers:{'Content-Type':'application/json'}}));
 const enriched=()=>Object.fromEntries(Object.entries(catalog).map(([category,value])=>[category,Array.isArray(value)?value.map(e=>({...e,status:fileState==='installed'||fileState==='partial'&&category==='models'?'installed':'missing'})):value]));
@@ -26,6 +27,7 @@ window.fixtureApi=(route,options={})=>{
  if(route.includes('/seedvr_download_status'))return reply(Object.fromEntries([['models','seedvr2_3b_fp8_e4m3fn.safetensors'],['vae','ema_vae_fp16.safetensors']].map(([category,name])=>[category+':'+name,['downloading','error'].includes(fileState)?{status:fileState,progress:46,message:fileState==='error'?'Connection interrupted':'Downloading 46%'}:{}])));
  if(route.includes('/seedvr_models'))return reply({models:[seed('models','seedvr2_3b_fp8_e4m3fn.safetensors')],vae:[seed('vae','ema_vae_fp16.safetensors')]});
  if(route.includes('/context_lists'))return reply({characters:['Alice'],checkpoints:[],diffusion_models:[],text_encoders:[],vae_models:[],loras:[],samplers:['euler','er_sde'],schedulers:['normal','simple']});
+ if(route.includes('/list_costumes'))return reply(['Coat']);
  if(route.includes('/list_characters'))return reply({characters:['Alice']});
  if(route.includes('/character_styles'))return reply({default_style:'custom',groups:[]});
  if(route.includes('/get_tags'))return reply({});if(route.includes('/get_emotions'))return reply({emotions:[]});if(route.includes('/get_character_costumes'))return reply({costumes:['Original'],pose_count:1});
@@ -35,7 +37,7 @@ window.mountNode=async(type,width,height,scale)=>{
  class Node{constructor(){this.type=type;this.id=17;this.properties={};this.inputs=[];this.size=[0,0];this.graph=app.graph;this.widgets=type==='EmotionGeneratorV2'?[['character',''],['generation_model','Anima'],['generation_settings','{}'],['costumes_data','[]'],['emotions_data','[]'],['prompt_style','Anima']].map(([name,value])=>({name,value,options:{}})):[{name:'widget_data',value:'{}',options:{}}];}
  setSize(size){this.size=[...size];this.widgets.find(w=>w.element)?.triggerDraw();}setDirtyCanvas(){}
  addDOMWidget(name,type,element,options){const widget={name,type,element,options,_node:this,triggerDraw:()=>{const zoom=Number(getComputedStyle(element).zoom)||1;element.style.width=(this.size[0]-20)/zoom+'px';element.style.height=(this.size[1]-60)/zoom+'px';}};this.widgets.push(widget);return widget;}}
- const extension=app.extensions.find(e=>e.name===(type==='CharacterCreatorV2'?'VNCCS.CharacterCreatorV2':type==='EmotionGeneratorV2'?'VNCCS.EmotionGeneratorV2':'VNCCS.CharacterGenerator'));
+ const extension=app.extensions.find(e=>e.name===(type==='ClothesDesigner'?'VNCCS.ClothesDesigner':type==='CharacterCreatorV2'?'VNCCS.CharacterCreatorV2':type==='EmotionGeneratorV2'?'VNCCS.EmotionGeneratorV2':'VNCCS.CharacterGenerator'));
  await extension.beforeRegisterNodeDef(Node,{name:type},app);const node=new Node();app.graph._nodes.push(node);node.onNodeCreated();window.node=node;node.setSize([width,height]);node.onConfigure?.();node.onResize?.();
  const widget=node.widgets.find(w=>w.element);document.querySelector('#mount').append(widget.element);widget.triggerDraw();node.onDrawBackground?.({});
  const host=document.querySelector('#host');host.style.width=width+'px';host.style.height=height+'px';host.style.transform='scale('+scale+')';document.querySelector('#mount').style.width=width-20+'px';document.querySelector('#mount').style.height=height-60+'px';document.querySelector('#label').textContent=type;app.canvas.ds.scale=scale;
@@ -55,7 +57,7 @@ const browser=await chromium.launch({headless:true,...(process.argv[2]?{executab
 const results=[],errors=[];
 const stable=(a,b,label)=>{assert.equal(a.length,b.length,label);a.forEach((entry,i)=>entry.rect.forEach((v,j)=>assert.ok(Math.abs(v-b[i].rect[j])<=1,label+' '+entry.class+' '+j+': '+v+' / '+b[i].rect[j])))};
 try{
- const types=details ? [['CharacterCreatorV2',1280,800,'Qwen Image 2.1'],['EmotionGeneratorV2',920,650,'Anima'],['CharacterCreatorV2',1280,800,'Illustrious'],['EmotionGeneratorV2',920,650,'Illustrious']] : [['CharacterCreatorV2',1280,800,'Anima'],['EmotionGeneratorV2',920,650,'Qwen Image 2.1'],['VNCCS_CharacterGenerator',1180,760],['VNCCS_CharacterCloneGenerator',1180,760],['VNCCS_ClothesGenerator',1180,760]];
+ const types=previewScan ? [['CharacterCreatorV2',1280,800],['ClothesDesigner',710,920]] : details ? [['CharacterCreatorV2',1280,800,'Qwen Image 2.1'],['EmotionGeneratorV2',920,650,'Anima'],['CharacterCreatorV2',1280,800,'Illustrious'],['EmotionGeneratorV2',920,650,'Illustrious']] : [['CharacterCreatorV2',1280,800,'Anima'],['EmotionGeneratorV2',920,650,'Qwen Image 2.1'],['VNCCS_CharacterGenerator',1180,760],['VNCCS_CharacterCloneGenerator',1180,760],['VNCCS_ClothesGenerator',1180,760]];
  for(const[type,defaultWidth,height,mode]of types)for(const delta of details?[0]:[-80,0,160])for(const scale of details?[1]:[0.75,1]){
   const width=defaultWidth+delta,label=type+'-'+width+'-'+scale+(details?'-'+mode.replaceAll(' ','_'):'');let original;
   for(const before of [true,false]){baseline=before;const page=await browser.newPage({viewport:{width:1700,height:1150},deviceScaleFactor:1});page.on('pageerror',error=>errors.push({type,before,error:String(error)}));
@@ -63,6 +65,31 @@ try{
    if(!before){await page.evaluate(value=>window.fileState=value,mode==='Illustrious'?'missing':'partial');if(details)await page.evaluate(()=>longNames());}
    await page.evaluate(args=>mountNode(...args),[type,width,height,scale]);await page.waitForTimeout(500);
    assert.deepEqual(await page.evaluate(()=>node.size),[width,height],'Restored node size is preserved');
+   if(previewScan){
+    const offsets=await page.evaluate(([type,width,height])=>{
+     const prefix=type==='ClothesDesigner'?'vnccs-clothes':'vnccs-creator';
+     const layer=document.querySelector('.'+prefix+'-generation-layer');
+     layer.hidden=false;
+     const scan=layer.querySelector('.'+prefix+'-generation-scan');
+     const [animation]=scan.getAnimations();
+     animation.pause();animation.effect.updateTiming({iterations:1,fill:'both'});
+     return [height,height-150].map(h=>{
+      node.setSize([width,h]);node.onResize?.(node.size);
+      document.querySelector('#host').style.height=h+'px';document.querySelector('#mount').style.height=(h-60)+'px';
+      return [0,1].map(end=>{
+       animation.currentTime=end*animation.effect.getTiming().duration;
+       const rect=layer.getBoundingClientRect(), band=getComputedStyle(scan,'::after');
+       const shift=band.transform==='none'?0:new DOMMatrix(band.transform).m42;
+       const center=scan.getBoundingClientRect().bottom+(shift-parseFloat(band.bottom)-parseFloat(band.height)/2)*rect.height/layer.clientHeight;
+       if(rect.height<=0)throw new Error('Empty preview layer');
+       return center-(end?rect.bottom:rect.top);
+      });
+     });
+    },[type,width,height]);
+    if(!before)assert.ok(offsets.flat().every(px=>Math.abs(px)<=1), type+' scan missed an edge: '+JSON.stringify(offsets));
+    if(delta===0 && scale===1)await page.locator('#host').screenshot({path:join(output,label+'-scan-'+(before?'before':'after')+'.png')});
+    results.push({type,width,height,scale,before,offsets});await page.close();continue;
+   }
    if(mode)await page.getByRole('button',{name:new RegExp('^'+mode+'$','i')}).click();await page.waitForTimeout(250);
    const frame=await page.evaluate(()=>rects());
    if(before){original=frame;await page.locator('#host').screenshot({path:join(output,label+'-before.png')});}
@@ -87,4 +114,4 @@ try{
   }
  }
  assert.deepEqual(errors,[]);console.log(JSON.stringify({scenarios:results.length,output}));
-}finally{await writeFile(join(output,details?'details.json':'geometry.json'),JSON.stringify({results,errors},null,2));await browser.close();server.close();}
+}finally{await writeFile(join(output,previewScan?'preview-scan.json':details?'details.json':'geometry.json'),JSON.stringify({results,errors},null,2));await browser.close();server.close();}

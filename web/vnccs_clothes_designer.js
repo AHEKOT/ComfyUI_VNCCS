@@ -633,6 +633,7 @@ ${SAKURA_THEME_CSS}
     right: 0;
     bottom: 0;
     height: clamp(18px, 6%, 42px);
+    transform: translateY(50%);
     background: linear-gradient(180deg, transparent, rgba(var(--vnccs-preview-accent-rgb), 0.24) 30%, rgba(var(--vnccs-preview-highlight-rgb), 0.98) 50%, rgba(var(--vnccs-preview-accent-rgb), 0.34) 68%, transparent);
     box-shadow: 0 0 24px rgba(var(--vnccs-preview-accent-rgb), 0.3);
 }

@@ -743,6 +743,8 @@ def _preview_cache_key(info, gen_settings):
         "style": _character_style_prompt(info),
         "files": _generation_file_signatures(settings),
     }
+    if settings["generation_mode"] == "qi2":
+        payload["encoder_resolution"] = "from_target_size"
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
@@ -1316,7 +1318,7 @@ def encode_generation_conditioning(
     """QI2 callers supply a style-free body and the selected reference separately."""
     log_stage("encoding the character prompt")
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "qi2":
-        from .character_generator import _call_comfy_node
+        from .character_generator import _call_comfy_node, _qi2_scale
 
         if creator_prompt:
             rewritten_prompt = generate_creator_qi2_prompt(
@@ -1327,13 +1329,14 @@ def encode_generation_conditioning(
             rewritten_prompt = generate_qi2_prompt(
                 clip, positive_text, style_reference=style_reference, character_info=character_info,
             )
+        _, resolution = _qi2_scale(gen_settings.get("target_size", 1024))
         positive, negative, _encoder_latent = _call_comfy_node(
             "TextEncodeQwenImage21",
             clip=clip,
             vae=vae,
             prompt=rewritten_prompt,
             negative_prompt=str(negative_text or ""),
-            resolution=1024,
+            resolution=resolution,
             images={},
         )
         return positive, negative, rewritten_prompt

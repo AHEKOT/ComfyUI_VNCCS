@@ -3,14 +3,15 @@
 ## Qwen Image 2.1
 
 - Clothes Designer and the pose generators pass each reference to the QI2 encoder at its original dimensions. Transparent pixels are composited over white and the alpha channel is removed. A separate branch uses the first reference's aspect ratio and the selected megapixel scale to size the empty sampling latent.
-- In Pose Generation, `resolution scale` also sets the encoder's `resolution`. The encoder takes the square root of the target pixel count, rounded to the nearest multiple of 32. A saved manual value takes effect only when **Override encoder resolution** is enabled.
+- All QI2 image generation uses `resolution scale` to set the encoder's `resolution`. This applies to both Clothes Designer modes, pose generation, clothing removal, Character Creator, style previews and face crops in Emotions Generator. The encoder resolution is the square root of the target pixel count rounded to the nearest multiple of 32. In Pose Generation, a manual value takes effect only when **Override encoder resolution** is enabled.
 - The pose generators use the prompt from Pose Studio for each pose and append the selected background instruction once. Clothes Generator uses the pose as image 1 and the original dressed character as image 2, even when source upscaling is enabled.
 - Regenerating a single pose preserves its original reference dimensions when the saved poses have different sizes.
 - Character Creator returns QI2 character sheets at their decoded dimensions and checks the preview's cache key before reusing it. Style Preview Test passes the full-resolution QI2 image to its analysis step.
 
 ## Clothing and upscaling
 
-- Clothes Designer refreshes cached previews when reference preparation or latent sizing changes. It releases the preview model after a failed run and disables costume editing, deletion and preview generation while a workflow is queued or running.
+- Clothes Designer refreshes cached previews when reference preparation, encoder resolution or latent sizing changes. It releases the preview model after a failed run and disables costume editing, deletion and preview generation while a workflow is queued or running.
+- In **Clone Clothes**, the character and clothing donor previews fit within their panels when switching modes or resizing the node. The **Replace Image** button and sprite navigation stay visible.
 - Flux Klein and MiniMax H3 clothing workflows align the first reference to the sampling canvas in multiples of 32 and keep secondary references at their original dimensions.
 - Character, Clone and Clothes generators save each upscaler stage as a batch of PNGs in the workflow cache. Regenerating one sprite reuses the other saved images. If a batch write fails, the previous complete batch remains available.
 
@@ -18,6 +19,7 @@
 
 - Control Center resolves the catalog's model or LoRA file when several versions are installed. It can fall back to the recorded installed version when the requested file is missing.
 - The Character Creator, Character Cloner and Clothes Designer wizards show progress for the request that started them. Standalone previews keep their progress separate from the queued workflow. Sprite previews show a retry message when an image fails to load.
+- In Character Creator and Clothes Designer previews, the bright center of the scan line reaches the bottom edge at any supported node size.
 - Generation and wizard logs include the full prompts sent to the model. QI2 reference-generation logs also show encoder resolution, target megapixels and sampling dimensions.
 
 # VNCCS 3.3.2 Changelog

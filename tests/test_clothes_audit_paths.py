@@ -19,7 +19,7 @@ import utils
 def clothes_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
     generator = types.ModuleType("_vnccs.nodes.character_generator")
-    for name in ("_call_comfy_node", "_resolution_scale_megapixels", "_resolution_scale_value", "VNCCS_CharacterGenerator"):
+    for name in ("_call_comfy_node", "_qi2_scale", "_resolution_scale_megapixels", "_resolution_scale_value", "VNCCS_CharacterGenerator"):
         setattr(generator, name, lambda *args, **kwargs: pytest.fail("Preview path lookup must not run generation"))
     generator.H3_FRAME_COUNT = 1
     generator.NATIVE_BACKGROUND_PROMPT = "transparent background"

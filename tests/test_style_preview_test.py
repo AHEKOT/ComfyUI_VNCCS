@@ -106,11 +106,12 @@ def test_node_contract_preserves_old_inputs_and_adds_outputs_and_controls():
 
 @pytest.mark.parametrize("model,background", [("Anima", "Green"), ("QI2", "Transparent")])
 @pytest.mark.parametrize("turbo", [False, True])
-def test_single_image_and_returned_prompt_only_changes_observed_size(runtime, model, background, turbo):
+@pytest.mark.parametrize("mp,side,resolution", [(1.5, 1256, 1248), (2.5, 1616, 1632)])
+def test_single_image_and_returned_prompt_only_changes_observed_size(runtime, model, background, turbo, mp, side, resolution):
     calls, image, clip, rewrite_clip, output = runtime
     defaults = {f"randomize_{field}": False for field in preview._RANDOM_FIELDS}
     node = preview.VNCCSStylePreviewTest()
-    result = node.generate(model, 1.5, background, turbo_enabled=turbo, **defaults)
+    result = node.generate(model, mp, background, turbo_enabled=turbo, **defaults)
     assert len(calls["sample"]) == len(result["ui"]["images"]) == 1
     assert result["result"][0] is image
     prompt = result["result"][1]
@@ -142,9 +143,9 @@ def test_single_image_and_returned_prompt_only_changes_observed_size(runtime, mo
     with Image.open(output / "VNCCS" / "style_previews" / filename) as saved:
         assert saved.mode == "RGBA"
     sample = calls["sample"][0]
-    assert sample["latent"] == (1256, 1256)
+    assert sample["latent"] == (side, side)
     if model == "QI2":
-        assert calls["encoder_resolution"] == 1024
+        assert calls["encoder_resolution"] == resolution
     assert sample["gen_settings"]["turbo_enabled"] is turbo
     assert sample["qi2_turbo"] is (turbo and model == "QI2")
     assert sample["steps"] == ((12 if model == "Anima" else 6) if turbo else (30 if model == "Anima" else 25))

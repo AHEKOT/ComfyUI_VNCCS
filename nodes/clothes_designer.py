@@ -26,6 +26,7 @@ from ..utils import (
 )
 from .character_generator import (
     _call_comfy_node,
+    _qi2_scale,
     _resolution_scale_megapixels,
     _resolution_scale_value,
     VNCCS_CharacterGenerator,
@@ -576,8 +577,9 @@ class ClothesDesigner:
                         "text_generation": QI2_TEXT_GENERATION_DEFAULTS,
                     }
                 if is_qi2:
+                    _, encoder_resolution = _qi2_scale(target_size)
                     cache_payload["qi2_reference_alpha"] = "white_rgb"
-                    cache_payload["resolution"] = {"encoder": 1024, "latent": "scale_to_total_pixels", "target_size": target_size}
+                    cache_payload["resolution"] = {"encoder": encoder_resolution, "latent": "scale_to_total_pixels", "target_size": target_size}
                     cache_payload["qi2_cache"] = getattr(pipe, "qi2_cache", {})
                     cache_payload["qi2_turbo"] = sorted(
                         item.get("name", "") for item in (getattr(pipe, "lora_states", []) or [])
