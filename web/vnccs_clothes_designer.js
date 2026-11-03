@@ -22,6 +22,7 @@ ${SAKURA_THEME_CSS}
 }
 .vnccs-clothes-top-row {
     display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 12px;
+    grid-template-rows: minmax(0, 1fr);
     flex: 1; min-height: 0; width: 100%;
 }
 .vnccs-clothes-col {
@@ -42,6 +43,8 @@ ${SAKURA_THEME_CSS}
 .vnccs-clothes-col::-webkit-scrollbar { width: 4px; }
 .vnccs-clothes-col::-webkit-scrollbar-thumb { background: var(--accent-border); border-radius: 2px; }
 .vnccs-clothes-design-panel { overflow: visible; }
+.vnccs-clothes-tab-content { display: flex; flex-direction: column; flex: 1; }
+.vnccs-clothes-container.is-clone .vnccs-clothes-tab-content { min-height: 0; }
 .vnccs-clothes-design-content {
     position: relative;
     z-index: 1;
@@ -603,6 +606,9 @@ ${SAKURA_THEME_CSS}
     transform: translateX(-50%);
 }
 .vnccs-clothes-generation-base { animation: cd-preview-wait 1800ms ease-in-out infinite; }
+.vnccs-clothes-container.is-clone :is(.vnccs-clothes-preview-img, .vnccs-clothes-generation-img) {
+    max-width: 100%;
+}
 .vnccs-clothes-generation-new {
     z-index: 1;
     clip-path: inset(0 0 100% 0);
@@ -1867,16 +1873,11 @@ app.registerExtension({
                     // Preview / Upload Area
                     const pContainer = document.createElement("div");
                     pContainer.className = "vnccs-clothes-preview-container";
-                    pContainer.style.height = "250px";
                     pContainer.style.background = "#151515";
-                    pContainer.style.position = "relative";
-                    pContainer.style.display = "flex";
-                    pContainer.style.alignItems = "center";
-                    pContainer.style.justifyContent = "center";
                     pContainer.style.border = "1px solid #444";
 
                     const img = document.createElement("img");
-                    img.style.maxWidth = "100%"; img.style.maxHeight = "100%"; img.style.objectFit = "contain";
+                    img.className = "vnccs-clothes-preview-img";
                     img.style.display = "none";
                     if (state.clone_image) {
                         const params = new URLSearchParams();
@@ -2542,10 +2543,11 @@ app.registerExtension({
                 };
 
                 const contentArea = document.createElement("div");
-                contentArea.style.flex = "1"; contentArea.style.display = "flex"; contentArea.style.flexDirection = "column";
+                contentArea.className = "vnccs-clothes-tab-content";
 
                 const refreshTabs = () => {
                     const view = els._ui.captureView();
+                    container.classList.toggle("is-clone", state.activeTab === "clone");
                     tabBar.innerHTML = '';
                     tabBar.appendChild(createTab("generate", "GENERATE CLOTHES"));
                     tabBar.appendChild(createTab("clone", "CLONE CLOTHES"));
