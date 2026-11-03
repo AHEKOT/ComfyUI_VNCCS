@@ -12,7 +12,10 @@ import os
 from pathlib import Path
 import re
 import sys
+from zipfile import is_zipfile
 
+
+MAX_REGISTRY_ZIP_BYTES = 100 * 1024 * 1024
 
 SCANNER_RULE_IDS = frozenset({
     "BLACKLISTED_URL",
@@ -33,6 +36,7 @@ SCANNER_RULE_IDS = frozenset({
     "PY_TEMP_DIRECTORY_ACCESS",
     "PY_URL_COMMAND_EXECUTION",
     "REMOVED_BEN2_CODE",
+    "ZIP_TOO_LARGE",
 })
 
 COMFY_REGISTRY_ISSUE_TYPES = frozenset({
@@ -44,6 +48,7 @@ COMFY_REGISTRY_ISSUE_TYPES = frozenset({
     "python_network_operations",
     "python_privilege_escalation",
     "python_url_command_execution",
+    "zip_too_large",
 })
 
 SOURCE_SUFFIXES = {".py", ".js", ".mjs", ".toml", ".json"}
@@ -372,9 +377,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--archive", type=Path, help="Check the ZIP produced by comfy node pack")
     args = parser.parse_args(argv)
 
     findings = scan_root(args.root)
+    archive = args.archive if args.archive is not None else args.root / "node.zip"
+    if args.archive is not None or archive.exists():
+        if not archive.is_file() or not is_zipfile(archive):
+            parser.error(f"Missing or invalid Registry ZIP: {archive}")
+        size = archive.stat().st_size
+        if size > MAX_REGISTRY_ZIP_BYTES:
+            findings.append(Finding("ZIP_TOO_LARGE", archive.name, 1,
+                                    f"Registry ZIP is {size} bytes; limit is {MAX_REGISTRY_ZIP_BYTES} bytes"))
     if args.json:
         print(json.dumps([asdict(item) for item in findings], indent=2, sort_keys=True))
     elif findings:

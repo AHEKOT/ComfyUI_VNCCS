@@ -1,6 +1,7 @@
 """Exercise the package entrypoint used by ComfyUI's custom node loader."""
 
 import importlib.util
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -8,12 +9,25 @@ from pathlib import Path
 import pytest
 
 
-def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools():
+@pytest.mark.parametrize("missing", [
+    (),
+    ("character_presets_v2.json",),
+    ("character_presets_v2.json", "character_styles.json", "anima_styles.json"),
+])
+def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools(tmp_path, monkeypatch, missing):
     pytest.importorskip("torch")
     root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location("_vnccs.nodes", root / "nodes" / "__init__.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    package = tmp_path / f"vnccs_catalog_test_{len(missing)}"
+    shutil.copytree(root / "nodes", package / "nodes", ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("__init__.py", "utils.py", "operation_logger.py"):
+        shutil.copyfile(root / name, package / name)
+    template = package / "character_template"
+    template.mkdir()
+    for name in ("character_presets_v2.json", "character_styles.json", "anima_styles.json"):
+        if name not in missing:
+            shutil.copyfile(root / "character_template" / name, template / name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    module = importlib.import_module(package.name)
     assert set(module.NODE_CLASS_MAPPINGS) == {
         "CharacterCloner", "CharacterCreatorV2", "ClothesDesigner", "EmotionGeneratorV2",
         "VNCCS_ControlCenter", "VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator",
@@ -22,6 +36,18 @@ def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools():
         "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker",
     }
     assert module.NODE_DISPLAY_NAME_MAPPINGS["VNCCSChromaKey"] == "VNCCS Chroma Key"
+    if missing:
+        creator = module.nodes.character_creator_v2
+        assert creator.race_prompt("elf, custom markings") == "elf, custom markings"
+        assert not creator.SKIN_COLOR_OPTIONS
+        preview = module.nodes.style_preview_test
+        info, style = preview._random_character_info("qi2", "Blue", 24, 24, False, {})
+        assert info["race"] == "human" and info["hair"] == "black hair, long hair"
+        preview._set_observed_breast_size(info, "B-Cup")
+        if "character_styles.json" in missing:
+            assert style == "none"
+            assert creator._character_style_prompt({"style": "saved", "style_prompt": "ink drawing"}) == "ink drawing"
+        assert all(not (template / name).exists() for name in missing)
 
 
 def test_registered_nodes_match_workflows_and_preserved_tools():

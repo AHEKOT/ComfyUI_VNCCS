@@ -1,8 +1,11 @@
 """Tests for nodes/vnccs_control_center.py — pure helper functions."""
 
+import asyncio
 import json
 import os
 import sys
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -42,6 +45,33 @@ from nodes.vnccs_control_center import (
 )
 
 _CONTROL_CENTER_MODULE = sys.modules[_sync_packaged_cc_config.__module__]
+
+
+@pytest.mark.parametrize("manager_name", ["manager_util", "comfyui_manager.common.manager_util"])
+def test_module_versions_reads_unfiltered_registry_metadata(monkeypatch, manager_name):
+    cc = _CONTROL_CENTER_MODULE
+    read = AsyncMock(return_value=[
+        {"version": "3.3.2", "status": "NodeVersionStatusFlagged", "downloadUrl": "https://example.invalid/3.3.2.zip"},
+        {"version": "3.3.3", "downloadUrl": "https://example.invalid/3.3.3.zip"},
+        {"version": "3.3.4", "status": "NodeVersionStatusPending"},
+        {"version": "3.3.5", "status": "NodeVersionStatusActive", "downloadUrl": ""},
+        {"version": "9.0.0", "deprecated": True, "downloadUrl": "https://example.invalid/9.0.0.zip"},
+    ])
+    monkeypatch.setitem(sys.modules, manager_name, SimpleNamespace(get_data=read))
+    policy = {"network_mode": "public"}
+    monkeypatch.setattr(cc, "_get_manager_install_policy", lambda: policy)
+    monkeypatch.setattr(cc.web, "json_response", lambda data, status=200: (status, data), raising=False)
+    request = SimpleNamespace(match_info={"package": "vnccs"})
+    assert asyncio.run(cc.vnccs_module_versions(request)) == (200, [
+        {"version": "3.3.2"},
+        {"version": "3.3.3"},
+    ])
+    read.assert_awaited_once_with("https://api.comfy.org/nodes/vnccs/versions", silent=True)
+    policy["network_mode"] = "offline"
+    assert asyncio.run(cc.vnccs_module_versions(request))[0] == 503
+    request.match_info["package"] = "other"
+    assert asyncio.run(cc.vnccs_module_versions(request))[0] == 404
+    assert read.await_count == 1
 
 
 def test_packaged_qi2_turbo_is_second_and_qie2511_is_absent():
@@ -1131,7 +1161,7 @@ class TestControlCenterFrontendFamilies:
         assert "window.location.reload();" in source
         assert 'this._btn("Enable & restart"' in source
         assert "security_level will not be changed" in source
-        assert 'selected_version: "latest"' in source
+        assert 'selected_version: item.manager_version || "latest"' in source
         assert 'kind: "install"' in source
         assert "skip_post_install: false" in source
         assert 'this._btn("Install all"' in source
