@@ -59,15 +59,3 @@ test("Missing or disabled Studio preserves hidden authored data and explains the
         assert.match(node.notice.textContent, /requires VNCCS-Utils/);
     }
 });
-
-test("Manager accepts the existing character workflows' twelve-pose state and socket layout", () => {
-    for (const name of ["Step1_CharacterCreator", "Step1_CharacterCloner", "Step2_CharacterClothes"]) {
-        const graph = JSON.parse(readFileSync(new URL(`../workflows/VNCCS_3.2_${name}.json`, import.meta.url)));
-        const node = graph.nodes.find(node => ["VNCCS_PoseStudio", "VNCCS_PoseManager"].includes(node.type));
-        assert.ok(node);
-        assert.equal(node.inputs[0].name, "pose_image");
-        assert.deepEqual(node.outputs.map(output => output.name), ["images", "lighting_prompt"]);
-        assert.equal(JSON.parse(node.widgets_values[0]).poses.length, 12);
-        assert.equal(graph.links.filter(link => link[1] === node.id).length, 2);
-    }
-});

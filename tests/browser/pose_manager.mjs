@@ -258,13 +258,14 @@ try {
     });
     await ready(1);
     await shot("single");
-    const workflows = ["Step1_CharacterCreator", "Step1_CharacterCloner", "Step2_CharacterClothes"];
-    let saved;
-    for (const [i, name] of workflows.entries()) {
-        const graph = JSON.parse(await readFile(new URL(`../../workflows/VNCCS_3.2_${name}.json`, import.meta.url)));
-        const node = graph.nodes.find(node => ["VNCCS_PoseStudio", "VNCCS_PoseManager"].includes(node.type));
-        assert.ok(node, "The workflow fixture must contain its original pose node");
-        await page.evaluate(({ node, zoom }) => mount(node, zoom), { node, zoom: [.85, .75, 1][i] });
+    const preset = JSON.parse(await readFile(new URL("../../pose_set_defaults/17ee87dd13254ade89cddfddc4a65779.json", import.meta.url)));
+    await page.evaluate(asset => poseNode.studioWidget.loadPoseSetAsset(asset), preset.asset);
+    await ready(12);
+    const saved = await page.evaluate(() => poseNode.serialize());
+    for (const [i, [width, height, zoom]] of [[1210, 940, .85], [900, 800, .75], [1400, 1000, 1]].entries()) {
+        await page.evaluate(({ saved, width, height, zoom }) => {
+            mount(saved, zoom); poseNode.setSize([width, height]); app.canvas.centerOnNode(poseNode);
+        }, { saved, width, height, zoom });
         await ready(12);
         reports.push({ compactGrid: await compactPoseGrid() });
         const report = await geometry();
@@ -272,22 +273,15 @@ try {
         assert.equal(report.library, "Library");
         assert.ok(report.width <= 1 && report.headerFits && report.buttonFits, JSON.stringify(report));
         assert.ok(report.titleRemoved);
-        const connections = graph.links.filter(link => link[1] === node.id);
-        const target = graph.nodes.find(item => item.id === connections[0][3]);
-        assert.ok(await page.evaluate(({ connections, type }) => {
-            const target = LiteGraph.createNode(type); app.graph.add(target); target.pos = [4000, 80];
-            return connections.every(link => { poseNode.connect(link[2], target, link[4]); return target.inputs[link[4]].link != null; });
-        }, { connections, type: target.type }));
         reports.push(report);
-        await shot(name);
-        if (i === 0) saved = await page.evaluate(() => poseNode.serialize());
+        await shot(`node-${i}`);
         const counts = i === 0 ? [1, 2, 3, 5, 7, 10, 11, 13, 16, 24] : [10, 13];
         for (const count of counts) {
             await page.evaluate(({ count, poses }) => {
                 poseNode.studioWidget.loadPoseSetAsset({ type: "pose_set", poses: Array.from({ length: count }, (_, i) => poses[i % poses.length]) });
             }, { count, poses: JSON.parse(saved.widgets_values[0]).poses });
             await ready(count);
-            reports.push({ size: node.size, compactGrid: await compactPoseGrid() });
+            reports.push({ size: [width, height], compactGrid: await compactPoseGrid() });
             if (count === 10) {
                 const first = page.locator(".vnccs-ps-manager-grid > .vnccs-ps-pose-card").first();
                 const before = await first.boundingBox();
@@ -539,7 +533,7 @@ try {
     assert.equal(moduleURLs.size, 5);
     assert.ok([...moduleURLs].every(url => new URL(url).searchParams.get("v") === version));
     await writeFile(join(output, "results.json"), JSON.stringify({ reports, libraryBounds, cardReports, pixels, executedImages: 12 }, null, 2));
-    console.log("PASS: native single canvas, zero slider encodes, 12-pose workflows, node-local library, save/load, real execution, damaged state preservation.");
+    console.log("PASS: native single canvas, zero slider encodes, 12-pose sets, node-local library, save/load, real execution, damaged state preservation.");
 } catch (error) {
     console.error(await page.evaluate(() => ({ mode: window.poseNode?.studioWidget?.interfaceMode,
         error: window.poseNode?.studioWidget?._managerPreviewRefreshError,

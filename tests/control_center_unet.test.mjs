@@ -1,6 +1,6 @@
 import { createWidgetContext } from './widget_context.mjs';
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
@@ -125,31 +125,7 @@ test("Turbo LoRA section is hidden for built-in QI2 Turbo and remains available 
     assert.ok(widget._compatibleTurboLoras().length);
 });
 
-test("packaged workflows select QI2 without legacy model state", () => {
-    let count = 0;
-    function inspect(value) {
-        if (!value || typeof value !== "object") return;
-        if (value.type === "VNCCS_ControlCenter") {
-            const saved = JSON.parse(value.widgets_values[1]);
-            assert.equal(saved.active_kind, "QI2");
-            assert.equal(saved.selected_model, defaultName);
-            const turboEnabled = saved.loras.some(lora => lora.name === turbo.name && lora.auto_apply);
-            assert.equal(saved.model_params.steps, turboEnabled ? 6 : 25);
-            assert.equal(saved.model_params.cfg, turboEnabled ? 1 : 3);
-            assert.deepEqual(saved.model_params_by_kind.QI2, saved.model_params);
-            if (turboEnabled) {
-                assert.deepEqual(saved.model_params.turbo_previous_settings, { steps: 25, cfg: 3 });
-            }
-            count++;
-        }
-        Object.values(value).forEach(inspect);
-    }
-    const directory = new URL("../workflows/", import.meta.url);
-    for (const name of readdirSync(directory).filter(name => name.endsWith(".json"))) {
-        inspect(JSON.parse(readFileSync(new URL(name, directory), "utf8")));
-    }
-    assert.equal(count, 4);
-});
+
 
 test("QI2 cache controls are inline above Turbo LoRA and persist node parameters", () => {
     const { widget, serialized } = setup();

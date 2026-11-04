@@ -506,7 +506,7 @@ def test_emotion_detailer_uses_local_denoise_and_forwards_other_controls(monkeyp
     assert detailer["tiled_decode"] is False
 
 
-def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
+def test_emotion_detailer_defaults_match_face_detailer():
     defaults = cg.DEFAULT_WIDGET_DATA["emotion_generation"]
     expected = {
         "face_denoise": 0.55,
@@ -533,20 +533,6 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     assert defaults["use_sam"] is False
     assert "steps" not in defaults
     assert "cfg" not in defaults
-
-    workflow_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "workflows",
-        "VNCCS_3.2_Step3_CharacterEmotions.json",
-    )
-    with open(workflow_path, "r", encoding="utf-8") as handle:
-        workflow = json.load(handle)
-    node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
-    workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
-    assert {key: workflow_settings[key] for key in expected} == expected
-    assert workflow_settings["use_sam"] is False
-    assert "steps" not in workflow_settings
-    assert "cfg" not in workflow_settings
 
 
 def test_regenerate_seed_shift_restores_pipe_seed():

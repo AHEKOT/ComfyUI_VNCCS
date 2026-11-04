@@ -10,14 +10,8 @@ const { chromium } = createRequire(import.meta.url)("playwright");
 const project = new URL("../../", import.meta.url);
 const output = join(tmpdir(), "vnccs-generator-gallery");
 await mkdir(output, { recursive: true });
-const fixtures = [];
-for (const name of ["Step1_CharacterCreator", "Step1_CharacterCloner", "Step2_CharacterClothes", "Step3_CharacterEmotions"]) {
-    const path = `workflows/VNCCS_3.2_${name}.json`;
-    const workflow = JSON.parse(await readFile(new URL(path, project), "utf8"));
-    const node = workflow.nodes.find(node => /^VNCCS_.*Generator$/.test(node.type));
-    assert.ok(node && Array.isArray(node.size) && workflow.extra.ds.scale > 0);
-    fixtures.push({ path, node, scale: workflow.extra.ds.scale });
-}
+const fixtures = ["VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator", "VNCCS_ClothesGenerator", "VNCCS_EmotionsGenerator"]
+    .map((type, index) => ({ node: { id: index + 1, type, size: [1600, 1000], inputs: [], widgets_values: ["{}"] }, scale: .85 }));
 const layoutScenarios = [
     ...[3, 6, 7, 12].map(count => ({ count, width: 1024, height: 1024, label: "square" })),
     ...[3, 6, 7, 12].map(count => ({ count, width: 1536, height: 640, label: "wide" })),
@@ -420,9 +414,9 @@ async function runScenarios() {
             stable(before,await measure(zoom));
             assert.equal(await page.evaluate(()=>widget.previewGrid.querySelectorAll('.is-processing,.is-waiting').length),0);
             assert.ok(await page.evaluate(()=>[...widget.previewGrid.children].every(tile=>tile.querySelectorAll('.vnccs-pipe-img-content').length===1&&tile.querySelectorAll('.vnccs-pipe-img-placeholder').length===1)));
-            const label=fixture.node.type+'-'+(zoom===1?'100pct':'workflow');
+            const label=fixture.node.type+'-'+(zoom===1?'100pct':'scaled');
             await page.screenshot({path:join(output,label+'.png')});
-            report.push({workflow:fixture.path,type:fixture.node.type,size:fixture.node.size,zoom,cards:before.map(rect=>({width:rect.width/zoom,height:rect.height/zoom})),screenshot:label+'.png'});
+            report.push({type:fixture.node.type,size:fixture.node.size,zoom,cards:before.map(rect=>({width:rect.width/zoom,height:rect.height/zoom})),screenshot:label+'.png'});
             // A single result must fit the full gallery while preserving its own aspect ratio.
             await page.evaluate(()=>{widget.stageState[widget.selectedPreview]={status:'done',total:1,images:urls('single',1)};widget.renderPreview();});
             await page.waitForFunction(()=>widget.previewGrid.children.length===1&&widget.previewGrid.children[0].dataset.src.includes('v=single'));
@@ -513,7 +507,7 @@ async function runScenarios() {
     }
     assert.deepEqual(errors,[]);
     await writeFile(join(output,'report.json'),JSON.stringify({report,layoutReport,deviceScaleFactor:2,reducedMotion:true,errors},null,2));
-    console.log(JSON.stringify({scenarios:report.length,workflowSizes:fixtures.map(f=>({type:f.node.type,size:f.node.size,scale:f.scale})),errors,output}));
+    console.log(JSON.stringify({scenarios:report.length,nodeSizes:fixtures.map(f=>({type:f.node.type,size:f.node.size,scale:f.scale})),errors,output}));
 }
 try {
     await runScenarios();

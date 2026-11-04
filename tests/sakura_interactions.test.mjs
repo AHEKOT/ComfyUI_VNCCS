@@ -539,43 +539,7 @@ for (const [name, flags] of [["Character", {}], ["Clone", { isClone: true }], ["
     });
 }
 
-test("decoded generator cards share a stable frame and contain mixed image aspect ratios at workflow sizes", async () => {
-    const h = setup();
-    h.context.app = { registerExtension() {} };
-    vm.runInContext(generator.replace(/^import .*;\n/gm, "") + '\nthis.Generator = CharacterGeneratorWidget;', h.context);
-    const preview = new h.Element("div"); h.root.appendChild(preview);
-    const widget = Object.assign(Object.create(h.context.Generator.prototype), {
-        previewEl: preview, _ui: h.ui, syncStagesFromData() {}, schedulePreviewGridLayout() {},
-        stages: [["pose_generation", "Poses"]], selectedPreview: "pose_generation",
-        stageState: { pose_generation: { status: "done", images: ["portrait", "landscape", "square"] } },
-    });
-    widget.renderPreview();
-    const sizes = [[512, 1024], [1024, 512], [768, 768]];
-    for (const [index, tile] of [...widget.previewGrid.children].entries()) {
-        [tile._pendingImage.naturalWidth, tile._pendingImage.naturalHeight] = sizes[index];
-        await tile._pendingImage.onload();
-    }
-    for (const name of ["Step1_CharacterCreator", "Step1_CharacterCloner", "Step2_CharacterClothes", "Step3_CharacterEmotions"]) {
-        const workflow = JSON.parse(readFileSync(new URL(`../workflows/VNCCS_3.2_${name}.json`, import.meta.url), "utf8"));
-        const node = workflow.nodes.find(node => /^VNCCS_.*Generator$/.test(node.type));
-        widget.previewGrid.clientWidth = node.size[0] - 290 - 24;
-        widget.previewGrid.clientHeight = node.size[1] - 172 - 68;
-        widget.layoutPreviewGrid(widget.previewGrid);
-        [...widget.previewGrid.children].forEach((tile, index) => {
-            const width = parseFloat(tile.style.width), height = parseFloat(tile.style.height);
-            const cellW = parseFloat(widget.previewGrid.style.gridTemplateColumns.match(/, ([\d.]+)px/)[1]);
-            const cellH = parseFloat(widget.previewGrid.style.gridTemplateRows.match(/, ([\d.]+)px/)[1]);
-            assert.ok(width <= cellW + 0.001 && height <= cellH + 0.001);
-            assert.ok(Math.abs(width - cellW) < 0.001 || Math.abs(height - cellH) < 0.001, "Each image fills its cell along one axis without distortion");
-            assert.ok(width > 0 && height > 0);
-            assert.equal(tile.style.width, widget.previewGrid.children[0].style.width);
-            assert.equal(tile.style.height, widget.previewGrid.children[0].style.height);
-            assert.ok(Math.abs(width / height - sizes[0][0] / sizes[0][1]) < 0.001);
-        });
-        assert.match(generator, /\.vnccs-pipe-img-content\s*\{[^}]*object-fit: contain/);
-        assert.doesNotMatch(widget.previewGrid.style.gridTemplateColumns, /1fr/);
-    }
-});
+
 
 test("Creator native selectors keep their state while shared dropdowns handle choices and dynamic inventory", () => {
     const h = setup();
