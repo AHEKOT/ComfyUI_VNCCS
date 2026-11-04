@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-11";
 import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, showModelDownloadDialog, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
@@ -4237,7 +4238,6 @@ class CharacterGeneratorWidget {
 
     layoutPreviewGrid(grid) {
         if (!grid?.isConnected || !grid.children.length) return;
-        const gap = 8;
         const availableW = Math.max(1, grid.clientWidth);
         const availableH = Math.max(1, grid.clientHeight);
         const count = grid.children.length;
@@ -4247,30 +4247,11 @@ class CharacterGeneratorWidget {
         const fallback = known ? known.naturalWidth / known.naturalHeight : this.isBackground ? 16 / 9 : grid.children[0]._previewAspect || CHARACTER_MANNEQUIN_ASPECT;
         // All cards share one frame, including pending previews and mannequins.
         const aspect = Number.isFinite(fixed) && fixed > 0 ? fixed : fallback;
-        const aspects = images.map(() => aspect);
-        let best = null;
-        for (let cols = 1; cols <= count; cols++) {
-            const rows = Math.ceil(count / cols);
-            const cellW = (availableW - gap * (cols - 1)) / cols;
-            const cellH = (availableH - gap * (rows - 1)) / rows;
-            if (cellW <= 0 || cellH <= 0) continue;
-            const sizes = aspects.map(aspect => {
-                const width = Math.min(cellW, cellH * aspect);
-                return { width, height: width / aspect };
-            });
-            const areas = sizes.map(size => size.width * size.height);
-            const score = Math.min(...areas) * 1000000 + areas.reduce((sum, area) => sum + area, 0);
-            if (!best || score > best.score) best = {
-                cols, rows, cellW, cellH, sizes, score,
-                trackW: Math.max(...sizes.map(size => size.width)),
-                trackH: Math.max(...sizes.map(size => size.height)),
-            };
-        }
+        const best = fitPreviewGrid(count, availableW, availableH, aspect);
         if (!best) return;
         grid.style.gridTemplateColumns = `repeat(${best.cols}, ${best.trackW}px)`;
         grid.style.gridTemplateRows = `repeat(${best.rows}, ${best.trackH}px)`;
-        const lastRowCount = count % best.cols || best.cols;
-        const lastRowOffset = lastRowCount < best.cols ? (best.cols - lastRowCount) * (best.trackW + gap) / 2 : 0;
+        const { lastRowCount, lastRowOffset } = best;
         [...grid.children].forEach((tile, index) => {
             const size = images[index] || tile._previewSource || tile.classList.contains("is-placeholder")
                 ? best.sizes[index] : { width: 0, height: 0 };

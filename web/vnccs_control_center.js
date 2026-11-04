@@ -2963,6 +2963,7 @@ class VNCCSControlCenterWidget {
     _updateDownloadCard(card, animate = true) {
         const view = card._downloadView;
         if (!view) return;
+        view.badge ??= card.querySelector(".vnccs-cc-badge");
         const { cat, slot, label, button, badge, statusClass, mode } = view;
         const entry = this.config?.[cat]?.find(item => item.name === view.entry.name) || view.entry;
         view.entry = entry;

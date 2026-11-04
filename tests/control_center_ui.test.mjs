@@ -675,7 +675,9 @@ for (const [name, category, render] of [
         widget.config[category].push(entry);
         const card = render(widget, entry);
         widget.scrollArea.appendChild(card);
-        const { slot, label, button, badge } = card._downloadView;
+        const { slot, label, button } = card._downloadView;
+        const badge = card.querySelector(".vnccs-cc-badge");
+        assert.equal(badge.textContent, "↓");
         const key = `cc_${category}_${entry.name}`;
         widget._renderAll = () => assert.fail("Download transitions must not rebuild the interface");
         widget.scrollArea.scrollTop = 170;
@@ -687,6 +689,7 @@ for (const [name, category, render] of [
         assert.equal(pending.length, 1, "Repeated clicks cannot submit a second download");
         assert.equal(document.activeElement, label);
         assert.equal(label.textContent, "Queued");
+        assert.equal(badge.textContent, "…");
         pending[0].resolve({ ok: true, text: async () => '{"status":"queued"}' });
         await request;
 
@@ -700,6 +703,9 @@ for (const [name, category, render] of [
             assert.equal(card._downloadView.label, label);
             assert.equal(card._downloadView.button, button);
             assert.equal(card._downloadView.badge, badge);
+            assert.equal(badge.textContent, { downloading: "⬇", error: "✕", queued: "…", success: "●", installed: "●" }[status]);
+            assert.equal(badge.className, `vnccs-cc-badge vnccs-cc-badge--${status === "success" ? "installed" : status}`);
+            assert.equal(badge.ariaLabel, status === "success" ? "Checking installation" : widget._statusLabel(status));
             assert.equal(widget.scrollArea.scrollTop, 170);
             assert.equal(widget.scrollArea.scrollLeft, 9);
             assert.equal(label.role, "status");

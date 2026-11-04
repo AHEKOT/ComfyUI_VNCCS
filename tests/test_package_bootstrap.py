@@ -29,7 +29,7 @@ def test_actual_node_loader_registers_workflow_nodes_and_preserved_tools(tmp_pat
     monkeypatch.syspath_prepend(str(tmp_path))
     module = importlib.import_module(package.name)
     assert set(module.NODE_CLASS_MAPPINGS) == {
-        "VNCCS_CGCreator", "CharacterCloner", "CharacterCreatorV2", "ClothesDesigner", "EmotionGeneratorV2", "VNCCS_BackgroundCreator", "VNCCS_BackgroundGenerator",
+        "VNCCS_CGCreator", "VNCCS_PoseManager", "CharacterCloner", "CharacterCreatorV2", "ClothesDesigner", "EmotionGeneratorV2", "VNCCS_BackgroundCreator", "VNCCS_BackgroundGenerator",
         "VNCCS_ControlCenter", "VNCCS_CharacterGenerator", "VNCCS_CharacterCloneGenerator",
         "VNCCS_ClothesGenerator", "VNCCS_EmotionsGenerator", "VNCCSStylePreviewTest",
         "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
@@ -78,7 +78,7 @@ def test_registered_nodes_match_workflows_and_preserved_tools():
         "PrimitiveFloat", "ComfyMathExpression",
     }
     assert registered == (used - external_nodes) | {
-        "VNCCS_CGCreator", "VNCCSStylePreviewTest", "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
+        "VNCCS_CGCreator", "VNCCS_PoseManager", "VNCCSStylePreviewTest", "VNCCS_QWEN_Encoder", "VNCCSChromaKey", "VNCCS_MaskExtractor",
         "VNCCS_Flux_Klein_Encoder", "VNCCS_Pipe", "VNCCSSamplerSchedulerPicker", "VNCCS_BackgroundCreator", "VNCCS_BackgroundGenerator",
     }
 

@@ -1,6 +1,7 @@
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { webcrypto } from 'node:crypto';
+import { fitPreviewGrid } from '../web/preview_grid_layout.mjs';
 
 const transport = readFileSync(new URL('../web/vnccs_transport.js', import.meta.url), 'utf8')
     .replace(/^import .*;\n/gm, '').replaceAll('export ', '');
@@ -25,7 +26,7 @@ export function createWidgetContext(sandbox = {}) {
     api.addEventListener ||= () => {};
     api.removeEventListener ||= () => {};
     const context = vm.createContext({
-        Headers, CustomEvent, crypto: webcrypto, setInterval: () => 0, clearInterval() {},
+        Headers, CustomEvent, crypto: webcrypto, fitPreviewGrid, setInterval: () => 0, clearInterval() {},
         setTimeout: () => 0, clearTimeout() {},
         window: { addEventListener() {}, removeEventListener() {}, dispatchEvent() {} },
         document: { visibilityState: 'hidden', addEventListener() {}, removeEventListener() {} },
