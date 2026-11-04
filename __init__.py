@@ -234,6 +234,8 @@ def _vnccs_register_pose_sets():
         return
     from .api.pose_set_library import register_routes
     register_routes(PromptServer.instance.routes)
+    from .api.pose_manager_sprites import register_routes as register_sprite_routes
+    register_sprite_routes(PromptServer.instance.routes)
 
 
 _vnccs_register_pose_sets()

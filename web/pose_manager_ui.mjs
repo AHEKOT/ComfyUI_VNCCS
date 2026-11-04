@@ -1,8 +1,8 @@
 import { injectStyles, SAKURA_THEME_CSS } from "./vnccs_common.js";
-import { mountLivePreviews } from "./pose_manager_previews.mjs?v=pose-manager-6";
-import { openSetLibrary } from "./pose_set_library.mjs?v=pose-manager-6";
-import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-6";
-import { openPoseLibrary, POSE_LIBRARY_CSS } from "./pose_manager_library.mjs?v=pose-manager-6";
+import { mountLivePreviews } from "./pose_manager_previews.mjs?v=pose-manager-10";
+import { openSetLibrary } from "./pose_set_library.mjs?v=pose-manager-10";
+import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-10";
+import { mountPoseLibrary, POSE_LIBRARY_CSS } from "./pose_manager_library.mjs?v=pose-manager-10";
 
 const CSS = `
 .vnccs-pm-shell,.vnccs-set-library { ${SAKURA_THEME_CSS} }
@@ -63,6 +63,12 @@ ${POSE_LIBRARY_CSS}
 `;
 
 export function mountManager(widget) {
+    mountPoseLibrary(widget);
+    const generatePrompt = widget.generatePromptFromLights;
+    // Omit light descriptions from Manager prompts without changing the rendered lights.
+    widget.generatePromptFromLights = function (_lights, userPromptOverride) {
+        return generatePrompt.call(this, [], userPromptOverride);
+    };
     injectStyles(CSS, "vnccs-pose-manager-style");
     widget.container.classList.add("vnccs-pm-shell");
     widget.managerSidebar.querySelector(".vnccs-ps-section-content")
@@ -132,7 +138,7 @@ export function mountManager(widget) {
             button.className = "vnccs-pm-pose-library";
             button.textContent = "Library";
             button.setAttribute("aria-label", `Library for Pose ${index + 1}`);
-            button.onclick = event => { event.stopPropagation(); openPoseLibrary(this, index); };
+            button.onclick = event => { event.stopPropagation(); this.switchTab(index); this.showLibraryModal(); };
             button.onkeydown = event => event.stopPropagation();
             card.append(button);
         });

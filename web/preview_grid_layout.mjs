@@ -1,4 +1,19 @@
 // Shared by generator galleries and Pose Manager; tracks fit the images, not spare cell space.
+export function packPreviewRows(widths, availableWidth, gap = 8) {
+    const rows = [];
+    widths.forEach((width, index) => {
+        width = Math.min(width, availableWidth);
+        let row = rows.find(row => row.width + gap + width <= availableWidth);
+        if (!row) {
+            row = { width: 0, indices: [] };
+            rows.push(row);
+        }
+        row.width += (row.indices.length ? gap : 0) + width;
+        row.indices.push(index);
+    });
+    return rows.map(row => row.indices);
+}
+
 export function fitPreviewGrid(count, availableW, availableH, aspect, footerHeight = 0) {
     const gap = 8;
     const aspects = Array.from({ length: count }, () => aspect);

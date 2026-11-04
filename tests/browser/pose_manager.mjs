@@ -462,6 +462,55 @@ try {
     await page.keyboard.press("Escape");
     await library.waitFor({ state: "detached" });
     assert.ok(await opener.evaluate(el => el === document.activeElement));
+    const promptCheck = await page.evaluate(() => {
+        const w = poseNode.studioWidget;
+        const nativePrompt = Object.getPrototypeOf(w).generatePromptFromLights;
+        w.exportParams.keepOriginalLighting = false;
+        const lights = JSON.stringify(w.lightParams);
+        const sceneLights = () => {
+            const result = [];
+            w.viewer.scene.traverse(object => {
+                if (object.isLight) result.push([object.type, object.intensity, object.color.toArray(), object.position.toArray()]);
+            });
+            return result;
+        };
+        const before = sceneLights();
+        const userPrompt = "Keep the authored lighting words and $& symbols.";
+        w.setPosePrompt(w.activeTab, userPrompt);
+        const cases = [];
+        for (const template of ["", "Portrait\n<lighting>\n<user_prompt>\n<lighting>\nEnd", "<user_prompt>"]) {
+            w.exportParams.prompt_template = template;
+            const actual = w.generatePromptFromLights(w.lightParams);
+            cases.push({ template, preservedTemplate: w.exportParams.prompt_template,
+                native: nativePrompt.call(w, w.lightParams, userPrompt),
+                actual,
+                expected: nativePrompt.call(w, [], userPrompt) });
+        }
+        w.exportParams.prompt_template = "Portrait\n<lighting>\n<user_prompt>\nEnd";
+        const expected = w.poses.map((_, index) => {
+            const prompt = `Pose ${index + 1}: ${userPrompt}`;
+            w.setPosePrompt(index, prompt);
+            return `Portrait\n${prompt}\nEnd`;
+        });
+        w.syncToNode(false, { skipCaptureUpload: true });
+        const saved = poseNode.serialize(), data = JSON.parse(saved.widgets_values[0]);
+        data.lighting_prompts = expected.map(() => nativePrompt.call(w, w.lightParams, userPrompt));
+        saved.widgets_values[0] = JSON.stringify(data);
+        return { cases, expected, saved, lights, lightsAfter: JSON.stringify(w.lightParams), before, after: sceneLights() };
+    });
+    for (const item of promptCheck.cases) {
+        assert.equal(item.actual, item.expected);
+        assert.equal(item.preservedTemplate, item.template);
+        if (item.template !== "<user_prompt>") assert.notEqual(item.actual, item.native, "Original Studio still includes lighting");
+    }
+    assert.ok(promptCheck.before.length > 0, "The scene contains rendered lights");
+    assert.deepEqual(promptCheck.after, promptCheck.before);
+    assert.equal(promptCheck.lightsAfter, promptCheck.lights);
+    await page.evaluate(saved => mount(saved), promptCheck.saved);
+    await ready(12);
+    assert.deepEqual(await page.evaluate(() => poseNode.studioWidget.lightingPrompts), promptCheck.expected,
+        "Restoring an older workflow replaces cached light descriptions");
+    await shot("prompts-without-lighting");
     const ids = await page.evaluate(async () => {
         const images = LiteGraph.createNode("PreviewImage"); app.graph.add(images); images.pos = [4000, 80]; poseNode.connect(0, images, 0);
         const prompts = LiteGraph.createNode("PreviewAny"); app.graph.add(prompts); prompts.pos = [4000, 300]; poseNode.connect(1, prompts, 0);
@@ -477,6 +526,8 @@ try {
     assert.equal(history?.status.status_str, "success", JSON.stringify(history?.status));
     assert.equal(history.outputs[ids.images].images.length, 12);
     assert.equal(history.outputs[ids.prompts].text.length, 12);
+    assert.deepEqual(history.outputs[ids.prompts].text, promptCheck.expected);
+    assert.equal(await page.evaluate(() => JSON.stringify(poseNode.studioWidget.lightParams)), promptCheck.lights);
     const damaged = structuredClone(saved); damaged.widgets_values[0] = '{"poses":';
     await page.evaluate(data => mount(data), damaged);
     await page.waitForFunction(() => Boolean(poseNode.studioWidget._poseDataRestoreError));

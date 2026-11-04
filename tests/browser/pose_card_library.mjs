@@ -44,36 +44,79 @@ export async function verifyPoseCardLibrary(page, output) {
         return [name, canvas.toDataURL().split(",")[1]];
     })), assets);
     const listRoute = "**/vnccs/pose_library/list?*", getRoute = "**/vnccs/pose_library/get/*";
-    const reposRoute = "**/vnccs/pose_library/repositories", addRoute = "**/vnccs/pose_library/repositories/add";
-    const previewRoute = "**/vnccs/pose_library/preview/*";
-    let delay = false, release, requested, additions = 0, enabled = true, repoError = false;
-    await page.route(reposRoute, route => {
-        assert.equal(new URL(route.request().url()).pathname, "/vnccs/pose_library/repositories");
-        return route.fulfill(repoError ? { status: 503, json: { error: "Repository service unavailable" } } :
-        { json: { repositories: [{ repo_id: "owner/studio-a", enabled: true }, { repo_id: "owner/studio-b", enabled: true },
-            ...(additions ? [{ repo_id: spriteRepo, enabled }] : [])] } });
+    const mutationRoute = "**/vnccs/pose_library/repositories/**";
+    const previewRoute = "**/vnccs/pose_library/preview/*", spriteRoute = "**/vnccs/pose-manager/sprites**";
+    let delay = false, release, requested, initializations = 0, enabled = true, repoError = false, extraRepository = false;
+    const studioMutations = [], managerMutations = [];
+    await page.route(mutationRoute, route => {
+        if (route.request().method() !== "GET") studioMutations.push(route.request().url());
+        return route.fulfill({ status: 400, json: { error: "Studio settings must not be changed" } });
     });
-    await page.route(addRoute, route => {
-        assert.equal(route.request().postDataJSON().repo_id, spriteRepo);
-        additions++;
-        return route.fulfill({ json: { refreshed: { repo_id: spriteRepo, enabled: true, status: "success" } } });
-    });
-    await page.route(listRoute, route => route.fulfill({ json: { poses: Object.entries(assets).map(([name, asset]) =>
-        ({ name, ...asset, asset_type: "pose", has_preview: true })) } }));
+    const records = Object.entries(assets).map(([name, asset], i) => ({ name, ...asset, asset_type: "pose", has_preview: true,
+        ...(asset.repository === spriteRepo ? { id: String(i).padStart(32, "0"), manager_sprite_id: String(i).padStart(32, "0") } : {}) }));
+    await page.route(listRoute, route => route.fulfill({ json: { poses: records.filter(record => !record.manager_sprite_id) } }));
     const assetName = route => decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1));
     await page.route(previewRoute, route => previews[assetName(route)]
         ? route.fulfill({ contentType: "image/png", body: Buffer.from(previews[assetName(route)], "base64") }) : route.fallback());
-    await page.route(getRoute, async route => {
-        const name = assetName(route);
+    const waitForRelease = async () => {
         if (delay) { requested?.(); await new Promise(resolve => { release = resolve; }); }
-        await route.fulfill({ json: { pose: assets[name].data, asset_type: "pose" } });
+    };
+    await page.route(getRoute, async route => {
+        await waitForRelease();
+        await route.fulfill({ json: { pose: assets[assetName(route)].data, asset_type: "pose" } });
+    });
+    await page.route(spriteRoute, async route => {
+        const parts = new URL(route.request().url()).pathname.split("/sprites")[1].split("/").filter(Boolean);
+        if (parts.length) {
+            const record = records.find(record => record.manager_sprite_id === parts[0]);
+            if (parts[1] === "preview") return route.fulfill({ contentType: "image/png", body: Buffer.from(previews[record.name], "base64") });
+            await waitForRelease();
+            return route.fulfill({ json: { pose: record.data } });
+        }
+        if (repoError) return route.fulfill({ status: 503, json: { error: "Repository service unavailable" } });
+        if (route.request().method() === "POST") {
+            const data = route.request().postDataJSON();
+            managerMutations.push(data);
+            const { action, enabled: next } = data;
+            if (action === "ensure") initializations++;
+            if (action === "toggle") enabled = next;
+            if (action === "add") extraRepository = true;
+            if (action === "remove") extraRepository = false;
+        }
+        return route.fulfill({ json: { repositories: [{ repo_id: spriteRepo, title: "Sprite poses", builtin: false, enabled, pose_count: 3 },
+            ...(extraRepository ? [{ repo_id: "owner/manager-extra", enabled: true, builtin: false, pose_count: 0 }] : [])],
+            poses: enabled ? records.filter(record => record.manager_sprite_id) : [] } });
     });
     const library = page.getByRole("dialog", { name: "Pose Library", exact: true });
     const names = () => library.locator(".vnccs-ps-library-item-name").allTextContents();
-    const open = async (index, source = "Sprites") => {
+    const checkPacking = async () => {
+        await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        const rows = await library.locator(".vnccs-ps-library-modal-grid").evaluate(grid => {
+            const rect = grid.getBoundingClientRect(), style = getComputedStyle(grid), scale = rect.width / grid.offsetWidth;
+            const width = (grid.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)) * scale;
+            const left = rect.left + (grid.clientLeft + parseFloat(style.paddingLeft)) * scale;
+            const grouped = new Map();
+            for (const card of grid.querySelectorAll(".vnccs-ps-library-item")) {
+                const box = card.getBoundingClientRect(), key = Math.round(box.top);
+                if (!grouped.has(key)) grouped.set(key, []);
+                grouped.get(key).push({ left: box.left, right: box.right, width: box.width,
+                    name: card.querySelector(".vnccs-ps-library-item-name").textContent });
+            }
+            return { rows: [...grouped.values()], width, center: left + width / 2, gap: parseFloat(style.columnGap) * scale };
+        });
+        rows.rows.forEach((row, index) => {
+            assert.ok(Math.abs((row[0].left + row.at(-1).right) / 2 - rows.center) <= 1, "Every row is centered");
+            const used = row.at(-1).right - row[0].left;
+            assert.ok(rows.rows.slice(index + 1).flat().every(card => used + rows.gap + card.width > rows.width - 1),
+                "A later card must fill an earlier row whenever it fits");
+        });
+        return rows.rows.map(row => row.map(card => card.name));
+    };
+    const open = async (index, source = "Manager", empty = false) => {
         await page.getByRole("button", { name: `Library for Pose ${index + 1}`, exact: true }).click();
-        await library.locator(".vnccs-ps-library-item").first().waitFor();
-        if (source !== "Sprites") await library.getByRole("button", { name: source, exact: true }).click();
+        await library.waitFor();
+        if (!empty) await library.locator(".vnccs-ps-library-item").first().waitFor();
+        if (source !== "Manager") await library.getByRole("button", { name: source, exact: true }).click();
         assert.deepEqual(await page.evaluate(() => [poseNode.studioWidget.interfaceMode, poseNode.studioWidget.activeTab]), ["manager", index]);
     };
     const select = name => library.locator(".vnccs-ps-library-item").filter({ hasText: name }).click();
@@ -92,6 +135,7 @@ export async function verifyPoseCardLibrary(page, output) {
             assert.deepEqual(await names(), ["Male sprite", "Wide sprite"]);
             await library.getByRole("button", { name: "All", exact: true }).click();
             await page.waitForFunction(() => [...document.querySelectorAll(".vnccs-pm-pose-picker img")].every(img => img.complete && img.naturalWidth));
+            await checkPacking();
             const geometry = await library.evaluate(overlay => {
                 const a = overlay.getBoundingClientRect(), b = poseNode.studioWidget.container.getBoundingClientRect();
                 const cards = [...overlay.querySelectorAll(".vnccs-ps-library-item")];
@@ -102,7 +146,7 @@ export async function verifyPoseCardLibrary(page, output) {
                         const img = card.querySelector("img"), p = card.querySelector(".vnccs-ps-library-item-preview").getBoundingClientRect();
                         return Math.abs(p.width / p.height - img.naturalWidth / img.naturalHeight);
                     }),
-                    gaps: boxes.slice(1).filter((box, i) => Math.abs(box.y - boxes[i].y) < 1).map((box, i) => box.x - boxes[i].right),
+                    gaps: boxes.flatMap((box, i) => i && Math.abs(box.y - boxes[i - 1].y) < 1 ? [box.x - boxes[i - 1].right] : []),
                     inside: boxes.every(box => box.x >= a.x && box.right <= a.right && box.y >= a.y),
                     noHorizontalScroll: poseNode.studioWidget.libraryGrid.scrollWidth <= poseNode.studioWidget.libraryGrid.clientWidth + 1,
                     selectorRight: overlay.querySelector(".vnccs-pm-pose-sources").getBoundingClientRect().right
@@ -117,8 +161,24 @@ export async function verifyPoseCardLibrary(page, output) {
             assert.ok(await library.locator(".vnccs-ps-library-item").last().evaluate(card =>
                 card.getBoundingClientRect().bottom <= poseNode.studioWidget.libraryGrid.getBoundingClientRect().bottom + 1),
                 "The last row is accessible in the scrolling gallery");
-            await library.getByRole("button", { name: "PoseStudio", exact: true }).click();
-            assert.deepEqual(await names(), ["Single pose", "Scene pose", "Whole set"]);
+            await library.getByRole("button", { name: "Pose Studio", exact: true }).click();
+            await page.waitForFunction(() => [...document.querySelectorAll(".vnccs-pm-pose-picker img")].every(img => img.complete && img.naturalWidth));
+            assert.deepEqual((await names()).sort(), ["Scene pose", "Single pose", "Whole set"]);
+            const packed = await checkPacking();
+            if (width === 900) assert.deepEqual(packed[0], ["Single pose", "Whole set"], "A later narrow card fills the gap before a wide card");
+            await page.screenshot({ path: join(output, `pose-library-packed-${width}.png`) });
+            const scroll = await library.locator(".vnccs-ps-library-modal-grid").evaluate(grid => { grid.scrollTop = 60; return grid.scrollTop; });
+            await page.evaluate(() => poseNode.studioWidget.renderLibrary());
+            await checkPacking();
+            assert.ok(Math.abs(await library.locator(".vnccs-ps-library-modal-grid").evaluate(grid => grid.scrollTop) - scroll) <= 1);
+            await library.locator(".vnccs-ps-library-size-slider").evaluate(input => {
+                input.value = "400"; input.dispatchEvent(new Event("input", { bubbles: true }));
+            });
+            await checkPacking();
+            await library.locator(".vnccs-ps-library-size-slider").evaluate(input => {
+                input.value = "320"; input.dispatchEvent(new Event("input", { bubbles: true }));
+            });
+            await checkPacking();
             await library.locator(".vnccs-ps-library-search").fill("Scene");
             await page.waitForFunction(() => document.querySelectorAll(".vnccs-pm-pose-picker .vnccs-ps-library-item").length === 1);
             assert.deepEqual(await names(), ["Scene pose"]);
@@ -130,18 +190,40 @@ export async function verifyPoseCardLibrary(page, output) {
             await library.waitFor();
             await library.locator(".vnccs-ps-modal-close").click();
         }
-        assert.equal(additions, 1, "The default repository is only registered once");
-        enabled = false;
+        assert.ok(initializations > 0);
         await open(5);
-        await library.getByText("Sprite library is disabled. Enable it in repository settings.").waitFor();
-        assert.equal(additions, 1, "Existing repository preferences are preserved");
+        await library.locator(".vnccs-ps-library-menu-btn").click();
+        const settings = library.locator(".vnccs-ps-library-settings");
+        await settings.getByRole("button", { name: "Disable", exact: true }).click();
+        await settings.getByRole("button", { name: "Enable", exact: true }).waitFor();
+        assert.equal(await settings.locator(".vnccs-ps-library-repo-card:visible").count(), 1);
+        await settings.getByRole("button", { name: "Refresh", exact: true }).click();
+        await settings.getByRole("button", { name: "Enable", exact: true }).click();
+        await settings.getByRole("button", { name: "Disable", exact: true }).waitFor();
+        await settings.locator(".vnccs-ps-library-repo-input").fill("owner/manager-extra");
+        await settings.getByRole("button", { name: "Add Repository", exact: true }).click();
+        const extra = settings.locator(".vnccs-ps-library-repo-card").filter({ hasText: "owner/manager-extra" });
+        await extra.waitFor();
+        await page.screenshot({ path: join(output, "sprite-settings-isolated.png") });
+        await extra.getByRole("button", { name: "Remove", exact: true }).click();
+        await extra.waitFor({ state: "detached" });
+        await settings.getByRole("button", { name: "Back to library", exact: true }).click();
+        await library.getByRole("button", { name: "Pose Studio", exact: true }).click();
+        await library.locator(".vnccs-ps-library-menu-btn").click();
+        await settings.getByText("Manager Repositories", { exact: true }).waitFor();
+        assert.equal(await settings.locator(".vnccs-ps-library-repo-card:visible").count(), 1);
+        await page.keyboard.press("Escape");
+        enabled = false;
+        await open(5, "Manager", true);
+        await page.waitForFunction(() => document.querySelector(".vnccs-pm-pose-status")?.textContent === "");
+        assert.deepEqual(await names(), []);
         await page.keyboard.press("Escape"); enabled = true;
         repoError = true;
-        await open(5);
+        await open(5, "Manager", true);
         await library.getByText("Repository service unavailable Open repository settings to retry.").waitFor();
         await page.keyboard.press("Escape"); repoError = false;
         await page.evaluate(() => { poseNode.setSize([1210, 940]); app.canvas.ds.scale = .85; app.canvas.centerOnNode(poseNode); });
-        for (const [index, name, source] of [[0, "Single pose", "PoseStudio"], [5, "Scene pose", "PoseStudio"], [11, "Female sprite", "Sprites"]]) {
+        for (const [index, name, source] of [[0, "Single pose", "Pose Studio"], [5, "Scene pose", "Pose Studio"], [11, "Female sprite", "Manager"]]) {
             await open(index, source);
             const before = await snapshot();
             if (index === 11) await library.locator(".vnccs-ps-library-item").filter({ hasText: name }).press("Enter");
@@ -159,24 +241,24 @@ export async function verifyPoseCardLibrary(page, output) {
             const serialized = await page.evaluate(() => JSON.parse(poseNode.serialize().widgets_values[0]));
             assert.equal(serialized.poses[index].prompt, chosen.prompt);
         }
-        await open(2, "PoseStudio");
+        await open(2, "Pose Studio");
         const beforeSet = await snapshot();
         await select("Whole set");
         await library.waitFor({ state: "detached" });
         assert.deepEqual(await snapshot(), beforeSet, "A whole set cannot replace a single card");
         await page.locator(".vnccs-ps-modal").filter({ hasText: "Choose a single pose for this card." })
             .getByRole("button", { name: "OK", exact: true }).click();
-        await open(2, "PoseStudio");
+        await open(2);
         const beforeLate = await snapshot();
         delay = true;
         const request = new Promise(resolve => { requested = resolve; });
-        await select("Single pose");
+        await select("Female sprite");
         await request;
         await page.keyboard.press("Escape");
         assert.deepEqual(await snapshot(), beforeLate, "Closing the pending picker preserves every pose");
         await open(3);
         const beforeResponse = await snapshot();
-        const response = page.waitForResponse(response => response.url().includes("/pose_library/get/"));
+        const response = page.waitForResponse(response => response.url().includes("/pose-manager/sprites/"));
         release();
         await response;
         await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -184,8 +266,23 @@ export async function verifyPoseCardLibrary(page, output) {
         assert.ok(await library.isVisible(), "A late response cannot close the next picker");
         await page.keyboard.press("Escape");
         await page.screenshot({ path: join(output, "card-library-buttons.png") });
+        delay = false;
+        await page.locator(".vnccs-ps-pose-preview").first().click();
+        await page.evaluate(() => poseNode.studioWidget.showLibraryModal());
+        await library.getByRole("button", { name: "Manager", exact: true }).waitFor();
+        await library.locator(".vnccs-ps-library-menu-btn").click();
+        await settings.getByText("Manager Repositories", { exact: true }).waitFor();
+        await settings.getByRole("button", { name: "Disable", exact: true }).waitFor();
+        await page.screenshot({ path: join(output, "editor-library-settings.png") });
+        await page.keyboard.press("Escape");
+        await page.evaluate(() => poseNode.studioWidget.applyInterfaceMode("manager"));
+        assert.deepEqual(studioMutations, [], "Manager must never register or change a Studio repository");
+        for (const action of ["toggle", "refresh"]) assert.ok(managerMutations.some(data => data.action === action && data.repo_id === spriteRepo));
+        for (const action of ["add", "remove"]) assert.ok(managerMutations.some(data => data.action === action && data.repo_id === "owner/manager-extra"));
+        assert.ok(await page.evaluate(() => poseNode.studioWidget.libraryPoses.every(pose => !pose.manager_sprite_id)),
+            "Manager sprites never leak into Studio's cached catalog");
     } finally {
         release?.();
-        for (const route of [listRoute, getRoute, reposRoute, addRoute, previewRoute]) await page.unroute(route);
+        for (const route of [listRoute, getRoute, mutationRoute, previewRoute, spriteRoute]) await page.unroute(route);
     }
 }

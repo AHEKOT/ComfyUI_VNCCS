@@ -9,7 +9,8 @@ test("Manager imports bypass older cached modules throughout its dependency chai
     const version = entry.match(/pose_manager_ui\.mjs\?v=([^"\s]+)/)[1];
     assert.match(version, /^pose-manager-\d+$/);
     for (const [file, dependencies] of [["vnccs_pose_manager.js", ["pose_manager_ui.mjs"]],
-        ["pose_manager_ui.mjs", ["pose_manager_previews.mjs", "pose_manager_library.mjs", "pose_set_library.mjs", "preview_grid_layout.mjs"]]]) {
+        ["pose_manager_ui.mjs", ["pose_manager_previews.mjs", "pose_manager_library.mjs", "pose_set_library.mjs", "preview_grid_layout.mjs"]],
+        ["pose_manager_library.mjs", ["preview_grid_layout.mjs"]]]) {
         const imports = [...readFileSync(new URL(`../web/${file}`, import.meta.url), "utf8").matchAll(/from "([^"]+)"/g)]
             .map(match => new URL(match[1], "https://fixture.test/web/"));
         for (const name of dependencies) {

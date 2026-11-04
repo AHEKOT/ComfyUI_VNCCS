@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { mountManager } from "./pose_manager_ui.mjs?v=pose-manager-6";
+import { mountManager } from "./pose_manager_ui.mjs?v=pose-manager-10";
 
 app.registerExtension({
     name: "VNCCS.PoseManager",
