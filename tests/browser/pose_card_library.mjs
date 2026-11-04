@@ -46,6 +46,8 @@ export async function verifyPoseCardLibrary(page, output) {
     const listRoute = "**/vnccs/pose_library/list?*", getRoute = "**/vnccs/pose_library/get/*";
     const mutationRoute = "**/vnccs/pose_library/repositories/**";
     const previewRoute = "**/vnccs/pose_library/preview/*", spriteRoute = "**/vnccs/pose-manager/sprites**";
+    const imageImportRoute = "**/vnccs/sam3d/process_image_to_pose_json";
+    let releaseImport;
     let delay = false, release, requested, initializations = 0, enabled = true, repoError = false, extraRepository = false;
     const studioMutations = [], managerMutations = [];
     await page.route(mutationRoute, route => {
@@ -140,7 +142,13 @@ export async function verifyPoseCardLibrary(page, output) {
                 const a = overlay.getBoundingClientRect(), b = poseNode.studioWidget.container.getBoundingClientRect();
                 const cards = [...overlay.querySelectorAll(".vnccs-ps-library-item")];
                 const boxes = cards.map(card => card.getBoundingClientRect());
+                const header = overlay.querySelector(".vnccs-ps-library-modal-header").getBoundingClientRect();
+                const capture = [...overlay.querySelectorAll("button")].find(button => button.textContent === "Capture pose from image");
+                const captureBox = capture.getBoundingClientRect(), closeBox = overlay.querySelector(".vnccs-ps-modal-close").getBoundingClientRect();
                 return { local: overlay.parentElement === poseNode.studioWidget.container,
+                    captureFits: captureBox.left >= header.left && captureBox.right <= closeBox.left
+                        && captureBox.top >= header.top && captureBox.bottom <= header.bottom
+                        && capture.scrollWidth <= capture.clientWidth + 1 && capture.scrollHeight <= capture.clientHeight + 1,
                     delta: ["x", "y", "width", "height"].map(key => Math.abs(a[key] - b[key])),
                     ratios: cards.map(card => {
                         const img = card.querySelector("img"), p = card.querySelector(".vnccs-ps-library-item-preview").getBoundingClientRect();
@@ -153,7 +161,7 @@ export async function verifyPoseCardLibrary(page, output) {
                         >= overlay.querySelector(".vnccs-ps-library-categories").getBoundingClientRect().right - 40,
                     inspector: !!overlay.querySelector(".vnccs-ps-library-inspector.visible") };
             });
-            assert.ok(geometry.local && geometry.delta.every(delta => delta <= 1));
+            assert.ok(geometry.local && geometry.captureFits && geometry.delta.every(delta => delta <= 1));
             assert.ok(geometry.inside && geometry.noHorizontalScroll && geometry.selectorRight && !geometry.inspector, JSON.stringify(geometry));
             assert.ok(geometry.ratios.every(delta => delta < .01) && geometry.gaps.every(gap => gap > 0 && gap <= 8), JSON.stringify(geometry));
             await page.screenshot({ path: join(output, `pose-library-${width}.png`) });
@@ -275,7 +283,52 @@ export async function verifyPoseCardLibrary(page, output) {
         await settings.getByRole("button", { name: "Disable", exact: true }).waitFor();
         await page.screenshot({ path: join(output, "editor-library-settings.png") });
         await page.keyboard.press("Escape");
-        await page.evaluate(() => poseNode.studioWidget.applyInterfaceMode("manager"));
+        await page.evaluate(() => poseNode.studioWidget.setInterfaceMode("manager"));
+        await open(4);
+        const capture = library.getByRole("button", { name: "Capture pose from image", exact: true });
+        let chooser = await Promise.all([page.waitForEvent("filechooser"), capture.click()]).then(([chooser]) => chooser);
+        assert.equal(await chooser.element().getAttribute("accept"), "image/*");
+        await chooser.setFiles([]);
+        assert.ok(await library.isVisible(), "Cancelling image selection keeps the library open");
+        const beforeImport = await snapshot();
+        await page.evaluate(() => {
+            const w = poseNode.studioWidget;
+            window.nativeImageImporter = w.importSAM3DImageAsPose;
+            window.importedImages = [];
+            w.importSAM3DImageAsPose = async function (file) {
+                importedImages.push({ name: file.name, type: file.type, tab: this.activeTab });
+            };
+        });
+        const file = { name: "reference.png", mimeType: "image/png", buffer: Buffer.from(previews["Female sprite"], "base64") };
+        chooser = await Promise.all([page.waitForEvent("filechooser"), capture.click()]).then(([chooser]) => chooser);
+        await chooser.setFiles(file);
+        await library.waitFor({ state: "detached" });
+        assert.deepEqual(await page.evaluate(() => importedImages), [{ name: file.name, type: file.mimeType, tab: 4 }],
+            "The native file handler delegates to Studio's image importer for the selected card");
+        await page.evaluate(() => { poseNode.studioWidget.importSAM3DImageAsPose = nativeImageImporter; });
+        const requestedImport = new Promise(resolve => {
+            page.route(imageImportRoute, async route => {
+                const wait = new Promise(release => { releaseImport = release; });
+                resolve(route.request());
+                await wait;
+                await route.fulfill({ status: 503, json: { error: "Image analysis unavailable" } });
+            });
+        });
+        await open(4);
+        chooser = await Promise.all([page.waitForEvent("filechooser"), capture.click()]).then(([chooser]) => chooser);
+        await chooser.setFiles(file);
+        const importRequest = await requestedImport;
+        assert.match(importRequest.headers()["content-type"], /multipart\/form-data/);
+        const progress = page.locator(".vnccs-ps-modal-overlay").filter({ has: page.locator(".vnccs-ps-import-progress") });
+        await progress.waitFor({ state: "visible" });
+        assert.ok(await progress.evaluate(overlay => overlay.parentElement === poseNode.studioWidget.container));
+        await page.screenshot({ path: join(output, "capture-pose-progress.png") });
+        releaseImport();
+        const error = page.locator(".vnccs-ps-modal").filter({ hasText: "Failed to import image with SAM 3D Body: Image analysis unavailable" });
+        await error.waitFor({ state: "visible" });
+        await progress.waitFor({ state: "detached" });
+        assert.deepEqual(await snapshot(), beforeImport, "A failed import preserves all poses");
+        await error.getByRole("button", { name: "OK", exact: true }).click();
         assert.deepEqual(studioMutations, [], "Manager must never register or change a Studio repository");
         for (const action of ["toggle", "refresh"]) assert.ok(managerMutations.some(data => data.action === action && data.repo_id === spriteRepo));
         for (const action of ["add", "remove"]) assert.ok(managerMutations.some(data => data.action === action && data.repo_id === "owner/manager-extra"));
@@ -283,6 +336,7 @@ export async function verifyPoseCardLibrary(page, output) {
             "Manager sprites never leak into Studio's cached catalog");
     } finally {
         release?.();
-        for (const route of [listRoute, getRoute, mutationRoute, previewRoute, spriteRoute]) await page.unroute(route);
+        releaseImport?.();
+        for (const route of [listRoute, getRoute, mutationRoute, previewRoute, spriteRoute, imageImportRoute]) await page.unroute(route);
     }
 }

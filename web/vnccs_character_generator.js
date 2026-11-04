@@ -1,5 +1,5 @@
 import { app } from "../../scripts/app.js";
-import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-10";
+import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-11";
 import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, showModelDownloadDialog, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";

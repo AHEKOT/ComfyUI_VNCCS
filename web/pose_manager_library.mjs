@@ -1,6 +1,6 @@
 import { api } from "../../scripts/api.js";
 import { checkedJSON, mediaURL } from "./vnccs_transport.js";
-import { packPreviewRows } from "./preview_grid_layout.mjs?v=pose-manager-10";
+import { packPreviewRows } from "./preview_grid_layout.mjs?v=pose-manager-11";
 
 const BASE = "/vnccs/pose-manager/sprites";
 let helpersPromise;
@@ -59,6 +59,18 @@ export const POSE_LIBRARY_CSS = `
 export function mountPoseLibrary(widget) {
     const show = widget.showLibraryModal;
     widget.showLibraryModal = function () { return openPoseLibrary(this, show); };
+    for (const name of ["showImportProgressModal", "showMessage"]) {
+        const original = widget[name];
+        widget[name] = function () {
+            const previous = this.canvasContainer.lastElementChild;
+            const result = original.apply(this, arguments);
+            const modal = this.canvasContainer.lastElementChild;
+            // Manager hides Studio's canvas panel, so its native import dialogs need the visible root.
+            if (this.interfaceMode === "manager" && modal !== previous && modal?.matches(".vnccs-ps-modal-overlay"))
+                this.container.append(modal);
+            return result;
+        };
+    }
     // Studio is a read-only source; Manager must not start its repository refresh jobs.
     widget.autoRefreshEnabledPoseRepositories = () => {};
 }
@@ -245,6 +257,26 @@ function openPoseLibrary(widget, show) {
         }
     };
     widget._closeLibraryModal = close;
+    const capture = document.createElement("button"), imageInput = document.createElement("input");
+    capture.type = "button";
+    capture.className = "vnccs-ps-btn primary";
+    capture.textContent = "Capture pose from image";
+    imageInput.type = "file";
+    imageInput.accept = "image/*";
+    imageInput.hidden = true;
+    capture.onclick = () => imageInput.click();
+    imageInput.onchange = event => {
+        const file = imageInput.files[0];
+        if (!file || !current()) return;
+        if (!file.type.startsWith("image/")) {
+            widget.showMessage("Choose an image file.", true);
+            imageInput.value = "";
+            return;
+        }
+        close();
+        widget.handleFileImport(event);
+    };
+    widget.libraryModal.querySelector(".vnccs-ps-library-header-actions").append(capture, imageInput);
     overlay.classList.add("vnccs-pm-pose-picker");
     overlay.tabIndex = -1;
     overlay.setAttribute("role", "dialog");
