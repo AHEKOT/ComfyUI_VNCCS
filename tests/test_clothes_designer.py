@@ -4,7 +4,6 @@ import os
 import sys
 import types
 import json
-from pathlib import Path
 
 import pytest
 
@@ -365,13 +364,10 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},
         cfg=cfg,
     )
-    workflow = json.loads((Path(__file__).resolve().parents[1] / "workflows/VNCCS_3.2_Step2_CharacterClothes.json").read_text())
-    designer = next(n for n in workflow["nodes"] if n["type"] == "ClothesDesigner")
-    saved = json.loads(designer["widgets_values"][0])
     if kind == "QI2" and cfg == 1.0:
         pipe.sample_steps, pipe.sampler_name, pipe.scheduler = 8, "euler", "simple"
-    data = {**saved, "character": "Alice", "costume": "Dress", "gen_settings": {
-                **saved["gen_settings"],
+    data = {"character": "Alice", "costume": "Dress", "gen_settings": {
+                "seed": 42,
                 "target_size": size,
                 "background_color": "Transparent" if kind == "QI2" else "Green",
                 "lora_strength": 0 if cfg is None else 0.65,
@@ -414,7 +410,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         if cfg == 1.0:
             sampler = calls["KSampler"]
             assert (sampler["seed"], sampler["steps"], sampler["sampler_name"], sampler["scheduler"], sampler["denoise"]) == (
-                saved["gen_settings"]["seed"], 8, "euler", "simple", 1.0,
+                data["gen_settings"]["seed"], 8, "euler", "simple", 1.0,
             )
         assert calls["TextEncodeQwenImage21"]["resolution"] == resolution
         expected_negative = node.construct_prompt(data, model_kind="qi2")[1]
