@@ -223,3 +223,17 @@ def _vnccs_register_cg_creator():
 
 
 _vnccs_register_cg_creator()
+
+
+def _vnccs_register_pose_sets():
+    try:
+        from server import PromptServer
+    except ImportError:
+        return
+    if getattr(PromptServer.instance, "app", None) is None:
+        return
+    from .api.pose_set_library import register_routes
+    register_routes(PromptServer.instance.routes)
+
+
+_vnccs_register_pose_sets()

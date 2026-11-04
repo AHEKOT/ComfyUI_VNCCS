@@ -1,6 +1,8 @@
 """VNCCS Nodes - ComfyUI nodes for visual novel character creation."""
 
 try:
+    from .pose_manager import NODE_CLASS_MAPPINGS as POSE_MANAGER_MAPPINGS
+    from .pose_manager import NODE_DISPLAY_NAME_MAPPINGS as POSE_MANAGER_DISPLAY_MAPPINGS
     from .cg_creator import NODE_CLASS_MAPPINGS as CG_CREATOR_MAPPINGS
     from .cg_creator import NODE_DISPLAY_NAME_MAPPINGS as CG_CREATOR_DISPLAY_MAPPINGS
     from .emotion_generator_v2 import NODE_CLASS_MAPPINGS as EMOTION_GENERATOR_V2_MAPPINGS
@@ -32,6 +34,7 @@ try:
     from .vnccs_flux_klein_encoder import NODE_DISPLAY_NAME_MAPPINGS as VNCCS_FLUX_KLEIN_ENCODER_DISPLAY_MAPPINGS
 
     NODE_CLASS_MAPPINGS = {
+        **POSE_MANAGER_MAPPINGS,
         **CG_CREATOR_MAPPINGS,
         **EMOTION_GENERATOR_V2_MAPPINGS,
         **VNCCS_CONTROL_CENTER_MAPPINGS,
@@ -49,6 +52,7 @@ try:
     }
 
     NODE_DISPLAY_NAME_MAPPINGS = {
+        **POSE_MANAGER_DISPLAY_MAPPINGS,
         **CG_CREATOR_DISPLAY_MAPPINGS,
         **EMOTION_GENERATOR_V2_DISPLAY_MAPPINGS,
         **VNCCS_CONTROL_CENTER_DISPLAY_MAPPINGS,
