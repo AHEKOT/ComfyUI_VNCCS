@@ -52,7 +52,16 @@ def register_routes(routes):
             data = json.loads(raw)
             if not isinstance(data, dict) or data.get("action") not in {"ensure", "add", "refresh", "toggle", "remove"}:
                 raise ValueError("Invalid sprite library action")
+            request_id = data.get("request_id", "")
+            if not isinstance(request_id, str) or len(request_id) > 64:
+                raise ValueError("Invalid library request identifier")
         except (ValueError, TypeError) as error:
             return web.json_response({"error": str(error)}, status=400)
-        return await respond(lambda: web.json_response(sprites.ensure() if data["action"] == "ensure"
-            else sprites.repository_action(data["action"], data.get("repo_id", sprites.REPOSITORY), data.get("enabled"))))
+        def progress(repo_id, completed, total):
+            from server import PromptServer
+            PromptServer.instance.send_sync("vnccs.pose_manager.library.progress", {
+                "request_id": request_id, "repository": repo_id, "completed": completed, "total": total,
+            })
+        notify = progress if request_id else None
+        return await respond(lambda: web.json_response(sprites.ensure(progress=notify) if data["action"] == "ensure"
+            else sprites.repository_action(data["action"], data.get("repo_id", sprites.REPOSITORY), data.get("enabled"), progress=notify)))

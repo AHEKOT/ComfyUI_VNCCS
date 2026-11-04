@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 const { chromium } = createRequire(import.meta.url)('playwright');
 const source = await readFile(new URL('../../web/vnccs_control_center.js', import.meta.url), 'utf8');
 const common = await readFile(new URL('../../web/vnccs_common.js', import.meta.url), 'utf8');
+const interactions = await readFile(new URL('../../web/sakura_interactions.mjs', import.meta.url), 'utf8');
 const css = source.match(/s.textContent = `([\s\S]*?)`;/)[1]
     .replace('${SAKURA_INTERACTION_CSS}', common.match(/export const SAKURA_INTERACTION_CSS = `([\s\S]*?)`;/)[1]);
 const browser = await chromium.launch({ headless: true, ...(process.argv[2] ? { executablePath: process.argv[2] } : {}) });
@@ -84,6 +85,76 @@ try {
     await page.locator('#root').screenshot({ path: join(tmpdir(), 'vnccs-control-center-cards.png') });
     console.log('Verified fixed card and field rectangles across ' + scenarios + ' text, status, variant and width scenarios.');
     await writeFile(join(tmpdir(), 'vnccs-control-center-cards.json'), JSON.stringify(await page.evaluate(() => geometry()), null, 2));
+
+    await page.addScriptTag({ content: interactions.replaceAll('export ', '') });
+    await page.addScriptTag({ content: `
+        const enableMiddleMouseCanvasPan = () => {}, attachHelpTooltips = () => {}, syncDOMWidgetWidthSoon = () => {};
+        window.mountNode = ({ width, height, scale, status }) => {
+            mount({ width, compact: true });
+            const lora = widget.config.lora.map((entry, index) => ({ ...entry, status: index ? 'installed' : status }));
+            document.body.innerHTML = '<div id="host"><div id="title">VNCCS Control Center</div><div id="mount"></div></div>';
+            const host = document.querySelector('#host'), mountPoint = document.querySelector('#mount');
+            Object.assign(host.style, { width: width + 'px', height: height + 'px', transform: 'scale(' + scale + ')',
+                transformOrigin: 'top left', position: 'relative', border: '1px solid #69616d', boxSizing: 'border-box' });
+            Object.assign(document.querySelector('#title').style, { height: '30px', color: 'white', font: '14px sans-serif' });
+            Object.assign(mountPoint.style, { position: 'absolute', left: '10px', top: '40px', width: width - 20 + 'px', height: height - 60 + 'px' });
+            Object.assign(widget, {
+                node: { id: 1, widgets: [], setDirtyCanvas() {}, addDOMWidget(name, type, element) { mountPoint.appendChild(element); } },
+                state: { active_kind: 'QI2', loras: [] }, dlStatus: {},
+                _samplers: ['euler'], _schedulers: ['simple'],
+                config: { models: [{ name: 'Qwen Image 2.1 INT8 ConvRot', kind: 'QI2', type: 'unet', status: 'installed' }],
+                    clip: [{ name: 'Qwen CLIP', kind: 'QI2', status: 'installed' }],
+                    vae: [{ name: 'Qwen VAE', kind: 'QI2', status: 'installed' }], lora, controlnet: [], other: [] },
+            });
+            widget._buildUI(); widget._renderAll();
+            window.downloadCard = widget.scrollArea.querySelector('.vnccs-cc-lora-card');
+            window.downloadBadge = downloadCard.querySelector('.vnccs-cc-badge');
+        };
+        window.nodeGeometry = () => [...document.querySelectorAll('#host, #mount, .vnccs-cc-root, .vnccs-cc-root > *, .vnccs-cc-block, [data-download-key], .vnccs-cc-download-slot, .vnccs-cc-input')].map(element => {
+                const rect = element.getBoundingClientRect(); return [rect.x, rect.y, rect.width, rect.height];
+            });
+    ` });
+    for (const [width, height, scale] of [[300, 700, 1], [550, 920, 1], [900, 1000, .75]]) {
+        for (const initial of ['missing', 'outdated']) {
+            // Restore the gallery mount consumed by mountNode for each fresh node fixture.
+            await page.evaluate(() => { document.body.innerHTML = '<div id="root"><div id="grid"></div></div>'; });
+            await page.evaluate(options => mountNode(options), { width, height, scale, status: initial });
+            await page.waitForTimeout(250);
+            const before = await page.evaluate(() => nodeGeometry());
+            await page.locator('#host').screenshot({ path: join(tmpdir(), `vnccs-control-center-${width}-${initial}.png`) });
+            const geometryFits = await page.evaluate(() => {
+                const host = document.querySelector('#mount').getBoundingClientRect();
+                return [...widget.container.children].every(element => {
+                    const rect = element.getBoundingClientRect();
+                    return rect.left >= host.left - 1 && rect.right <= host.right + 1
+                        && rect.top >= host.top - 1 && rect.bottom <= host.bottom + 1;
+                }) && widget.scrollArea.scrollWidth <= widget.scrollArea.clientWidth + 1;
+            });
+            assert.ok(geometryFits, 'Full node panels fit the host; catalog scrolls only vertically');
+            for (const status of ['queued', 'downloading', 'error', 'queued', 'success', 'installed']) {
+                await page.evaluate(status => {
+                    const entry = widget.config.lora[0];
+                    widget._downloadRefreshPending = status === 'success';
+                    if (status === 'installed') widget.config.lora[0] = { ...entry, status };
+                    widget.dlStatus['cc_lora_' + entry.name] = { status, progress: 37 };
+                    widget._updateDownloadIndicators();
+                }, status);
+                assert.equal(await page.evaluate(() => downloadBadge.textContent),
+                    { queued: '…', downloading: '⬇', error: '✕', success: '●', installed: '●' }[status]);
+                assert.deepEqual(await page.evaluate(() => nodeGeometry()), before, 'Status transitions preserve the whole node layout');
+            }
+            await page.waitForFunction(() => getComputedStyle(downloadBadge).color === 'rgb(0, 214, 143)');
+            assert.deepEqual(await page.evaluate(() => nodeGeometry()), before, 'Settled status keeps the node layout');
+            await page.locator('#host').screenshot({ path: join(tmpdir(), `vnccs-control-center-${width}-${initial}-installed.png`) });
+            assert.deepEqual(await page.evaluate(() => ({
+                sameCard: downloadCard === widget.scrollArea.querySelector('.vnccs-cc-lora-card'),
+                sameBadge: downloadBadge === downloadCard.querySelector('.vnccs-cc-badge'),
+                text: downloadBadge.textContent, color: getComputedStyle(downloadBadge).color,
+                label: downloadCard._downloadView.label.textContent,
+            })), { sameCard: true, sameBadge: true, text: '●', color: 'rgb(0, 214, 143)', label: 'Pipe' });
+        }
+    }
+    console.log('Verified full-node download completion without reload at three restored sizes and two graph scales.');
 } finally {
     await browser.close();
 }

@@ -5,8 +5,9 @@ export function mountLivePreviews(w) {
     const nativeUpdate = w.updatePoseManagerPreviewImage;
     const nativeLayout = w.layoutPoseManager;
     const nativeSchedule = w.scheduleAllManagerPreviewRefresh;
+    const nativeCommit = w.commitViewerPoseToCurrentEditor;
     let exporting = false, pending = null, encodedGeneration = -1;
-    let partialGeneration = 0;
+    let partialGeneration = 0, singleIndex = null;
     let live = null, home = null;
     const tile = i => w.managerGrid?.children[i]?.querySelector(".vnccs-ps-pose-preview");
     const canvas = i => tile(i)?.querySelector("canvas.vnccs-pm-live");
@@ -65,6 +66,7 @@ export function mountLivePreviews(w) {
         if (this.interfaceMode === "manager" && previous !== this._lastManagerLayoutKey) this.scheduleAllManagerPreviewRefresh();
     };
     w.scheduleAllManagerPreviewRefresh = function () {
+        singleIndex = null;
         const next = this._managerPreviewRefreshNextIndex || 0;
         const generation = nativeSchedule.apply(this, arguments);
         partialGeneration = 0;
@@ -75,13 +77,28 @@ export function mountLivePreviews(w) {
         }
         return generation;
     };
+    w.commitViewerPoseToCurrentEditor = function () {
+        const isolated = this._poseCardLibraryOpen && this.interfaceMode === "manager" && !exporting
+            && this._managerPreviewRefreshGeneration === this._managerPreviewRefreshCompletedGeneration;
+        if (!isolated) return nativeCommit.apply(this, arguments);
+        const refresh = this.refreshManagerPreviewsIfNeeded;
+        // Persist through Studio, then invalidate only the card changed by the picker.
+        this.refreshManagerPreviewsIfNeeded = () => this._managerPreviewRefreshGeneration;
+        try { nativeCommit.apply(this, arguments); }
+        finally { this.refreshManagerPreviewsIfNeeded = refresh; }
+        this.scheduleAllManagerPreviewRefresh();
+        singleIndex = this.activeTab;
+    };
     w.refreshAllManagerPreviews = function (...args) {
         if (exporting) return nativeRefresh.apply(this, args);
+        if (this._managerPreviewRefreshGeneration
+            && this._managerPreviewRefreshGeneration === this._managerPreviewRefreshCompletedGeneration) return;
+        if (singleIndex !== null && singleIndex !== this.activeTab) this.scheduleAllManagerPreviewRefresh();
         const viewer = this.viewer;
         const capture = viewer.capture, begin = viewer.beginCaptureBatch;
         const end = viewer.endCaptureBatch, requestRender = viewer.requestRender;
         const set = this.setPoseCapture, fit = this.computePoseManagerCaptureFraming;
-        let index = this._managerPreviewRefreshNextIndex || 0, capturing = false;
+        let index = singleIndex ?? (this._managerPreviewRefreshNextIndex || 0), capturing = false;
         const size = (width, height) => {
             const pixelRatio = globalThis.devicePixelRatio || 1;
             const scale = Math.min(1, (tile(index)?.clientWidth || 320) * pixelRatio / width,
@@ -98,6 +115,15 @@ export function mountLivePreviews(w) {
             viewer._renderFrame = null;
         }
         viewer.capture = function (...params) {
+            if (singleIndex !== null) {
+                const framing = w.computePoseManagerCaptureFraming(params[0], params[1], {
+                    yaw_deg: params[6], pitch_deg: params[7],
+                });
+                if (!framing) throw new Error(`Pose ${index + 1} framing is not ready.`);
+                params[2] = framing.zoom;
+                params[4] = framing.offsetX;
+                params[5] = framing.offsetY;
+            }
             const preview = tile(index);
             if (!preview) throw new Error("Pose preview is not ready");
             let target = canvas(index);
@@ -161,6 +187,26 @@ export function mountLivePreviews(w) {
         };
         const completed = this._managerPreviewRefreshCompletedGeneration || 0;
         try {
+            if (singleIndex !== null && viewer.isCaptureReady?.() !== false) {
+                const i = singleIndex, generation = this._managerPreviewRefreshGeneration;
+                const width = this.exportParams.view_width || 1024, height = this.exportParams.view_height || 1024;
+                const camera = this.cameraParamsForPose(this.poses[i], this.getActiveCharacter());
+                try {
+                    this.syncToNode(false, { skipCapture: false });
+                    this.updatePoseManagerPreviewImage(i);
+                    if (generation === this._managerPreviewRefreshGeneration) {
+                        this._managerPreviewRefreshCompletedGeneration = generation;
+                        singleIndex = null;
+                    }
+                } catch (error) {
+                    this._managerPreviewRefreshError = { generation, message: String(error?.message || error) };
+                    this.showMessage?.(this._managerPreviewRefreshError.message, true);
+                } finally {
+                    viewer.updateLights(this.effectiveLights());
+                    viewer.updateCaptureCamera?.(width, height, 1, 0, 0, camera.yaw_deg, camera.pitch_deg);
+                }
+                return;
+            }
             const result = nativeRefresh.apply(this, args);
             if (partialGeneration && this._managerPreviewRefreshCompletedGeneration === partialGeneration) {
                 this._managerPreviewRefreshCompletedGeneration = completed;

@@ -1,4 +1,4 @@
-"""Bounded HTTP adapter for the project-owned pose set library."""
+"""HTTP adapter for the project-owned pose set library."""
 
 import asyncio
 import base64
@@ -58,8 +58,6 @@ def register_routes(routes):
             raw = bytearray()
             async for chunk in request.content.iter_chunked(65536):
                 raw.extend(chunk)
-                if len(raw) > pose_sets.MAX_BYTES:
-                    return web.json_response({"error": "Request exceeds 32 MiB"}, status=413)
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError("Request must be an object")
@@ -70,10 +68,15 @@ def register_routes(routes):
             if action == "save":
                 pose_sets.save_set(data)
             elif action == "delete":
-                pose_sets.delete_set(data.get("id"))
+                pose_sets.delete_set(data.get("id"), data.get("source", "local"))
             elif action == "repository":
                 pose_sets.repository_action(data)
             else:
                 raise ValueError("Unknown pose library action")
-            return web.json_response(pose_sets.catalog())
+            try:
+                result = pose_sets.catalog()
+            except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
+                result = {"errors": [{"path": "PoseSetLibrary",
+                    "message": f"Changes saved, but the library could not be refreshed: {error}"}]}
+            return web.json_response({"ok": True, **result})
         return await respond(apply)

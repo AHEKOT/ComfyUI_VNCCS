@@ -1,8 +1,8 @@
 import { injectStyles, SAKURA_THEME_CSS } from "./vnccs_common.js";
-import { mountLivePreviews } from "./pose_manager_previews.mjs?v=pose-manager-11";
-import { openSetLibrary } from "./pose_set_library.mjs?v=pose-manager-11";
-import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-11";
-import { mountPoseLibrary, POSE_LIBRARY_CSS } from "./pose_manager_library.mjs?v=pose-manager-11";
+import { mountLivePreviews } from "./pose_manager_previews.mjs?v=pose-manager-15";
+import { openSetLibrary } from "./pose_set_library.mjs?v=pose-manager-15";
+import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-15";
+import { mountPoseLibrary, POSE_LIBRARY_CSS } from "./pose_manager_library.mjs?v=pose-manager-15";
 
 const CSS = `
 .vnccs-pm-shell,.vnccs-set-library { ${SAKURA_THEME_CSS} }

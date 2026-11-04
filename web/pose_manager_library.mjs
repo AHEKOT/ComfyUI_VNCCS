@@ -1,6 +1,7 @@
 import { api } from "../../scripts/api.js";
-import { checkedJSON, mediaURL } from "./vnccs_transport.js";
-import { packPreviewRows } from "./preview_grid_layout.mjs?v=pose-manager-11";
+import { cacheIdentity, checkedJSON, mediaURL } from "./vnccs_transport.js";
+import { createLoadingOverlay } from "./vnccs_common.js";
+import { packPreviewRows } from "./preview_grid_layout.mjs?v=pose-manager-15";
 
 const BASE = "/vnccs/pose-manager/sprites";
 let helpersPromise;
@@ -14,30 +15,23 @@ async function studioHelpers() {
     return helpersPromise;
 }
 
-async function applySprite(widget, item, isCurrent) {
-    const [{ pose: asset }, helpers] = await Promise.all([
-        checkedJSON(`${BASE}/${item.manager_sprite_id}?repository=${encodeURIComponent(item.repository)}`), studioHelpers(),
+async function applyPose(widget, item, isCurrent) {
+    const url = item.manager_sprite_id
+        ? `${BASE}/${item.manager_sprite_id}?repository=${encodeURIComponent(item.repository)}`
+        : `/vnccs/pose_library/get/${encodeURIComponent(widget.getLibraryPoseName(item))}${widget.getLibraryPoseQuery(item)}`;
+    const [{ pose: asset, asset_type: type }, helpers] = await Promise.all([
+        checkedJSON(url), studioHelpers(),
     ]);
     if (!isCurrent()) return;
-    if (asset?.type === "pose_set" || asset?.animation) throw new Error("Choose a single pose for this card.");
-    const pose = structuredClone(helpers.extractActivePoseFromSceneAsset(asset) || asset);
-    widget.validateImportedPose(pose);
-    const transform = helpers.extractActiveCharacterTransformFromSceneAsset(asset);
-    const framing = pose.cameraParams;
-    const angles = { yaw_deg: framing?.yaw_deg ?? asset.camera?.yaw_deg ?? 0,
-        pitch_deg: framing?.pitch_deg ?? asset.camera?.pitch_deg ?? 0 };
-    if (![angles.yaw_deg, angles.pitch_deg].every(value => Number.isFinite(Number(value))))
-        throw new Error("Pose framing requires finite camera angles.");
-    if (framing && !transform) helpers.cameraFramingToCharacterTransform(framing, widget.viewer.sceneCameraTarget);
-    const projection = helpers.normalizeSAMProjectionFrame(pose.sam_projection ?? asset.sam_projection ?? asset.camera?.sam_projection);
+    if (asset?.type === "pose_set" || asset?.animation || type === "animation") throw new Error("Choose a single pose for this card.");
+    const source = helpers.extractActivePoseFromSceneAsset(asset) || asset;
+    widget.validateImportedPose(source);
+    // Import skeletal pose only; scene placement, camera, appearance and text stay local.
+    const pose = structuredClone(Object.fromEntries([
+        "bones", "bonePositions", "modelRotation", "ikEffectorPositions", "poleTargetPositions", "hipBonePosition",
+    ].filter(key => source[key] !== undefined).map(key => [key, source[key]])));
     widget.viewer.recordState();
-    widget.clearSAMCameraMode();
-    widget.viewer.setPose(widget.stripSceneCameraFromPose(pose), true);
-    if (transform) widget.applyLibraryPoseTransform(transform, angles);
-    else if (framing) widget.applyLibraryPoseFraming(framing);
-    if (projection) widget.applyLibrarySAMProjection(projection);
-    widget.setPosePrompt(widget.activeTab, pose.prompt ?? "");
-    widget.syncPromptFieldToActiveTab();
+    widget.viewer.setPose(pose, true);
     widget.updateRotationSliders();
     widget.commitViewerPoseToCurrentEditor();
 }
@@ -48,6 +42,15 @@ export const POSE_LIBRARY_CSS = `
 .vnccs-pm-pose-status { padding:0 18px 8px; font-size:12px; color:var(--text-secondary); }
 .vnccs-pm-pose-picker .vnccs-ps-library-local-repo,.vnccs-pm-pose-picker .vnccs-ps-library-save-current { display:none; }
 .vnccs-pm-pose-status:empty { display:none; }
+.vnccs-pm-pose-picker .vnccs-ps-library-workspace { position:relative; }
+.vnccs-pm-pose-picker .vnccs-pm-library-loading { box-sizing:border-box; padding:24px; text-align:center; gap:16px; background:var(--bg-primary,#0a0a0f); }
+.vnccs-pm-library-loading[hidden],.vnccs-pm-pose-status[hidden] { display:none; }
+.vnccs-pm-library-loading [hidden] { display:none !important; }
+.vnccs-pm-library-loading .vnccs-common-spinner { border-top-color:var(--accent,#ff8fa3); }
+.vnccs-pm-library-loading .vnccs-common-loading-text { color:var(--text-primary); font-size:20px; font-weight:600; }
+.vnccs-pm-library-loading p { margin:0; max-width:440px; color:var(--text-secondary); font-size:14px; line-height:1.6; overflow-wrap:anywhere; white-space:pre-line; }
+.vnccs-pm-library-loading progress { width:min(320px,85%); height:8px; accent-color:var(--accent,#ff8fa3); }
+@media (prefers-reduced-motion:reduce) { .vnccs-pm-library-loading .vnccs-common-spinner { animation:none; } }
 .vnccs-pm-pose-picker .vnccs-ps-library-workspace:not(.settings-mode) .vnccs-ps-library-modal-grid { display:flex; flex-wrap:wrap; justify-content:center; align-content:flex-start; align-items:flex-start; gap:8px; overflow-anchor:none; }
 .vnccs-pm-pose-picker .vnccs-ps-library-item { box-sizing:border-box; flex:none; width:calc(var(--vnccs-ps-library-thumb-size,320px) * var(--pose-aspect,.416667)); max-width:100%; min-height:0; transition:border-color var(--ps-transition); }
 .vnccs-pm-pose-picker .vnccs-ps-library-item:hover { transform:none; }
@@ -58,7 +61,8 @@ export const POSE_LIBRARY_CSS = `
 
 export function mountPoseLibrary(widget) {
     const show = widget.showLibraryModal;
-    widget.showLibraryModal = function () { return openPoseLibrary(this, show); };
+    const selection = { source: "Manager", categories: { Manager: "All", "Pose Studio": "All" } };
+    widget.showLibraryModal = function () { return openPoseLibrary(this, show, selection); };
     for (const name of ["showImportProgressModal", "showMessage"]) {
         const original = widget[name];
         widget[name] = function () {
@@ -75,7 +79,7 @@ export function mountPoseLibrary(widget) {
     widget.autoRefreshEnabledPoseRepositories = () => {};
 }
 
-function openPoseLibrary(widget, show) {
+function openPoseLibrary(widget, show, selection) {
     show.call(widget);
     const index = widget.activeTab;
     const overlay = widget.libraryModal.parentElement;
@@ -88,7 +92,7 @@ function openPoseLibrary(widget, show) {
     const wasInert = widget.managerPanel.inert, character = widget.activeCharacterId;
     widget.managerPanel.inert = true;
     widget._poseCardLibraryOpen = true;
-    let closed = false, applying = false, busy = false, source = "Manager", catalog = null;
+    let closed = false, applying = false, busy = false, source = selection.source, catalog = null;
     let cards = [], layoutFrame = null;
     const schedulePacking = () => {
         if (closed || layoutFrame !== null) return;
@@ -122,6 +126,46 @@ function openPoseLibrary(widget, show) {
     status.className = "vnccs-pm-pose-status";
     status.setAttribute("role", "status");
     widget.libraryCategoriesEl.after(status);
+    const loading = createLoadingOverlay(widget.libraryWorkspace, "Loading pose library");
+    loading.overlay.classList.add("vnccs-pm-library-loading");
+    loading.overlay.setAttribute("role", "status");
+    const loadingTitle = loading.overlay.querySelector(".vnccs-common-loading-text");
+    const spinner = loading.overlay.querySelector(".vnccs-common-spinner");
+    const detail = document.createElement("p"), progress = document.createElement("progress"), retry = document.createElement("button");
+    progress.setAttribute("aria-label", "Poses ready");
+    retry.type = "button";
+    retry.className = "vnccs-ps-btn primary";
+    retry.textContent = "Retry";
+    retry.onclick = () => updateRepositories("ensure");
+    loading.overlay.append(progress, detail, retry);
+    let loadError = "", progressInfo = null, requestId = "";
+    const renderLoading = () => {
+        const initial = source === "Manager" && !catalog && !widget.librarySettingsMode;
+        loading.overlay.hidden = !initial;
+        status.hidden = initial;
+        widget.libraryGrid.setAttribute("aria-busy", String(initial && !loadError));
+        if (initial) { widget.libraryGrid.replaceChildren(); cards = []; }
+        loadingTitle.textContent = loadError ? "Could not load poses" : progressInfo?.total ? "Preparing poses" : "Loading pose library";
+        spinner.hidden = !!loadError;
+        progress.hidden = !!loadError;
+        retry.hidden = !loadError;
+        detail.textContent = loadError || (progressInfo?.total
+            ? `${progressInfo.completed} of ${progressInfo.total} poses ready\n${progressInfo.repository}`
+            : "Preparing your pose library. Poses will appear here when ready.");
+        if (progressInfo?.total) {
+            progress.max = progressInfo.total;
+            progress.value = progressInfo.completed;
+        } else progress.removeAttribute("value");
+    };
+    const onProgress = event => {
+        if (!current() || !busy || event.detail?.request_id !== requestId) return;
+        progressInfo = event.detail;
+        status.textContent = progressInfo.total
+            ? `Preparing poses: ${progressInfo.completed} of ${progressInfo.total} ready · ${progressInfo.repository}`
+            : `Loading repository: ${progressInfo.repository}`;
+        renderLoading();
+    };
+    api.addEventListener("vnccs.pose_manager.library.progress", onProgress);
     widget.renderLocalPoseRepositorySettings = () => {};
     widget.renderPoseRepositorySettings = function () {
         const repositories = widget.poseRepositories;
@@ -131,6 +175,7 @@ function openPoseLibrary(widget, show) {
             widget.librarySettingsEl.querySelector(".vnccs-ps-library-settings-title").textContent = "Manager Repositories";
             widget.librarySettingsEl.querySelector(".vnccs-ps-library-settings-subtitle").textContent = "Pose repositories used by Pose Manager. Pose Studio has its own repositories.";
             if (busy) widget.librarySettingsEl.querySelectorAll(".vnccs-ps-library-repo-action,.vnccs-ps-library-repo-add-btn").forEach(button => { button.disabled = true; });
+            renderLoading();
         } finally { widget.poseRepositories = repositories; }
     };
     const updateRepositories = async (action, repo_id, enabled) => {
@@ -138,19 +183,26 @@ function openPoseLibrary(widget, show) {
         const focused = widget.librarySettingsEl.contains(document.activeElement)
             ? (document.activeElement.classList.contains("refresh") ? ".refresh" : ".toggle") : null;
         busy = true;
+        loadError = "";
+        progressInfo = null;
+        requestId = cacheIdentity();
         status.textContent = action ? "Updating Manager repositories…" : "Loading Manager repositories…";
+        renderLoading();
         if (widget.librarySettingsMode) widget.renderPoseRepositorySettings();
         if (focused) overlay.focus({ preventScroll: true });
         try {
-            const data = await checkedJSON(BASE, action ? { method: "POST", body: JSON.stringify({ action, repo_id, enabled }) } : {});
+            const data = await checkedJSON(BASE, action ? { method: "POST", body: JSON.stringify({ action, repo_id, enabled, request_id: requestId }) } : {});
             if (!current()) return;
             catalog = data;
             status.textContent = "";
-            widget.renderLibrary();
         } catch (error) {
-            if (current()) status.textContent = `${error.message} Open repository settings to retry.`;
+            if (current()) {
+                loadError = error.message;
+                status.textContent = `${error.message} Open repository settings to retry.`;
+            }
         } finally {
             busy = false;
+            if (current()) widget.renderLibrary();
             if (current() && widget.librarySettingsMode) {
                 widget.renderPoseRepositorySettings();
                 if (focused) (widget.librarySettingsEl.querySelector(focused)
@@ -161,6 +213,8 @@ function openPoseLibrary(widget, show) {
     const close = () => {
         if (closed) return;
         closed = true;
+        api.removeEventListener("vnccs.pose_manager.library.progress", onProgress);
+        loading.remove();
         if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
         Object.assign(widget, original);
         nativeClose();
@@ -189,7 +243,17 @@ function openPoseLibrary(widget, show) {
         return updateRepositories("remove", id);
     };
     widget.renderLibraryCategories = function () {
+        // Loading an empty catalog must not erase the user's category preference.
+        this.libraryActiveCategory = selection.categories[source];
         original.renderLibraryCategories.apply(this, arguments);
+        for (const button of this.libraryCategoriesEl.children) {
+            const select = button.onclick;
+            button.onclick = function (event) {
+                selection.categories[source] = button.textContent;
+                select.call(this, event);
+                widget.libraryCategoriesEl.querySelector(":scope > .active")?.focus({ preventScroll: true });
+            };
+        }
         const selector = document.createElement("div");
         selector.className = "vnccs-pm-pose-sources";
         selector.setAttribute("role", "group");
@@ -201,8 +265,7 @@ function openPoseLibrary(widget, show) {
             button.textContent = label;
             button.setAttribute("aria-pressed", String(source === label));
             button.onclick = () => {
-                source = label;
-                this.libraryActiveCategory = "All";
+                source = selection.source = label;
                 this.libraryGrid.scrollTop = 0;
                 this.renderLibrary();
                 this.libraryCategoriesEl.querySelector(`[aria-pressed="true"]`)?.focus({ preventScroll: true });
@@ -239,6 +302,11 @@ function openPoseLibrary(widget, show) {
         });
         this.libraryGrid.scrollTop = top;
         this.libraryGrid.scrollLeft = left;
+        renderLoading();
+        if (source === "Manager" && catalog && !catalog.poses?.length && !busy) {
+            const empty = this.libraryGrid.querySelector(".vnccs-ps-library-empty");
+            if (empty) empty.textContent = "No poses available. Enable or add a repository in settings.";
+        }
         schedulePacking();
     };
     widget.selectLibraryPose = async function (pose) {
@@ -246,8 +314,7 @@ function openPoseLibrary(widget, show) {
         applying = true;
         this.libraryGrid.setAttribute("aria-busy", "true");
         try {
-            if (pose.manager_sprite_id) await applySprite(this, pose, current);
-            else await this.loadFromLibrary(pose);
+            await applyPose(this, pose, current);
             if (current()) close();
         } catch (error) {
             if (current()) this.showMessage(`Failed to load pose: ${error.message}`, true);

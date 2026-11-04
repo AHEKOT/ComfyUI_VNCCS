@@ -10,8 +10,9 @@ from urllib.parse import urlparse
 
 from PIL import Image
 
-from .pose_sets import MAX_BYTES, MAX_POSES, read_json, write_json
-from ..utils import character_storage_lock, safe_join_under
+from .pose_repository import checkout_repository, read_repository_file
+from .pose_sets import read_json, write_json
+from ..utils import atomic_output_path, character_storage_lock, safe_join_under
 
 ROOT = Path(__file__).resolve().parents[1] / "PoseSetLibrary" / "sprites"
 REPOSITORY = "MIUProject/VNCCS_PoseLibrary_Sprites"
@@ -35,24 +36,9 @@ def repository_id(value):
     return value
 
 
-def download(filename, revision, repo_id=REPOSITORY):
-    from huggingface_hub import hf_hub_download
-    from huggingface_hub.errors import LocalEntryNotFoundError
-
-    cache = path("hub")
-    options = dict(repo_id=repo_id, filename=filename, revision=revision, cache_dir=str(cache))
-    try:
-        file = Path(hf_hub_download(**options, token=False, local_files_only=True))
-    except LocalEntryNotFoundError:
-        file = Path(hf_hub_download(**options, token=False))
-    if not file.resolve().is_relative_to(cache.resolve()):
-        raise ValueError("Sprite cache path escapes the library")
-    return file
-
-
-def validate_manifest(manifest, files):
+def validate_manifest(manifest):
     entries = manifest.get("poses") if isinstance(manifest, dict) else None
-    if not isinstance(entries, list) or not 1 <= len(entries) <= MAX_POSES:
+    if not isinstance(entries, list) or not entries:
         raise ValueError("Invalid sprite pose manifest")
     records, ids = [], set()
     for entry in entries:
@@ -67,9 +53,6 @@ def validate_manifest(manifest, files):
                     or any(part in {"", ".", ".."} for part in name.split("/"))
                     or PurePosixPath(name).suffix.lower() not in extensions):
                 raise ValueError("Unsafe sprite asset path")
-            size = files.get(name)
-            if not isinstance(size, int) or not 0 < size <= 8 * 1024 * 1024:
-                raise ValueError("Sprite asset is missing or exceeds 8 MiB")
             if not re.fullmatch(r"[a-fA-F0-9]{64}", entry.get(f"{key}_sha256", "")):
                 raise ValueError("Invalid sprite asset checksum")
         tags = entry.get("tags", [])
@@ -94,24 +77,31 @@ def repositories():
     return [{**data, "repo_id": REPOSITORY, "enabled": settings["enabled"]}]
 
 
-def refreshed(repo):
-    from huggingface_hub import HfApi
-
+def refreshed(repo, progress=None):
     repo_id = repository_id(repo["repo_id"])
-    info = HfApi(token=False).model_info(repo_id, files_metadata=True)
-    files = {item.rfilename: item.size for item in info.siblings}
-    if not re.fullmatch(r"[a-f0-9]{40}", info.sha or ""):
-        raise ValueError("Pose repository revision is unavailable")
-    if not 0 < (files.get("pose_library.json") or 0) <= MAX_BYTES:
-        raise ValueError("Pose manifest is missing or exceeds 32 MiB")
-    records = validate_manifest(read_json(download("pose_library.json", info.sha, repo_id)), files)
-    return {**repo, "revision": info.sha, "poses": records, "last_checked": time.time()}
+    if progress:
+        progress(repo_id, 0, None)
+    with checkout_repository(ROOT, repo_id) as repository:
+        revision = repository.head().decode("ascii")
+        records = validate_manifest(json.loads(read_repository_file(repository, "pose_library.json", repo_id, ROOT)))
+        if progress:
+            progress(repo_id, 0, len(records))
+        for completed, entry in enumerate(records, 1):
+            for preview in (False, True):
+                key = "preview" if preview else "json"
+                raw = read_repository_file(repository, entry[f"{key}_path"], repo_id, ROOT)
+                decode_asset(raw, entry, preview)
+                with atomic_output_path(str(path("assets/" + entry[f"{key}_sha256"].lower()))) as temporary:
+                    Path(temporary).write_bytes(raw)
+            if progress:
+                progress(repo_id, completed, len(records))
+    return {**repo, "revision": revision, "poses": records, "last_checked": time.time(), "checkout_complete": True}
 
 
-def ensure(refresh=False):
+def ensure(refresh=False, progress=None):
     with character_storage_lock(str(ROOT)):
         repos = repositories()
-        repos = [refreshed(repo) if refresh or (repo["enabled"] and not repo.get("revision")) else repo for repo in repos]
+        repos = [refreshed(repo, progress) if refresh or (repo["enabled"] and not repo.get("checkout_complete")) else repo for repo in repos]
         write_json(path("repositories.json"), {"repositories": repos})
         return catalog()
 
@@ -130,7 +120,7 @@ def catalog():
              for repo in repos if repo["enabled"] for entry in repo["poses"]]}
 
 
-def repository_action(action, repo_id, enabled=None):
+def repository_action(action, repo_id, enabled=None, progress=None):
     repo_id = repository_id(repo_id)
     with character_storage_lock(str(ROOT)):
         repos = repositories()
@@ -138,15 +128,17 @@ def repository_action(action, repo_id, enabled=None):
         if action == "add":
             if index is not None:
                 raise ValueError("Repository already exists")
-            repos.append(refreshed({"repo_id": repo_id, "enabled": True, "poses": []}))
+            repos.append(refreshed({"repo_id": repo_id, "enabled": True, "poses": []}, progress))
         elif index is None:
             raise FileNotFoundError("Pose repository not found")
         elif action == "toggle":
             if not isinstance(enabled, bool):
                 raise ValueError("Invalid enabled state")
             repos[index]["enabled"] = enabled
+            if enabled:
+                repos[index] = refreshed(repos[index], progress)
         elif action == "refresh":
-            repos[index] = refreshed(repos[index])
+            repos[index] = refreshed(repos[index], progress)
         elif action == "remove":
             repos.pop(index)
         else:
@@ -168,11 +160,17 @@ def asset(identifier, preview=False, repo_id=REPOSITORY):
     entry = next((item for item in data["poses"] if item["id"] == identifier), None)
     if entry is None:
         raise FileNotFoundError("Sprite pose not found")
+    return read_asset(entry, data, preview)
+
+
+def read_asset(entry, data, preview=False):
     key = "preview" if preview else "json"
-    file = download(entry[f"{key}_path"], data["revision"], data["repo_id"])
-    with file.open("rb") as handle:
-        raw = handle.read(8 * 1024 * 1024 + 1)
-    if len(raw) > 8 * 1024 * 1024 or hashlib.sha256(raw).hexdigest() != entry[f"{key}_sha256"].lower():
+    return decode_asset(path("assets/" + entry[f"{key}_sha256"].lower()).read_bytes(), entry, preview)
+
+
+def decode_asset(raw, entry, preview=False):
+    key = "preview" if preview else "json"
+    if hashlib.sha256(raw).hexdigest() != entry[f"{key}_sha256"].lower():
         raise ValueError("Sprite asset checksum mismatch")
     if preview:
         with Image.open(io.BytesIO(raw)) as image:

@@ -43,6 +43,8 @@ export function openSetLibrary(w, opener, previewFor) {
     status.setAttribute("role", "status");
     const wasInert = w.managerPanel.inert;
     const active = () => !disposed && overlay?.isConnected;
+    const warnings = () => (catalog.errors || []).length
+        ? `Library has ${catalog.errors.length} read error(s). Files were preserved. ${catalog.errors[0].path}: ${catalog.errors[0].message}` : "";
     function close() {
         if (disposed) return;
         disposed = true;
@@ -60,7 +62,7 @@ export function openSetLibrary(w, opener, previewFor) {
         status.textContent = "Working…";
         try {
             await action();
-            if (active()) status.textContent = "";
+            if (active()) status.textContent = warnings();
         } catch (error) {
             if (active()) {
                 status.textContent = "";
@@ -139,7 +141,7 @@ export function openSetLibrary(w, opener, previewFor) {
         host.librarySearchInput.placeholder = "Search sets";
         host.libraryWorkspace.classList.remove("settings-mode");
         host.librarySettingsEl.replaceChildren();
-        status.textContent = "";
+        status.textContent = warnings();
         render();
         host.libraryGrid.scrollTop = listScroll;
         host.librarySearchInput.focus({ preventScroll: true });
@@ -149,7 +151,7 @@ export function openSetLibrary(w, opener, previewFor) {
         screen = mode;
         host.librarySettingsMode = false;
         host.librarySearchInput.disabled = false;
-        status.textContent = "";
+        status.textContent = warnings();
         host.libraryWorkspace.classList.add("settings-mode");
         const box = element("section", "vnccs-set-form");
         box.append(button("← Back", back), element("h2", "", title));
@@ -166,7 +168,7 @@ export function openSetLibrary(w, opener, previewFor) {
             { text: "Delete", class: "danger", action: async () => {
                 dialog.overlay.remove();
                 await run(async () => {
-                    catalog = await post("delete", { id: item.id });
+                    catalog = { ...catalog, ...await post("delete", { source: item.source, id: item.id }) };
                     render();
                 });
             } },
@@ -222,9 +224,9 @@ export function openSetLibrary(w, opener, previewFor) {
                 const poses = w.poses.map((pose, i) => ({ ...structuredClone(pose), prompt: w.getPosePrompt(i) }));
                 const previews = source.value ? [] : await Promise.all(poses.map((_, i) => thumbnail(previewFor(i))));
                 if (!active()) return;
-                catalog = await post("save", { name: name.value, description: description.value,
+                catalog = { ...catalog, ...await post("save", { name: name.value, description: description.value,
                     asset: { type: "pose_set", poses }, previews,
-                    preview_source: source.value ? JSON.parse(source.value) : null });
+                    preview_source: source.value ? JSON.parse(source.value) : null }) };
                 back();
             });
         };
@@ -261,7 +263,7 @@ export function openSetLibrary(w, opener, previewFor) {
     function repositoryAction(action, repoId, enabled) {
         return run(async () => {
             const repo = catalog.repositories.find(item => item.repo_id === repoId);
-            catalog = await post("repository", { action, repo_id: repoId, id: repo?.id, enabled });
+            catalog = { ...catalog, ...await post("repository", { action, repo_id: repoId, id: repo?.id, enabled }) };
             if (active() && screen === "settings") host.renderPoseRepositorySettings();
         });
     }
