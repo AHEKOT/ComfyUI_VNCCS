@@ -1516,6 +1516,28 @@ def _tensor_to_pil(tensor):
     return Image.fromarray(np.clip(255. * tensor.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)).convert("RGB")
 
 
+def _save_dataset(references, image, prompt):
+    dataset = _contained(root().parent, "QI2_CG_Dataset")
+    sample_id = uuid.uuid4().hex
+    files = [(f"control{slot.removeprefix('image_')}", ".png", _image_bytes(control))
+             for slot, _source, control in references]
+    files.extend([("img", ".txt", prompt.encode("utf-8")), ("img", ".png", _image_bytes(image))])
+    written = []
+    try:
+        for directory, extension, payload in files:
+            target = _contained(dataset, directory, sample_id + extension)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as stream:
+                written.append(target)
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+    except BaseException:
+        for target in written:
+            target.unlink(missing_ok=True)
+        raise
+
+
 @logged_operation("CGCreator", "refine")
 def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None):
     from PIL import Image
@@ -1594,6 +1616,8 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
                                                 turbo=generation["turbo"])
         _stage(draw_id, cancel_event, "decoding", 0.9, "Decoding the CG image")
         image = _tensor_to_pil(_call_comfy_node("VAEDecode", vae=vae, samples=samples)[0])
+        _check_cancel(cancel_event)
+        _save_dataset(references, image, prompt)
         _stage(draw_id, cancel_event, "complete", 1, "CG image ready")
         return image, {"settings": settings, "prompt": prompt, "width": image.width, "height": image.height,
                        "seed": generation["seed"], "model": "qi2",
