@@ -74,7 +74,7 @@ export class CGCharacterPanel {
                     <div class="cg-character-radars">${["x", "y"].map(axis => `<div><div data-character-radar-host="${axis}"></div><span>${axis.toUpperCase()} POSITION</span></div>`).join("")}</div>
                 </div></section>
             </div>
-            <div class="cg-character-actions"><button type="button" class="${buttonClass}" data-character-mode="pose">Pose</button><button type="button" class="${buttonClass}" data-character-mode="move">Move</button></div>
+            <div class="cg-character-actions"><button type="button" class="${buttonClass}" data-character-mode="pose">Pose</button><button type="button" class="${buttonClass}" data-character-mode="move">Move</button><button type="button" class="${buttonClass}" data-character-mode="rotate">Rotate</button></div>
             <div class="cg-character-actions"><button type="button" class="${buttonClass}" data-character-reset>↺ Reset</button><button type="button" class="${buttonClass}" data-character-undo>↶ Undo</button><button type="button" class="${buttonClass}" data-character-redo>↷ Redo</button></div>
             <button type="button" class="${primaryClass}" data-character-library>Open Pose Library</button>
             <p class="cg-character-error" role="status" hidden></p>`;

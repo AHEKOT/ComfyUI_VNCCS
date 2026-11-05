@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { validateCharacters } from "../web/cg_characters.mjs";
+import { CGCharacterEditor, validateCharacters } from "../web/cg_characters.mjs";
 import { readState } from "./helpers/cg_frontend.mjs";
 
 const character = () => ({ id: "a".repeat(32), position: [1, 2, -3], scale: .2,
     pose: { bones: { hand_l: [0, 25, -30] }, bonePositions: { root: [0, 0, 0] }, modelRotation: [0, 45, 0] } });
+
+test("rotate attaches the gizmo to the whole character and switching modes restores pose controls", () => {
+    const viewer = { canvas: new EventTarget(), invalidate() {} };
+    const editor = new CGCharacterEditor(viewer, {}, {});
+    const helper = {}, core = { skinnedMesh: {}, jointMarkers: [{}], transform: {
+        detach() { this.object = null; }, attach(object) { this.object = object; },
+        setMode(mode) { this.mode = mode; }, getHelper() { return helper; },
+    } };
+    editor.entries.set("character", core);
+    for (const [mode, transformMode] of [["rotate", "rotate"], ["move", "translate"], ["pose", "rotate"]]) {
+        editor.setMode(mode);
+        assert.equal(editor.mode, mode);
+        assert.equal(core.transform.mode, transformMode);
+        assert.equal(core.transform.object, mode === "pose" ? null : core.skinnedMesh);
+        assert.equal(helper.visible, mode !== "pose");
+        assert.equal(core.jointMarkers[0].visible, mode === "pose");
+    }
+    editor.events.abort();
+});
 
 test("character state preserves independent poses and accepts old empty scenes", () => {
     const characters = [character(), { ...character(), id: "b".repeat(32) }];

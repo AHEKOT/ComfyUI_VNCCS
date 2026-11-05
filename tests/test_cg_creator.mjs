@@ -1375,7 +1375,7 @@ test("current variant selection excludes archives while saved references retain 
     assert.equal(sourceChoices(doc).length, 1, "An archived set does not become the current variant");
 });
 
-test("compact dock preserves stored prompts and profiles while fixing cache defaults", async () => {
+test("compact dock preserves stored prompts, profiles and Qwen cache settings", async () => {
     const settings = { ...settingsDefaults(), prompt: "Keep this authored instruction", generation: {
         ...settingsDefaults().generation, cache_device: "cpu", cache_dtype: "int4",
         lora_stack: [{ name: "saved-style.safetensors", strength: 0.4 }], future_option: "retain" } };
@@ -1389,7 +1389,7 @@ test("compact dock preserves stored prompts and profiles while fixing cache defa
     assert.deepEqual(JSON.parse(h.data.value).settings.generation.lora_stack, settings.generation.lora_stack);
     assert.equal(JSON.parse(h.data.value).settings.generation.future_option, "retain");
     assert.equal(JSON.parse(h.data.value).settings.prompt, settings.prompt);
-    assert.equal(JSON.parse(h.data.value).settings.generation.cache_device, "default");
-    assert.equal(JSON.parse(h.data.value).settings.generation.cache_dtype, "default");
+    assert.equal(JSON.parse(h.data.value).settings.generation.cache_device, "cpu");
+    assert.equal(JSON.parse(h.data.value).settings.generation.cache_dtype, "int4");
     assert.equal(JSON.parse(h.data.value).settings.generation.prompt_enhance, false);
 });

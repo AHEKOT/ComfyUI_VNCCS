@@ -28,7 +28,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .cg-middle { position:relative; display:grid; grid-template-rows:minmax(0,1fr) 248px; min-height:0; min-width:0; gap:12px; }
 .vnccs-cg-creator .bg-generation-dock { min-width:0; min-height:248px; }
 .vnccs-cg-creator .bg-generation-dock .bg-panel { overflow:hidden; gap:7px; padding:12px; }
-.vnccs-cg-creator .bg-generation-dock .bg-qi2-model-panel { overflow:visible; }
+.vnccs-cg-creator .bg-generation-dock .bg-qi2-model-panel { overflow:visible; gap:6px; }
 .vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-picker { position:relative; }
 /* Floating surface copied from Sakura .vnccs-common-ui-dropdown. */
 .vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-picker-menu { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:10; max-height:320px; overflow:auto; background:#17121d; box-shadow:0 12px 28px rgba(0,0,0,0.45),0 0 0 1px rgba(255,143,163,0.04); }
@@ -46,6 +46,10 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-frame-settings .bg-field:first-child { display:grid; grid-template-columns:88px minmax(0,1fr); align-items:center; }
 .vnccs-cg-creator .bg-frame-settings .vnccs-common-creator-select { height:34px; min-height:34px; padding:6px 10px; }
 .vnccs-cg-creator .bg-frame-settings .vnccs-common-creator-label { font-size:9px; }
+.vnccs-cg-creator .bg-qi2-cache { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.vnccs-cg-creator .bg-qi2-cache .vnccs-common-creator-gen-param-field { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:8px; }
+.vnccs-cg-creator .bg-qi2-cache .vnccs-common-creator-label { font-size:9px; white-space:nowrap; }
+.vnccs-cg-creator .bg-generation-dock .bg-qi2-cache .vnccs-common-creator-gen-param-select { min-height:28px; height:28px; padding:3px 8px; font-size:12px; }
 .vnccs-cg-creator [data-qi2].vnccs-common-creator-container { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr); gap:12px; padding:0; overflow:visible; zoom:1; pointer-events:auto; }
 .vnccs-cg-creator [data-qi2]>.bg-qi2-contents { display:contents; }
 .vnccs-cg-creator .bg-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); align-items:start; gap:10px; }
@@ -131,7 +135,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     generation: { steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, turbo: false, prompt_enhance: false, cache_device: "default", cache_dtype: "default", lora_stack: [], diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors", seed_mode: "fixed", turbo_previous_settings: null },
 });
 const clone = value => JSON.parse(JSON.stringify(value));
-const settingsDefaults = (value = {}) => ({ ...clone(DEFAULT_SETTINGS), ...value, generation: { ...clone(DEFAULT_SETTINGS.generation), ...value.generation, cache_device: "default", cache_dtype: "default", prompt_enhance: false } });
+const settingsDefaults = (value = {}) => ({ ...clone(DEFAULT_SETTINGS), ...value, generation: { ...clone(DEFAULT_SETTINGS.generation), ...value.generation, prompt_enhance: false } });
 
 function readState(raw) {
     if (typeof raw !== "string" || raw.length > 256 * 1024) throw new Error("CG Creator state is too large.");
@@ -255,7 +259,7 @@ class CGQi2Controls {
             fetchApi: (path, options = {}) => transport.fetchApi(path, { ...options, signal: this.events.signal }) };
 
         host._node = this;
-        const fallback = { resolution_mp: 2, generation: { steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, lora_stack: [] } };
+        const fallback = { resolution_mp: 2, generation: { steps: 25, cfg: 1, sampler: "euler", scheduler: "simple", seed: 0, cache_device: "default", cache_dtype: "default", lora_stack: [] } };
         const settings = () => getSettings() || fallback;
         const generation = () => settings().generation;
         const g = new Proxy({}, {
@@ -376,6 +380,8 @@ class CGQi2Controls {
             scheduler: "Noise schedule used together with the sampler.",
             seed: "Numeric seed for reproducible generation. Reuse it to get similar results.",
             seed_mode: "Toggles fixed seed versus a fresh random seed for each generation.",
+            cache_device: "KV cache location. Auto uses spare VRAM then RAM; CPU uses prefetched RAM; Off recomputes the prefix every step.",
+            cache_dtype: "KV cache storage precision. Default is lossless; int8 halves its size; int4 uses about one quarter.",
             dmd_lora_name: "Turbo/DMD LoRA used by the active generation profile.",
             dmd_lora_strength: "Enables or disables the selected Turbo/DMD LoRA strength.",
             lora_stack: "Additional LoRAs mixed into generation for style refinements."
@@ -587,6 +593,8 @@ class CGQi2Controls {
             ensureOption(els.scheduler, g.scheduler);
             if (els.sampler) els.sampler.value = g.sampler || "";
             if (els.scheduler) els.scheduler.value = g.scheduler || "";
+            if (els.cache_device) els.cache_device.value = g.cache_device === "default" ? "auto" : g.cache_device;
+            if (els.cache_dtype) els.cache_dtype.value = g.cache_dtype;
             if (els.target_size) {
                 els.target_size.value = resolutionScaleMegapixels(g.target_size).toFixed(1);
             }
@@ -783,6 +791,14 @@ class CGQi2Controls {
         const modelTitle = document.createElement("div"); modelTitle.className = "vnccs-common-creator-section-title"; modelTitle.textContent = "Qwen Image 2.1 model & frame";
         modelPanel.append(modelTitle, qi2Models, resolutionWrap);
         const frameSettings = host.querySelector("[data-frame-settings]"); if (frameSettings) modelPanel.appendChild(frameSettings);
+        const cacheSettings = document.createElement("div"); cacheSettings.className = "bg-qi2-cache";
+        cacheSettings.setAttribute("role", "group"); cacheSettings.setAttribute("aria-label", "Qwen Image 2.1 Cache");
+        for (const [key, label, choices] of [["cache_device", "Cache device", ["auto", "gpu", "cpu", "off"]],
+            ["cache_dtype", "Cache dtype", ["default", "int8", "int4"]]]) {
+            cacheSettings.appendChild(createCompactSelectField(label, key));
+            els[key].replaceChildren(...choices.map(value => new Option(value, value)));
+        }
+        modelPanel.appendChild(cacheSettings);
         const samplingPanel = document.createElement("section"); samplingPanel.className = "bg-panel bg-qi2-sampling-panel vnccs-common-creator-col";
         const samplingTitle = document.createElement("div"); samplingTitle.className = "vnccs-common-creator-section-title"; samplingTitle.textContent = "Sampling";
         samplingPanel.append(samplingTitle, genParamGrid, seedWrap);
@@ -791,7 +807,7 @@ class CGQi2Controls {
         host.classList.add("vnccs-common-creator-container"); host.appendChild(colRight);
         attachHelpTooltips(host);
         for (const [key, control] of Object.entries({ steps: els.steps.num, cfg: els.cfg.num, sampler: els.sampler, scheduler: els.scheduler,
-            seed: els.seed, seed_mode: els.seed_mode })) {
+            seed: els.seed, seed_mode: els.seed_mode, cache_device: els.cache_device, cache_dtype: els.cache_dtype })) {
             control.dataset.qi2Setting = `generation.${key}`; control.setAttribute("aria-label", key.replaceAll("_", " "));
         }
         els.target_size.dataset.qi2Setting = "resolution_mp";

@@ -125,6 +125,53 @@ try {
         return saved;
     };
     await page.goto(origin); await page.waitForFunction(() => window.ready); await ready();
+    for (const [width, scale, label] of [[1481, 1, 'compact'], [LAYOUT_WIDTH, 1, 'default'], [5200, 1, 'wide'], [LAYOUT_WIDTH, .7, 'scaled']]) {
+        await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
+        await ready(width, scale);
+        const before = await geometry();
+        const device = page.getByRole('combobox', { name: 'cache device', exact: true });
+        const dtype = page.getByRole('combobox', { name: 'cache dtype', exact: true });
+        assert.equal(await device.innerText(), 'auto');
+        assert.equal(await dtype.innerText(), 'default');
+        for (const [control, choices, selected] of [[device, ['auto', 'gpu', 'cpu', 'off'], 'cpu'], [dtype, ['default', 'int8', 'int4'], 'int4']]) {
+            await control.click();
+            const menu = page.getByRole('listbox', { name: await control.getAttribute('aria-label'), exact: true });
+            assert.deepEqual(await menu.getByRole('option').allTextContents(), choices);
+            equalGeometry(await geometry(), before);
+            await menu.getByRole('option', { name: selected, exact: true }).click();
+            await menu.waitFor({ state: 'detached' });
+        }
+        const current = await workflow(), settings = JSON.parse(current.raw).settings.generation;
+        assert.equal(settings.cache_device, 'cpu'); assert.equal(settings.cache_dtype, 'int4');
+        await page.evaluate(saved => setup(saved.width, saved.scale, saved.raw, saved.height), { width, scale, raw: current.raw, height: current.size[1] });
+        await settle();
+        assert.equal(await device.innerText(), 'cpu'); assert.equal(await dtype.innerText(), 'int4');
+        const picker = page.locator('.vnccs-common-creator-model-picker');
+        await picker.locator('.is-picker-head').click();
+        await picker.locator('.vnccs-common-creator-model-picker-menu [role="button"]').filter({ hasText: 'Qwen Image 2.1 Turbo INT8 ConvRot' }).click();
+        assert.equal(await device.innerText(), 'cpu'); assert.equal(await dtype.innerText(), 'int4');
+        const fit = await page.evaluate(() => {
+            const panel = document.querySelector('.bg-qi2-model-panel'), bounds = panel.getBoundingClientRect();
+            const controls = [...panel.querySelectorAll(':scope>*,input,button')].map(element => {
+                const rect = element.getBoundingClientRect();
+                return { name: element.ariaLabel || element.className, x: rect.x, y: rect.y, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
+            }).filter(rect => rect.width && rect.height);
+            return { panel: { x: bounds.x, y: bounds.y, right: bounds.right, bottom: bounds.bottom }, controls,
+                overflowX: panel.scrollWidth - panel.clientWidth, overflowY: panel.scrollHeight - panel.clientHeight };
+        });
+        assert.ok(fit.overflowX <= 1 && fit.overflowY <= 1, `Cache controls do not add panel scrolling at ${label}: ${JSON.stringify(fit)}`);
+        for (const control of fit.controls) assert.ok(control.x >= fit.panel.x - 1 && control.right <= fit.panel.right + 1
+            && control.y >= fit.panel.y - 1 && control.bottom <= fit.panel.bottom + 1, `${control.name} escapes the model panel at ${label}`);
+        equalGeometry(await geometry(), before);
+        await capture(`qwen-cache-${label}`);
+        await page.evaluate(() => widget.qi2.setDisabled(true));
+        assert.equal(await device.isDisabled(), true); assert.equal(await dtype.isDisabled(), true);
+        await page.evaluate(() => widget.qi2.setDisabled(false));
+        assert.equal(await device.isEnabled(), true); assert.equal(await dtype.isEnabled(), true);
+        samples.push({ name: `qwen-cache-${label}`, width, scale, bounds: await geometry(), fit });
+    }
+    await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
+    await ready();
     await page.evaluate(() => {
         const controls = document.createElement('nav'); controls.id = 'workflow-controls';
         controls.innerHTML = '<button data-workflow-tab>Workflow tab</button><button data-workflow-save>Save workflow</button><input aria-label="Workflow name" value="Original workflow"><button data-workflow-after>After preview</button>';

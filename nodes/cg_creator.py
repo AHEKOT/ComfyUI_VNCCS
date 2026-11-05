@@ -1069,7 +1069,7 @@ def normalize_settings(data: Any) -> dict[str, Any]:
             if incoming[key] not in choices:
                 raise ValueError(f"Unsupported {key}")
             generation[key] = incoming[key]
-    generation.update(cache_device="default", cache_dtype="default", prompt_enhance=False)
+    generation.update(prompt_enhance=False)
     previous = incoming.get("turbo_previous_settings")
     if previous is not None:
         if not isinstance(previous, dict):
@@ -1577,7 +1577,8 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         if generation["turbo"]:
             model = _call_comfy_node("LoraLoaderModelOnly", model=model, lora_name=_asset_name("loras", TURBO_LORA), strength_model=1.0)[0]
         # The cache provider calls its default device selection "auto".
-        model = _call_comfy_node("QwenImage21Cache", model=model, device="auto", dtype="default")[0]
+        cache_device = "auto" if generation["cache_device"] == "default" else generation["cache_device"]
+        model = _call_comfy_node("QwenImage21Cache", model=model, device=cache_device, dtype=generation["cache_dtype"])[0]
         _stage(draw_id, cancel_event, "conditioning", 0.3, "Encoding the original background and camera frame")
         background, reference = background.convert("RGB"), reference.convert("RGB")
         references = [("image_1", "original background", background), ("image_2", "captured camera frame", reference)]
@@ -1588,7 +1589,7 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
             log_event("reference_image", job_id=draw_id, slot=slot, source=source,
                       width=image.width, height=image.height, rgb_sha256=hashlib.sha256(image.tobytes()).hexdigest())
         log_event("conditioning", job_id=draw_id, prompt=prompt, negative_prompt="",
-                  resolution=resolution, cache_device="auto", cache_dtype="default", truncate=False)
+                  resolution=resolution, cache_device=cache_device, cache_dtype=generation["cache_dtype"], truncate=False)
         images = {slot: _pil_to_tensor(image) for slot, _source, image in references}
         reference_tensor = images["image_2"]
         encoded = _call_comfy_node("TextEncodeQwenImage21", clip=clip, vae=vae, prompt=prompt,

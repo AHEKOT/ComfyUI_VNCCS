@@ -243,7 +243,8 @@ try {
         assert.equal(await page.locator("[data-cg-id] > span").count(), 0, "CG cards reserve no row for FOV");
         assert.equal(await page.locator("[data-source-choice]").count(), 4, "Every source retains its card, including the selected original");
         assert.equal(await page.locator('.vnccs-common-creator-lora-stack,[data-qi2-setting*="lora_stack"],[data-qi2-setting="generation.turbo"]').count(), 0);
-        assert.equal(await page.locator('[data-prompt],.vnccs-common-creator-qi2-cache,[data-qi2-setting="generation.cache_device"],[data-qi2-setting="generation.cache_dtype"]').count(), 0);
+        assert.equal(await page.locator('[data-prompt]').count(), 0);
+        assert.equal(await page.locator('[data-qi2-setting="generation.cache_device"],[data-qi2-setting="generation.cache_dtype"]').count(), 2);
         assert.equal(await page.getByLabel("Prompt Enhancement", { exact: true }).count(), 0);
         assert.equal(await page.locator("[data-save-view]").isEnabled(), true);
         const bounds = await geometry(), scale = bounds.widget.width / LAYOUT_WIDTH;

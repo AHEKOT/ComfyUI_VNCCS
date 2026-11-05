@@ -221,6 +221,21 @@ def test_dataset_rejects_symbolic_links(runtime, tmp_path, branch):
     assert not list(outside.iterdir())
 
 
+@pytest.mark.parametrize("device,dtype,expected_device", [
+    ("default", "default", "auto"), ("auto", "int8", "auto"),
+    ("gpu", "int4", "gpu"), ("cpu", "default", "cpu"), ("off", "int8", "off"),
+])
+def test_selected_qwen_cache_settings_reach_the_runtime_and_saved_metadata(runtime, caplog, device, dtype, expected_device):
+    _, metadata = generation.generate_image({"generation": {"cache_device": device, "cache_dtype": dtype}},
+        "selected-cache", threading.Event(), runtime.reference, runtime.background)
+    cache = dict(runtime.calls)["QwenImage21Cache"]
+    assert (cache["device"], cache["dtype"]) == (expected_device, dtype)
+    assert metadata["settings"]["generation"]["cache_device"] == device
+    assert metadata["settings"]["generation"]["cache_dtype"] == dtype
+    conditioning = next(record.vnccs for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "conditioning")
+    assert (conditioning["cache_device"], conditioning["cache_dtype"]) == (expected_device, dtype)
+
+
 def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_frame(runtime, caplog):
     image, metadata = generation.generate_image({}, "cg-frame", threading.Event(), runtime.reference, runtime.background)
     names = [name for name, _ in runtime.calls]

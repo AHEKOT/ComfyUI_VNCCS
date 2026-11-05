@@ -167,11 +167,11 @@ export class CGCharacterEditor {
         for (const core of this.entries.values()) {
             core.transform.detach(); core.selectedBone = null; core.selectedIKEffector = null; core.selectedPoleTarget = null;
         }
-        if (this.mode === "move" && this.active) this.active.transform.attach(this.active.skinnedMesh);
+        if (this.mode !== "pose" && this.active) this.active.transform.attach(this.active.skinnedMesh);
         this.showHelpers(); this.viewer.invalidate();
     }
     setMode(mode) {
-        this.mode = mode === "move" ? "move" : "pose";
+        this.mode = mode === "move" || mode === "rotate" ? mode : "pose";
         for (const core of this.entries.values()) core.transform.setMode(this.mode === "move" ? "translate" : "rotate");
         this.select(this.selected || this.entries.keys().next().value);
     }
@@ -225,7 +225,7 @@ export class CGCharacterEditor {
             canvas.focus({ preventScroll: true }); canvas.setPointerCapture(event.pointerId);
             if (core.transform.axis) core.transform.pointerDown(pointer);
             else if (this.mode === "pose") core.handlePointerDown(event);
-            else {
+            else if (this.mode === "move") {
                 this.select(this.selected);
                 this.moveStart = core.skinnedMesh.position.clone();
                 this.movePlane = new this.runtime.THREE.Plane().setFromNormalAndCoplanarPoint(

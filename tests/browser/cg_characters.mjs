@@ -87,11 +87,13 @@ export async function verifyCharacters(page, { shot, settle, geometry, scenarios
     assert.deepEqual(await page.evaluate(() => widget.characters.snapshot()), posed);
     await page.locator("[data-add-character]").click();
     assert.equal(await page.evaluate(() => widget.characters.entries.size), 1);
-    for (const mode of ["pose"]) {
+    for (const mode of ["pose", "rotate"]) {
+        await page.locator(`[data-character-mode="${mode}"]`).click();
         const result = await page.evaluate(mode => {
-            const editor = widget.characters; editor.active.selectBone(editor.active.bones.thumb_01_l);
+            const editor = widget.characters;
+            if (mode === "pose") editor.active.selectBone(editor.active.bones.thumb_01_l);
             return { mode: editor.active.transform.mode, attached: editor.active.transform.object ===
-                editor.active.bones.thumb_01_l };
+                (mode === "pose" ? editor.active.bones.thumb_01_l : editor.active.skinnedMesh) };
         }, mode);
         assert.equal(result.mode, "rotate"); assert.ok(result.attached);
         await settle();
@@ -125,6 +127,13 @@ export async function verifyCharacters(page, { shot, settle, geometry, scenarios
         const moved = await page.evaluate(() => ({ scene: widget.characters.snapshot(), camera: widget.viewer.getCameraState() }));
         assert.notDeepEqual(moved.scene, beforeTransform.scene, `${mode} updates before release`);
         assert.deepEqual(moved.camera, beforeTransform.camera, `${mode} keeps the camera still`);
+        if (mode === "rotate") {
+            assert.notDeepEqual(moved.scene[0].pose.modelRotation, beforeTransform.scene[0].pose.modelRotation);
+            assert.deepEqual(moved.scene[0].pose.bones, beforeTransform.scene[0].pose.bones);
+            assert.deepEqual(moved.scene[0].position, beforeTransform.scene[0].position);
+            assert.deepEqual(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).characters[widget.state.model_id]), moved.scene);
+            await shot("after-character-rotate");
+        }
         await page.mouse.up();
     }
     await page.waitForFunction(() => !widget.characterPanel.loading);
