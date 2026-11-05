@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 import { FactoryCommandHistory } from "./fixtures/factory_history.mjs";
 import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, connectionSource, cleanupSource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
 
@@ -29,6 +30,40 @@ test("malformed nested profiles are retained as invalid workflow data", () => {
         const raw = JSON.stringify(state(changes));
         assert.throws(() => readState(raw), /settings/i);
     }
+});
+
+test("unavailable Pose Studio leaves the background usable and Add Character retryable", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const saved = h.data.value, viewer = h.widget.viewer;
+    h.context.loadCharacterRuntime = async () => { throw new Error("Pose Studio assets are unavailable."); };
+    await h.control("[data-add-character]").click();
+    assert.equal(h.widget.busy, false); assert.equal(h.control("[data-add-character]").disabled, false);
+    assert.equal(h.data.value, saved); assert.equal(h.widget.viewer, viewer);
+    assert.match(h.widget.status.textContent, /Pose Studio assets are unavailable/);
+});
+
+test("corrupt character state retains its original bytes during restoration", async () => {
+    const raw = JSON.stringify(state({ characters: { [MODEL]: [{ id: B, position: [0, 0, 0], scale: -1, pose: {} }] } }));
+    const h = harness(raw); await h.ready();
+    assert.equal(h.data.value, raw); assert.equal(h.widget.restoreFailed, true);
+    assert.equal(h.control("[data-add-character]").disabled, true);
+});
+
+test("Add Character works without randomUUID and adds only one character", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.context.crypto = { getRandomValues: values => webcrypto.getRandomValues(values) };
+    const entries = new Map();
+    h.widget.characters = {
+        entries, snapshot: () => [...entries.values()],
+        add(id) { entries.set(id, { id, position: [0, 0, 0], scale: 1,
+            pose: { bones: {}, bonePositions: {}, modelRotation: [0, 0, 0] } }); },
+    };
+    await h.control("[data-add-character]").click();
+    await h.control("[data-add-character]").click();
+    assert.equal(entries.size, 1, h.widget.status.textContent);
+    assert.ok([...entries.keys()].every(id => /^[a-f0-9]{32}$/.test(id)));
+    assert.deepEqual(readState(h.data.value).characters[MODEL], [...entries.values()]);
+    assert.equal(h.control("[data-add-character]").disabled, false);
 });
 
 // Only the DOM operations used by the widget are emulated; no browser or GPU is involved.

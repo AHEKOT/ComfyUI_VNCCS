@@ -80,6 +80,26 @@ def add_model(document, tmp_path, image_id=None):
                                 source, manifest, {"seed": 4}, document["revision"])
 
 
+def test_cg_character_snapshot_survives_disk_reload_and_rejects_invalid_pose(scene, tmp_path):
+    document = add_model(scene, tmp_path)
+    character = {"id": "f" * 32, "position": [1, 2, -3], "scale": .2,
+                 "mesh": {"age": 32, "gender": 0, "weight": .7}, "light": {"intensity": 2, "color": "#ffddee"},
+                 "source": {"character": "Maya", "costume": "Casual", "sprite": "sprite_pose_1.png", "emotion": "Happy"},
+                 "pose": {"bones": {"hand_l": [0, 25, 0]}, "bonePositions": {}, "modelRotation": [0, 45, 0]}}
+    raw = Image.new("RGB", (64, 32), "red")
+    document = storage.commit_cg(scene["background_id"], "Character", raw, raw, CAMERA, {},
+                                 document["models"][0]["model_id"], None, characters=[character])
+    assert storage.load_background(scene["background_id"])["cgs"][-1]["characters"] == [character]
+    character["pose"]["bones"]["hand_l"][1] = 99
+    assert document["cgs"][-1]["characters"][0]["pose"]["bones"]["hand_l"][1] == 25
+    before = files(storage.root())
+    character["position"][0] = float("nan")
+    with pytest.raises(ValueError, match="character transform"):
+        storage.commit_cg(scene["background_id"], "Invalid", raw, raw, CAMERA, {},
+                          document["models"][0]["model_id"], None, characters=[character])
+    assert files(storage.root()) == before
+
+
 def test_no_background_generation_or_document_authoring_api(scene):
     for name in ("create_background", "add_image", "archive_background", "save_background", "save_editor"):
         assert not hasattr(storage, name)
@@ -176,8 +196,8 @@ def test_models_and_cgs_keep_source_links_and_previous_variants(scene, tmp_path)
                                  {"seed": 3}, first_model["model_id"], document["revision"])
     first_cg = document["cgs"][-1]
     assert (first_cg["width"], first_cg["height"]) == finished.size
-    with Image.open(storage.cg_image_path(document["background_id"], first_cg["cg_id"], "raw")) as capture:
-        assert capture.size == raw.size
+    with pytest.raises(FileNotFoundError):
+        storage.cg_image_path(document["background_id"], first_cg["cg_id"], "raw")
     cg_bytes = storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes()
     document = add_model(document, tmp_path, scene["images"][1]["image_id"])
     second_model = document["models"][-1]
@@ -194,7 +214,7 @@ def test_models_and_cgs_keep_source_links_and_previous_variants(scene, tmp_path)
     assert storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes() == cg_bytes
     assert storage.model_scene(document["background_id"], first_model["model_id"])["source_image_id"] == first_model["source_image_id"]
     cg_root = storage.root() / scene["name"] / "CG" / "Window"
-    assert set(path.name for path in cg_root.iterdir()) == {"raw.png", "image.png"}
+    assert set(path.name for path in cg_root.iterdir()) == {"image.png"}
     assert cg_root / "image.png" == storage.cg_image_path(document["background_id"], first_cg["cg_id"])
     for key in ("editor", "images", "selected_image_id", "generated_sets", "generator_settings", "future_owner_data"):
         assert document[key] == original_fields[key]
@@ -606,7 +626,7 @@ def legacy_assets(document, tmp_path):
     manifest_path.write_text(json.dumps(manifest))
     (legacy_model / "user-note.txt").write_text("Preserve unknown files")
     cg_path = directory / Path(cg.pop("file")).parent
-    cg.pop("raw_file")
+    raw.save(cg_path / "raw.png")
     legacy_cg = cg_path / cg["cg_id"]
     legacy_cg.mkdir()
     for name in ("raw.png", "image.png"):
@@ -628,7 +648,7 @@ def test_new_assets_have_readable_immutable_paths_with_collision_suffixes(scene,
     for name, expected in (("View 1", "View 1"), ("view 1", "view 1 (2)"), ("View 1", "View 1 (3)")):
         document = storage.commit_cg(document["background_id"], name, raw, raw, CAMERA, {}, first["model_id"], None)
         assert document["cgs"][-1]["file"] == f"CG/{expected}/image.png"
-        assert document["cgs"][-1]["raw_file"] == f"CG/{expected}/raw.png"
+        assert "raw_file" not in document["cgs"][-1]
     assert first_path.read_bytes() == b"immutable Gaussian fixture"
     assert all(not storage._ID.fullmatch(path.name) for path in path_for(document).parent.rglob("*") if path.is_dir())
 
@@ -809,3 +829,22 @@ def test_asset_paths_cannot_alias_another_record_on_case_insensitive_systems(sce
     with pytest.raises(storage.BackgroundStorageError):
         storage.load_background(document["background_id"])
     assert files(storage.root()) == before
+
+
+def test_character_catalog_uses_costume_sprites_and_available_emotions(monkeypatch, tmp_path):
+    from _vnccs import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(utils, "load_config", lambda name, **kwargs: {"character_info": {"age": 32, "sex": "female"}, "costumes": {"Casual": {}}})
+    folder = tmp_path / "Maya" / "Sprites" / "Casual"
+    for emotion in ("Neutral", "Happy"):
+        (folder / emotion).mkdir(parents=True)
+        Image.new("RGB", (8, 8)).save(folder / emotion / ("sprite_pose_1.png" if emotion == "Neutral" else "sprite_Happy_0001.png"))
+    Image.new("RGB", (8, 8)).save(folder / "Neutral" / "sprite_pose_2.png")
+    catalog = storage.character_catalog("Maya", "Casual")
+    assert (catalog["age"], catalog["gender"]) == (32, "female")
+    assert catalog["sprites"] == [{"name": "sprite_pose_1.png", "emotions": ["Neutral", "Happy"]},
+                                  {"name": "sprite_pose_2.png", "emotions": ["Neutral"]}]
+    assert storage.character_sprite("Maya", "Casual", "sprite_pose_1.png", "Happy") == folder / "Happy" / "sprite_Happy_0001.png"
+    for filename in ("../secret.png", "..\\secret.png", "/secret.png"):
+        with pytest.raises(ValueError):
+            storage.character_sprite("Maya", "Casual", filename)

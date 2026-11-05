@@ -4,6 +4,7 @@ import sys
 import ast
 import inspect
 import hashlib
+import json
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import types
@@ -183,7 +184,7 @@ def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_fra
     encode = calls["TextEncodeQwenImage21"]
     assert encode["images"] == {"image_1": ("image", (1200, 672), "RGB", (0, 128, 0)),
                                 "image_2": ("image", (1888, 1056), "RGB", (255, 0, 0))}
-    assert encode["resolution"] == 1024 and encode["negative_prompt"] == ""
+    assert encode["resolution"] == 1440 and encode["negative_prompt"] == ""
     assert encode["prompt"] == metadata["prompt"] == "Change the camera angle from <image2> to <image1>."
     assert image.size == (1936, 1088)
     assert "width" not in encode and "height" not in encode
@@ -210,12 +211,44 @@ def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_fra
         assert event["rgb_sha256"] == hashlib.sha256(reference.tobytes()).hexdigest()
     conditioning = next(event for event in events if event["event"] == "conditioning")
     assert conditioning["prompt"] == generation.ANYANGLE_PROMPT and conditioning["negative_prompt"] == ""
-    assert conditioning["resolution"] == 1024
+    assert conditioning["resolution"] == 1440
     latent = next(event for event in events if event["event"] == "latent")
     assert (latent["width"], latent["height"], latent["resolution_mp"]) == (1936, 1083, 2)
     sampling = next(event for event in events if event["event"] == "sampling")
     assert sampling["settings"]["steps"] == 25 and sampling["settings"]["cfg"] == 1
     assert sampling["settings"]["seed"] == metadata["seed"]
+
+
+@pytest.mark.parametrize("alpha,color", [(0, (255, 255, 255)), (128, (127, 127, 255)), (255, (0, 0, 255))])
+def test_character_inference_keeps_anyangle_and_caches_control_center_pose_lora(runtime, monkeypatch, tmp_path, alpha, color):
+    center = load("nodes.vnccs_control_center")
+    catalog = tmp_path / "control_center.json"
+    pose_name = "QI2.1/VNCCS/updated_pose.safetensors"
+    catalog.write_text(json.dumps({"lora": [{"name": "VNCCS Pose Studio QI2", "local_path": "models/loras/" + pose_name}]}))
+    config_path = mock.Mock(return_value=str(catalog))
+    monkeypatch.setattr(center, "_get_packaged_cc_path", config_path)
+    apply = mock.Mock(wraps=generation.apply_generation_lora)
+    monkeypatch.setattr(generation, "apply_generation_lora", apply)
+    character = Image.new("RGBA", (128, 256), (0, 0, 255, alpha))
+    generation.resolve_pose_lora.cache_clear()
+    try:
+        for index in range(2):
+            _, metadata = generation.generate_image({}, str(index), threading.Event(), runtime.reference, runtime.background, character)
+            if index == 0:
+                catalog.unlink()
+            encode = dict(runtime.calls)["TextEncodeQwenImage21"]
+            assert list(encode["images"]) == ["image_1", "image_2", "image_3"]
+            assert encode["images"] == {"image_1": ("image", runtime.background.size, "RGB", (0, 128, 0)),
+                                        "image_2": ("image", runtime.reference.size, "RGB", (255, 0, 0)),
+                                        "image_3": ("image", character.size, "RGB", color)}
+            assert encode["prompt"] == metadata["prompt"] == generation.ANYANGLE_PROMPT + " White dummy is character from image3"
+            anyangle, pose = [call for call in apply.call_args_list if call.args[2]][-2:]
+            assert anyangle.args[2:] == (generation.ANYANGLE_LORA, 1.0)
+            assert pose.args[1:] == (None, pose_name, 1.0) and pose.kwargs == {"clip_strength": 0}
+        config_path.assert_called_once()
+        assert [name for name, _ in runtime.calls].count("UNETLoader") == 1
+    finally:
+        generation.resolve_pose_lora.cache_clear()
 
 
 def test_fixed_prompt_never_runs_enhancement_and_preserves_the_legacy_profile(runtime):
@@ -269,18 +302,20 @@ def test_rejects_invalid_capture_geometry_before_loading(runtime, size):
     assert runtime.calls == []
 
 
-@pytest.mark.parametrize("megapixels,latent_size,decoded_size", [
-    (1.0, (1369, 766), (1376, 768)),
-    (2.0, (1936, 1083), (1936, 1088)),
-    (4.0, (2738, 1532), (2736, 1536)),
+@pytest.mark.parametrize("megapixels,resolution,latent_size,decoded_size", [
+    (1.0, 1024, (1369, 766), (1376, 768)),
+    (1.25, 1152, (1561, 873), (1568, 880)),
+    (2.0, 1440, (1936, 1083), (1936, 1088)),
+    (4.0, 2048, (2738, 1532), (2736, 1536)),
 ])
-def test_resolution_scale_drives_native_latent_dimensions_and_saves_decoded_size(runtime, megapixels, latent_size, decoded_size):
+def test_resolution_scale_drives_native_latent_dimensions_and_saves_decoded_size(runtime, megapixels, resolution, latent_size, decoded_size):
     runtime.latent_size[:], runtime.size[:] = latent_size, decoded_size
     image, metadata = generation.generate_image({"resolution_mp": megapixels}, "scaled-frame", threading.Event(), runtime.reference, runtime.background)
     calls = dict(runtime.calls)
+    assert calls["TextEncodeQwenImage21"]["resolution"] == resolution
     assert runtime.reference.size == (1888, 1056)
     assert calls["ImageScaleToTotalPixels"] == {"image": calls["TextEncodeQwenImage21"]["images"]["image_2"],
-        "upscale_method": "nearest-exact", "megapixels": megapixels, "resolution_steps": 1}
+        "upscale_method": "nearest-exact", "megapixels": 1.3 if megapixels == 1.25 else megapixels, "resolution_steps": 1}
     assert calls["GetImageSize"] == {"image": "scaled-camera-frame"}
     assert calls["EmptyLatentImage"] == {"width": latent_size[0], "height": latent_size[1], "batch_size": 1}
     assert calls["KSampler"]["latent_image"]["size"] == latent_size

@@ -1,3 +1,5 @@
+import { CGCharacterPanel } from "./cg_character_panel.mjs";
+import { CGCharacterEditor, loadCharacterRuntime, validateCharacters } from "./cg_characters.mjs";
 import { STYLE_PICKER_CSS } from "./character_styles.mjs";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
@@ -122,7 +124,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 }
 `;
 
-const MODEL_DEFAULTS = Object.freeze({ num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: 0 });
+const MODEL_DEFAULTS = Object.freeze({ num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: -1 });
 const DEFAULT_SETTINGS = Object.freeze({
     prompt: "Change the camera angle from <image2> to <image1>.",
     aspect: "16:9", resolution_mp: 2,
@@ -139,6 +141,13 @@ function readState(raw) {
         if (value[key] != null && (typeof value[key] !== "string" || (value[key] && !/^[a-f0-9]{32}$/.test(value[key])))) throw new Error("Invalid CG asset reference.");
     }
     if (value.selected_variant != null) validateVariant(value.selected_variant);
+    if (value.characters != null) {
+        if (!value.characters || typeof value.characters !== "object" || Array.isArray(value.characters)) throw new Error("Invalid CG character scenes.");
+        for (const [id, characters] of Object.entries(value.characters)) {
+            if (!/^[a-f0-9]{32}$/.test(id)) throw new Error("Invalid CG character scene.");
+            validateCharacters(characters);
+        }
+    }
     if (value.camera != null && (!["position", "target", "up"].every(key => Array.isArray(value.camera[key]) && value.camera[key].length === 3 && value.camera[key].every(n => Number.isFinite(n) && Math.abs(n) <= 1e6))
         || !Number.isFinite(value.camera.fov) || value.camera.fov < 5 || value.camera.fov > 120)) throw new Error("Invalid saved CG camera.");
     if (value.frame != null && (![value.frame.width, value.frame.height].every(n => Number.isInteger(n) && n >= 64 && n <= 4096 && n % 16 === 0) || value.frame.width * value.frame.height > 16e6)) throw new Error("Invalid saved CG frame.");
@@ -226,7 +235,7 @@ async function loadFactoryRuntime(descriptor) {
     const viewerURL = new URL(descriptor.module_url.slice(1), root);
     const [viewer, history] = await Promise.all([import(viewerURL.href), import(new URL("./editor_commands.mjs", viewerURL).href)]);
     const runtime = { Factory3DViewer: viewer.Factory3DViewer, FactoryCommandHistory: history.FactoryCommandHistory,
-        stylesURL: new URL("./styles.css", viewerURL).href };
+        viewerURL, stylesURL: new URL("./styles.css", viewerURL).href };
     if (typeof runtime.Factory3DViewer !== "function" || typeof runtime.FactoryCommandHistory !== "function") {
         throw new Error("Unsupported 3D Factory viewer interface.");
     }
@@ -842,7 +851,7 @@ class CGCreatorWidget {
                     <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary bg-wide" data-action="model">Create model</button>
                 </aside>
                 <section class="cg-middle">
-                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge">Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
+                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge">Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
                     <div class="bg-generation-dock" data-qi2><div class="bg-frame-settings" data-frame-settings>
                     <label class="bg-field vnccs-common-creator-field"><span class="vnccs-common-creator-label">Aspect ratio</span><select class="vnccs-common-creator-select" data-aspect aria-label="Aspect ratio">${ASPECTS.map(value => `<option>${value}</option>`).join("")}</select></label>
                     </div></div>
@@ -871,7 +880,7 @@ class CGCreatorWidget {
     }
 
     on(target, type, callback, options = {}) { target.addEventListener(type, callback, { ...options, signal: this.events.signal }); }
-    message(text, error = false) { if (!this.disposed) { this.status.textContent = error ? text : this.modelError || this.libraryError || CAMERA_HINT; this.status.classList.toggle("error", error || Boolean(this.modelError || this.libraryError)); } }
+    message(text, error = false) { if (!this.disposed) { this.status.textContent = error ? text : this.modelError || this.libraryError || (this.characters?.entries.size ? "Drag joints to pose · Select a joint to rotate · Right-drag to look · Ctrl Z to undo" : CAMERA_HINT); this.status.classList.toggle("error", error || Boolean(this.modelError || this.libraryError)); } }
     async request(path, options = {}) {
         const response = await this.api.fetchApi(BASE + path, { ...options, signal: this.events.signal }), result = await response.json();
         if (!response.ok) { const error = new Error(result.error || `Request failed: HTTP ${response.status}`); error.status = response.status; throw error; }
@@ -879,14 +888,31 @@ class CGCreatorWidget {
     }
     json(path, data, method = "POST") { return this.request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); }
     canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.state?.job && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.scene && this.scene.model_id === this.state?.model_id); }
-    beginGesture() { if (this.canEditCamera()) this.history.begin("Camera", this.viewer.getCameraState()); }
-    commitGesture() { if (this.canEditCamera()) { this.sync(); this.history.commit(this.viewer.getCameraState()); } }
+    editorSnapshot() { return { camera: this.viewer.getCameraState(), characters: this.characters?.snapshot() || [] }; }
+    beginGesture() { if (this.canEditCamera()) this.history.begin("Scene", this.editorSnapshot()); }
+    commitGesture() { if (this.canEditCamera()) { this.sync(); this.history.commit(this.editorSnapshot()); } }
+    async ensureCharacters() {
+        if (this.characters) return this.characters;
+        this.characterRuntime ||= loadCharacterRuntime(this.factoryRuntime.viewerURL).catch(error => { this.characterRuntime = null; throw error; });
+        const runtime = await this.characterRuntime;
+        if (this.disposed) throw new Error("CG Creator was removed.");
+        this.characters ||= new CGCharacterEditor(this.viewer, runtime, {
+            canEdit: () => this.canEditCamera() && !this.document?._recovery && !this.document?.archived,
+            onStart: () => this.beginGesture(), onChange: () => { this.sync(); this.characterPanel?.refresh(); }, onEnd: () => { this.commitGesture(); this.characterPanel?.refresh(); },
+        });
+        this.characterPanel ||= new CGCharacterPanel(this);
+        return this.characters;
+    }
+    captureScene(options) { return this.characters ? this.characters.capture(options) : this.viewer.capturePreview(options); }
     updateControls() {
         for (const control of this.container.querySelectorAll("button,input,select,textarea")) control.disabled = this.busy || this.restoring || Boolean(this.state?.job || this.document?._recovery || this.document?.archived);
         this.container.querySelector("[data-library]").disabled = this.busy || this.restoring || Boolean(this.state?.job);
         for (const control of this.container.querySelectorAll("[data-cg-id],[data-close-preview]")) control.disabled = this.restoring || Boolean(this.backgroundTransition);
         for (const control of this.container.querySelectorAll("[data-pending-cg]")) control.disabled = this.restoring || !this.pendingCG?.url;
         for (const control of this.container.querySelectorAll("[data-fov],[data-fov-number],[data-recenter]")) control.disabled = !this.canEditCamera();
+        this.container.querySelector("[data-add-character]").disabled = !this.canEditCamera() || Boolean(this.document?._recovery || this.document?.archived);
+        this.container.querySelector("[data-add-character]").textContent = this.characters?.entries.size ? "Edit Character" : "Add Character";
+        this.characterPanel?.refresh();
         this.container.querySelector("[data-save-view]").disabled = !this.canEditCamera() || Boolean(this.document?._recovery || this.document?.archived);
         this.container.querySelector('[data-action="model"]').disabled ||= !this.state?.selected_image_id;
         this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(this.state?.job || this.document?._recovery || this.document?.archived));
@@ -898,7 +924,7 @@ class CGCreatorWidget {
         this.container.querySelector("[data-model-status]").textContent = this.busy && this.activeAction === "model" ? "Creating model…" : this.modelError ? "Model unavailable" : this.state?.model_id ? "Model ready" : "Model not created";
     }
 
-    invalidateRestore() { this.restoring = true; this.clearBackgroundTransition(); this.clearSourceLoad(); stopSakuraMotion(this.customSelects); this.clearPendingCG(); this.cgPreviewClose?.(); ++this.epoch; this.restoreFailed = false; this.busy = false; this.jobId = ""; clearTimeout(this.saveTimer); clearTimeout(this.pollTimer); this.pollResolve?.(); this.updateControls(); }
+    invalidateRestore() { this.characterPanel?.hide(); this.restoring = true; this.clearBackgroundTransition(); this.clearSourceLoad(); stopSakuraMotion(this.customSelects); this.clearPendingCG(); this.cgPreviewClose?.(); ++this.epoch; this.restoreFailed = false; this.busy = false; this.jobId = ""; clearTimeout(this.saveTimer); clearTimeout(this.pollTimer); this.pollResolve?.(); this.updateControls(); }
     restore() {
         const epoch = ++this.epoch; this.restoring = true; this.restoreFailed = false; this.updateControls(); this.message("Loading saved backgrounds…");
         this.operations = this.operations.catch(() => {}).then(async () => {
@@ -909,7 +935,10 @@ class CGCreatorWidget {
                 if (this.disposed || epoch !== this.epoch) return;
                 this.factoryRuntime = await loadFactoryRuntime(config.factory);
                 if (this.disposed || epoch !== this.epoch) return;
-                this.history ??= new this.factoryRuntime.FactoryCommandHistory({ onRestore: camera => this.viewer.setCameraState(camera, { emit: true }) });
+                this.history ??= new this.factoryRuntime.FactoryCommandHistory({ onRestore: snapshot => {
+                    this.characters?.restore(snapshot.characters);
+                    this.viewer.setCameraState(snapshot.camera, { emit: true }); this.sync(); this.characterPanel?.refresh(); this.updateControls();
+                } });
                 this.state = state; this.document = null; this.unsaved = false; this.config = config; this.catalog = catalog.backgrounds;
                 this.libraryError = (catalog.errors || []).map(item => `${item.name}: ${item.error}`).join(" ");
                 if (state.job?.node_id != null && state.job.node_id !== String(this.node.id)) {
@@ -1017,6 +1046,10 @@ class CGCreatorWidget {
             if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
             this.scene = scene; this.state.selected_image_id = scene.source_image_id; this.state.selected_variant = clone(scene.source_variant || null);
             const selected = this.document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id && cg.model_id === modelId);
+            const characters = this.state.characters?.[modelId] ?? selected?.characters ?? [];
+            if (characters.length) await this.ensureCharacters();
+            if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
+            this.characters?.restore(characters);
             const camera = this.state.camera || selected?.camera || sourceCameraView(scene.objects[0].source_camera || scene.camera);
             const source = selectedSource(this.document, this.state)?.image || this.document.images.find(image => image.image_id === scene.source_image_id);
             const size = this.state.frame || (selected ? { width: selected.width, height: selected.height } : frameDimensions(this.state.settings.aspect, this.state.settings.resolution_mp || source.width * source.height / 1e6));
@@ -1052,7 +1085,7 @@ class CGCreatorWidget {
         let bitmap;
         if (this.viewer && !this.host.hidden && !this.previewSource) {
             const canvas = this.viewer.canvas;
-            bitmap = await createImageBitmap(await this.viewer.capturePreview({ width: canvas.width, height: canvas.height, cameraState: this.viewer.getCameraState() }));
+            bitmap = await createImageBitmap(await this.captureScene({ width: canvas.width, height: canvas.height, cameraState: this.viewer.getCameraState() }));
         }
         if (this.disposed || epoch !== this.epoch) { bitmap?.close(); return; }
         const snapshot = this.container.cloneNode(true), originals = this.container.querySelectorAll("*"), copies = snapshot.querySelectorAll("*");
@@ -1110,7 +1143,7 @@ class CGCreatorWidget {
         if (image.dataset.sourceURL !== sourceURL) {
             this.clearSourceLoad();
             image.dataset.sourceURL = sourceURL; enlarge.hidden = true;
-            const previous = !image.hidden && Boolean(image.src);
+            const previous = !image.hidden && Boolean(image.src), animate = previous && !this.restoring;
             placeholder.hidden = previous;
             const title = placeholder.querySelector(".vnccs-common-creator-placeholder-title"), hint = placeholder.querySelector(".vnccs-common-creator-placeholder-hint");
             title.textContent = source ? "Loading background…" : "Select a background";
@@ -1141,7 +1174,7 @@ class CGCreatorWidget {
                     if (!current()) return;
                     incoming.hidden = false; placeholder.hidden = true;
                     if (this.status.textContent === failure) this.message(CAMERA_HINT);
-                    if (previous && !this.backgroundTransition) playSakuraMotion(this.customSelects, incoming, [{ opacity: 0 }, { opacity: 1 }], 240, publish);
+                    if (animate && !this.restoring && !this.backgroundTransition) playSakuraMotion(this.customSelects, incoming, [{ opacity: 0 }, { opacity: 1 }], 240, publish);
                     else publish();
                 };
                 incoming.src = sourceURL;
@@ -1217,6 +1250,9 @@ class CGCreatorWidget {
     sync() {
         if (this.disposed || this.restoring || !this.state) return;
         if (this.viewer && this.scene?.model_id === this.state.model_id && !this.busy && !this.loadingModel) this.state.camera = this.viewer.getCameraState();
+        if (this.characters && this.scene?.model_id === this.state.model_id && !this.busy && !this.loadingModel) {
+            this.state.characters ??= {}; this.state.characters[this.state.model_id] = this.characters.snapshot();
+        }
         const sources = this.container.querySelector("[data-source-choices]").scrollLeft, cgs = this.container.querySelector("[data-cgs]").scrollTop;
         if (sources || cgs || this.state.scroll) this.state.scroll = { sources, cgs };
         const raw = JSON.stringify(this.state), widget = this.node.widgets.find(item => item.name === "cg_data");
@@ -1339,7 +1375,19 @@ class CGCreatorWidget {
                 this.openPreview(cg);
                 if (this.busy || this.state.job || this.document?._recovery || this.document?.archived) return;
                 navigating = this.busy = true; this.updateControls(); Object.assign(this.state, { selected_cg_id: cg.cg_id, model_id: cg.model_id, camera: clone(cg.camera), frame: { width: cg.width, height: cg.height } });
+                if (cg.characters?.length || this.state.characters?.[cg.model_id]) {
+                    this.state.characters ??= {}; this.state.characters[cg.model_id] = clone(cg.characters || []);
+                }
                 this.sync(); await this.showModel(epoch); if (epoch !== this.epoch || this.disposed) return; this.sync(); this.render(); return;
+            }
+            if (button.hasAttribute("data-add-character")) {
+                if (!this.canEditCamera()) return;
+                if (this.characters?.entries.size) { await this.characterPanel?.show(); return; }
+                this.beginGesture(); this.busy = true; this.updateControls();
+                const editor = await this.ensureCharacters();
+                if (this.disposed || epoch !== this.epoch) return;
+                this.busy = false; editor.add(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""));
+                this.commitGesture(); this.updateControls(); await this.characterPanel?.show(); return;
             }
             if (button.hasAttribute("data-recenter")) { this.beginGesture(); this.viewer.setCameraState(sourceCameraView(this.scene.objects[0].source_camera || this.scene.camera), { emit: true }); this.commitGesture(); return; }
             if (button.hasAttribute("data-enlarge")) { this.openPreview(); return; }
@@ -1348,7 +1396,7 @@ class CGCreatorWidget {
                     { key: "num_gaussians", label: "Gaussians", value: this.state.model_settings.num_gaussians, options: [32768, 65536, 131072, 262144, 524288, 1048576] },
                     { key: "steps", label: "Steps", value: this.state.model_settings.steps, type: "number", min: 1, max: 100, step: 1, required: true },
                     { key: "guidance_scale", label: "Guidance", value: this.state.model_settings.guidance_scale, type: "number", min: 1, max: 20, step: 0.1, required: true },
-                    { key: "seed", label: "Seed", value: this.state.model_settings.seed, type: "number", min: 0, max: 2147483647, step: 1, required: true }]);
+                    { key: "seed", label: "Seed", value: this.state.model_settings.seed, type: "number", min: -1, max: 2147483647, step: 1, required: true }]);
                 if (values && epoch === this.epoch && !this.disposed) { for (const [key, value] of Object.entries(values)) this.state.model_settings[key] = Number(value); this.markEdited(); }
                 return;
             }
@@ -1359,10 +1407,10 @@ class CGCreatorWidget {
                 const size = clone(this.state.frame), camera = clone(this.viewer.getCameraState());
                 this.commitGesture(); this.sync(); this.busy = true; this.updateControls();
                 this.pendingCG = { ...size, camera, name }; this.render();
-                const raw = await this.viewer.capturePreview({ ...size, cameraState: camera });
+                const raw = await this.captureScene({ ...size, cameraState: camera });
                 if (epoch !== this.epoch || this.disposed) return;
                 this.pendingCG.url = URL.createObjectURL(raw); this.render();
-                await this.runJob("cg", { name, camera, model_id: this.state.model_id }, raw); return;
+                await this.runJob("cg", { name, camera, characters: this.characters?.snapshot() || [], model_id: this.state.model_id }, raw); return;
             }
             if (button.dataset.action) await this.runJob(button.dataset.action);
         } catch (error) { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); this.busy = false; this.render(); this.message(error.message, true); } }
@@ -1409,7 +1457,7 @@ class CGCreatorWidget {
                 if (action === "cg" && this.state.frame && this.state.camera && this.viewer && this.scene?.model_id === this.state.model_id) {
                     this.pendingCG = { ...clone(this.state.frame), camera: clone(this.state.camera), name: savedJob.name };
                     this.render();
-                    const preview = await this.viewer.capturePreview({ ...this.state.frame, cameraState: this.state.camera });
+                    const preview = await this.captureScene({ ...this.state.frame, cameraState: this.state.camera });
                     if (epoch !== this.epoch || this.disposed) return;
                     this.pendingCG.url = URL.createObjectURL(preview); this.render(); this.restorePreview();
                 }
@@ -1603,7 +1651,7 @@ class CGCreatorWidget {
         ++this.epoch; this.canvasNavigation?.(); this.events.abort(); clearTimeout(this.saveTimer); clearTimeout(this.wheelTimer); clearTimeout(this.pollTimer); this.pollResolve?.();
         this.clearSourceLoad();
         this.clearBackgroundTransition();
-        for (const finish of [...this.dialogs]) finish(null); this.observer.disconnect(); this.customSelects.dispose(); this.qi2.dispose(); this.viewer?.dispose(); this.frame.remove();
+        for (const finish of [...this.dialogs]) finish(null); this.observer.disconnect(); this.customSelects.dispose(); this.qi2.dispose(); this.characterPanel?.dispose(); this.characters?.dispose(); this.viewer?.dispose(); this.frame.remove();
     }
 }
 

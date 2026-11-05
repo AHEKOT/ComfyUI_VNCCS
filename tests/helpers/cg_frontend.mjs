@@ -1,3 +1,4 @@
+import { validateCharacters } from "../../web/cg_characters.mjs";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 
@@ -15,4 +16,4 @@ export const runtimeSource = section("async function loadFactoryRuntime", "class
 export const widgetSource = section('const BASE = "/vnccs/cg-creator"', "function hideState");
 export const entrySource = section("function hideState");
 export const { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource } =
-    vm.runInThisContext("(function () {" + stateSource + "\nreturn { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource }; })()");
+    vm.runInThisContext("(function (validateCharacters) {" + stateSource + "\nreturn { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource }; })")(validateCharacters);

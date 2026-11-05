@@ -273,6 +273,30 @@ def test_cg_job_captures_settings_camera_and_frame_without_changing_main_variant
     assert job["result"]["document"]["cgs"][-1]["url"].endswith(f"/{cg['cg_id']}/image")
 
 
+def test_character_job_captures_selected_costume_sprite_and_emotion(workspace, monkeypatch):
+    from _vnccs import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(workspace.tmp_path))
+    folder = workspace.tmp_path / "Maya" / "Sprites" / "Casual"
+    for emotion in ("Neutral", "Happy"):
+        (folder / emotion).mkdir(parents=True)
+    (folder / "Neutral" / "sprite_pose_1.png").write_bytes(png(color="white"))
+    selected = folder / "Happy" / "sprite_Happy_0001.png"
+    Image.new("RGBA", (64, 128), (0, 0, 255, 128)).save(selected)
+    document = with_model(workspace)
+    character = {"id": "1" * 32, "position": [0, 0, 0], "scale": 1,
+        "pose": {"bones": {}, "bonePositions": {}, "modelRotation": [0, 0, 0]},
+        "source": {"character": "Maya", "costume": "Casual", "sprite": "sprite_pose_1.png", "emotion": "Happy"}}
+    service.start_job(document["background_id"], job_payload(document, characters=[character]), png())
+    character["source"]["emotion"] = "Neutral"
+    selected.unlink()
+    job = workspace.run_pending()
+    assert job["status"] == "completed", job["error"]
+    sprite = workspace.generated.call_args.kwargs["character"]
+    assert sprite.size == (64, 128) and sprite.getpixel((0, 0)) == (0, 0, 255, 128)
+    saved = library.load_background(document["background_id"])
+    assert saved["cgs"][-1]["characters"][0]["source"]["emotion"] == "Happy"
+
+
 def test_cg_rejects_model_from_another_source_variant(workspace):
     document = with_model(workspace)
     with pytest.raises(ValueError, match="another background variant"):
@@ -391,7 +415,7 @@ def test_sampling_cancellation_is_translated_to_factory_job_cancellation(workspa
 
 def test_stop_after_sampling_prevents_committing_a_finished_frame(workspace):
     document = with_model(workspace)
-    def generate(_settings, _job_id, event, _reference, _background):
+    def generate(_settings, _job_id, event, _reference, _background, character=None):
         event.set()
         return Image.new("RGB", (128, 64)), {}
     workspace.generated.side_effect = generate
@@ -501,7 +525,7 @@ def test_main_inference_slot_is_held_during_refinement_and_released(workspace, m
     slot.acquire.return_value = True
     monkeypatch.setattr(library, "background_owner", lambda: types.SimpleNamespace(inference_lock=slot))
     generated = workspace.generated.return_value
-    def infer(*_args):
+    def infer(*_args, **_kwargs):
         slot.acquire.assert_called_once_with(timeout=0.25)
         slot.release.assert_not_called()
         return generated
@@ -594,6 +618,7 @@ def test_http_cg_deletion_rejects_unsafe_or_stale_requests(routes, workspace, co
 
 def test_http_inventory_has_no_background_authoring_actions(routes):
     expected = {("GET", "/config"), ("GET", "/backgrounds"), ("GET", "/backgrounds/{background_id}"),
+        ("GET", "/characters"), ("GET", "/characters/{character}"), ("GET", "/characters/{character}/sprite"),
         ("PATCH", "/backgrounds/{background_id}"), ("POST", "/backgrounds/{background_id}/jobs"),
         ("GET", "/backgrounds/{background_id}/jobs/{request_id}"),
         ("GET", "/jobs/{job_id}"), ("POST", "/jobs/{job_id}/cancel"),

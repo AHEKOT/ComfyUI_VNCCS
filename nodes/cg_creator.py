@@ -30,7 +30,7 @@ from urllib.parse import quote
 from PIL import Image
 
 from ..operation_logger import log_event, log_stage, logged_operation
-from ..utils import get_full_path_agnostic, _safe_get_model_folder_paths, validate_privileged_request
+from ..utils import get_full_path_agnostic, _safe_get_model_folder_paths, validate_privileged_request, is_sprite_archive_dir
 from . import background_creator as background
 from .runtime_cleanup import cleanup_runtime, inference_stage
 
@@ -283,6 +283,7 @@ def _validate(document, directory_name):
             raise ValueError("CG does not match its saved source variant")
         _dimensions(cg.get("width"), cg.get("height"))
         _camera(cg.get("camera"))
+        _characters(cg.get("characters", []))
         if "file" in cg or "raw_file" in cg:
             relative = _asset_file(cg, "cgs").casefold()
             if relative in asset_paths:
@@ -447,7 +448,7 @@ def _asset_file(record, kind):
             or Path(relative).parts[0] != branch or Path(relative).name != filename):
         raise ValueError("Invalid CG Creator saved asset path")
     _name(Path(relative).parts[1])
-    if kind == "cgs" and record.get("raw_file") != str(Path(relative).with_name("raw.png")).replace("\\", "/"):
+    if kind == "cgs" and "raw_file" in record and record["raw_file"] != str(Path(relative).with_name("raw.png")).replace("\\", "/"):
         raise ValueError("Invalid CG Creator raw image path")
     return relative
 
@@ -736,10 +737,117 @@ def model_asset_path(background_id, model_id, object_id, kind):
         return path
 
 
-def commit_cg(background_id, name, raw, finished, camera, settings, model_id, expected_revision):
+def _character_sprite_files(root):
+    from ..utils import safe_join_under
+    for name in ("Neutral", "neutral", ""):
+        folder = root / name
+        if not folder.is_dir():
+            continue
+        files = [file for file in sorted(folder.iterdir()) if file.is_file()
+                 and file.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg", ".bmp"}]
+        if files:
+            return [Path(safe_join_under(str(root), str(file.relative_to(root)))) for file in files]
+    return []
+
+
+def character_catalog(character=None, costume=None):
+    from ..utils import (list_characters, list_costumes, character_dir, load_config,
+                         character_storage_lock, ensure_safe_name, safe_join_under)
+    if character is None:
+        return {"characters": list_characters()}
+    character = ensure_safe_name(character, "character")
+    with character_storage_lock(character_dir(character)):
+        config = load_config(character, strict=True)
+        if config is None:
+            raise FileNotFoundError("Character not found")
+        info = config.get("character_info", {})
+        costumes = list_costumes(character)
+        costume = ensure_safe_name(costume, "costume") if costume else (costumes[0] if costumes else "")
+        sprites = []
+        if costume:
+            root = Path(safe_join_under(character_dir(character), "Sprites", costume))
+            for index, file in enumerate(_character_sprite_files(root), start=1):
+                emotions = ["Neutral"]
+                for folder in sorted(root.iterdir()):
+                    if folder.is_dir() and folder.name.lower() != "neutral" and not is_sprite_archive_dir(folder.name):
+                        candidate = Path(safe_join_under(str(root), folder.name, f"sprite_{folder.name}_{index:04d}.png"))
+                        if candidate.is_file():
+                            emotions.append(folder.name)
+                sprites.append({"name": file.name, "emotions": emotions})
+        return {"character": character, "age": info.get("age", 25), "gender": info.get("sex") or info.get("gender", ""),
+                "costumes": costumes, "costume": costume, "sprites": sprites}
+
+
+def character_sprite(character, costume, sprite, emotion="Neutral"):
+    from ..utils import character_dir, ensure_safe_name, safe_join_under
+    root = Path(safe_join_under(character_dir(ensure_safe_name(character, "character")), "Sprites",
+                               ensure_safe_name(costume, "costume")))
+    if not isinstance(sprite, str) or not re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", sprite) or sprite in {".", ".."}:
+        raise ValueError("Invalid character sprite")
+    emotion = ensure_safe_name(emotion, "emotion")
+    for index, file in enumerate(_character_sprite_files(root), start=1):
+        if file.name != sprite:
+            continue
+        if emotion.lower() == "neutral":
+            return file
+        candidate = Path(safe_join_under(str(root), emotion, f"sprite_{emotion}_{index:04d}.png"))
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("Character sprite not found")
+
+
+def _characters(value):
+    if not isinstance(value, list) or len(value) > 16:
+        raise ValueError("Invalid CG characters")
+    def vector(value):
+        return (isinstance(value, list) and len(value) == 3
+                and all(type(n) in (int, float) and math.isfinite(n) and abs(n) <= 1e6 for n in value))
+    ids = set()
+    for item in value:
+        if not isinstance(item, dict) or _id(item.get("id")) in ids:
+            raise ValueError("Invalid or duplicate CG character")
+        ids.add(item["id"])
+        scale, pose = item.get("scale"), item.get("pose")
+        if (not vector(item.get("position")) or type(scale) not in (int, float)
+                or not .001 <= scale <= 1000 or not isinstance(pose, dict)
+                or not vector(pose.get("modelRotation"))):
+            raise ValueError("Invalid CG character transform")
+        for key in ("bones", "bonePositions"):
+            bones = pose.get(key)
+            if (not isinstance(bones, dict) or len(bones) > 256
+                    or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name)
+                           or not vector(rotation) for name, rotation in bones.items())):
+                raise ValueError("Invalid CG character pose")
+        for key, bounds in {"mesh": {"age": (1, 90), "gender": (0, 1), "weight": (0, 1), "muscle": (0, 1), "height": (0, 2)},
+                            "light": {"x": (-100, 100), "y": (-100, 100), "z": (-100, 100), "intensity": (0, 5)}}.items():
+            if key not in item:
+                continue
+            settings = item[key]
+            if not isinstance(settings, dict):
+                raise ValueError("Invalid CG character settings")
+            for name, number in settings.items():
+                if key == "light" and name == "color":
+                    if not isinstance(number, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", number):
+                        raise ValueError("Invalid CG character light color")
+                elif name not in bounds or type(number) not in (int, float) or not math.isfinite(number) or not bounds[name][0] <= number <= bounds[name][1]:
+                    raise ValueError("Invalid CG character settings")
+        if "source" in item:
+            source = item["source"]
+            if (not isinstance(source, dict) or any(key not in {"character", "costume", "sprite", "emotion"}
+                    or not isinstance(text, str) or len(text) > 255 or re.search(r"[\\/\x00-\x1f]", text)
+                    or text in {".", ".."} for key, text in source.items())):
+                raise ValueError("Invalid CG character source")
+        if ("origin" in item and not vector(item["origin"]) or "baseScale" in item and
+                (type(item["baseScale"]) not in (int, float) or not .001 <= item["baseScale"] <= 1000)):
+            raise ValueError("Invalid CG character placement")
+    return copy.deepcopy(value)
+
+
+def commit_cg(background_id, name, raw, finished, camera, settings, model_id, expected_revision, characters=None):
     name, model_id = _name(name), _id(model_id)
     camera, settings = _camera(camera), _object(settings, "CG settings")
-    raw_bytes, finished_bytes = _image_bytes(raw), _image_bytes(finished)
+    characters = _characters([] if characters is None else characters)
+    finished_bytes = _image_bytes(finished)
     with background._LOCK:
         directory, document, previous = _editable(background_id, expected_revision)
         model = model_scene(background_id, model_id)
@@ -749,16 +857,14 @@ def commit_cg(background_id, name, raw, finished, camera, settings, model_id, ex
         target = _next_asset_directory(directory, "CG", name)
         metadata = {"cg_id": cg_id, "name": name, "background_id": background_id,
                     "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera, "settings": settings,
-                    "width": finished.width, "height": finished.height,
-                    "file": (target / "image.png").relative_to(directory).as_posix(),
-                    "raw_file": (target / "raw.png").relative_to(directory).as_posix()}
+                    "width": finished.width, "height": finished.height, "characters": characters,
+                    "file": (target / "image.png").relative_to(directory).as_posix()}
         variant = _source_variant(model.get("source_variant"))
         if variant:
             metadata["source_variant"] = variant
         _json_bytes(metadata)
         stage = _contained(directory, ".cg-assets.pending", "data")
         with _asset_publication(directory, previous, "cgs", metadata, [(stage, target)]):
-            _atomic(_contained(stage, "raw.png"), raw_bytes)
             _atomic(_contained(stage, "image.png"), finished_bytes)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, target)
@@ -787,6 +893,8 @@ def cg_image_path(background_id, cg_id, kind="image"):
         cg = next((item for item in document.get("cgs", []) if item["cg_id"] == cg_id), None)
         if cg is None:
             raise FileNotFoundError("Background CG does not exist")
+        if kind == "raw" and "file" in cg and "raw_file" not in cg:
+            raise FileNotFoundError("Background CG raw image is not stored")
         path = (_contained(directory, cg["file"] if kind == "image" else cg["raw_file"]) if "file" in cg
                 else _contained(directory, "CG", cg["name"], cg_id, f"{kind}.png"))
         if not path.is_file():
@@ -1030,6 +1138,17 @@ def _asset_name(category: str, name: str) -> str:
     if len(matches) != 1:
         raise FileNotFoundError(f"Install exactly one {name} in ComfyUI models/{category}")
     return matches[0]
+
+
+@lru_cache(maxsize=1)
+def resolve_pose_lora() -> str:
+    from . import vnccs_control_center as center
+    with open(center._get_packaged_cc_path(), encoding="utf-8") as handle:
+        config = json.load(handle)
+    entry = center._find_entry(config.get("lora", []), "VNCCS Pose Studio QI2")
+    if entry is None:
+        raise ValueError("QI2 Pose Studio LoRA is not configured in Control Center")
+    return _asset_name("loras", center._rel_within_folder(entry["local_path"]))
 
 
 def configuration() -> dict[str, Any]:
@@ -1357,27 +1476,36 @@ def _tensor_to_pil(tensor):
 
 
 @logged_operation("CGCreator", "refine")
-def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background):
+def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
         raise ValueError("CG refinement requires a captured frame")
     if not isinstance(background, Image.Image):
         raise ValueError("AnyAngle requires the original background as image 1")
+    if character is not None and not isinstance(character, Image.Image):
+        raise ValueError("Pose Studio requires the selected character sprite as image 3")
     width, height = reference.size
     if any(value < 64 or value > 4096 or value % 16 for value in (width, height)) or width * height > 16_000_000:
         raise ValueError("Captured frame dimensions must be multiples of 16, between 64 and 4096, and at most 16 MP")
     generation = settings["generation"]
     import torch
+    megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
+    resolution = 32 * round(32 * math.sqrt(megapixels))
     prompt = ANYANGLE_PROMPT
+    if character is not None:
+        prompt += " White dummy is character from image3"
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
         _stage(draw_id, cancel_event, "loading", 0.01, "Installing AnyAngle LoRA if needed")
         anyangle_lora = resolve_anyangle_lora(cancel_event)
+        pose_lora = resolve_pose_lora() if character is not None else None
         _stage(draw_id, cancel_event, "loading", 0.03, "Loading Qwen Image 2.1")
         model, clip, vae = _load_assets(generation["diffusion_model_name"])
         _stage(draw_id, cancel_event, "loading", 0.12, "Applying CG model settings")
         model, clip = apply_generation_lora(model, clip, anyangle_lora, 1.0)
+        if pose_lora:
+            model, _ = apply_generation_lora(model, None, pose_lora, 1.0, clip_strength=0)
         for item in generation["lora_stack"]:
             if item["name"].replace("\\", "/").rsplit("/", 1)[-1].casefold() == ANYANGLE_FILENAME.casefold():
                 continue
@@ -1389,24 +1517,28 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         model = _call_comfy_node("QwenImage21Cache", model=model, device="auto", dtype="default")[0]
         _stage(draw_id, cancel_event, "conditioning", 0.3, "Encoding the original background and camera frame")
         background, reference = background.convert("RGB"), reference.convert("RGB")
-        for slot, source, image in (("image_1", "original background", background),
-                                    ("image_2", "captured camera frame", reference)):
+        references = [("image_1", "original background", background), ("image_2", "captured camera frame", reference)]
+        if character is not None:
+            character = Image.alpha_composite(Image.new("RGBA", character.size, "white"), character.convert("RGBA")).convert("RGB")
+            references.append(("image_3", "selected character sprite", character))
+        for slot, source, image in references:
             log_event("reference_image", job_id=draw_id, slot=slot, source=source,
                       width=image.width, height=image.height, rgb_sha256=hashlib.sha256(image.tobytes()).hexdigest())
         log_event("conditioning", job_id=draw_id, prompt=prompt, negative_prompt="",
-                  resolution=1024, cache_device="auto", cache_dtype="default", truncate=False)
-        background_tensor, reference_tensor = _pil_to_tensor(background), _pil_to_tensor(reference)
+                  resolution=resolution, cache_device="auto", cache_dtype="default", truncate=False)
+        images = {slot: _pil_to_tensor(image) for slot, _source, image in references}
+        reference_tensor = images["image_2"]
         encoded = _call_comfy_node("TextEncodeQwenImage21", clip=clip, vae=vae, prompt=prompt,
-            negative_prompt="", resolution=1024,
-            images={"image_1": background_tensor, "image_2": reference_tensor})
+            negative_prompt="", resolution=resolution,
+            images=images)
         if not isinstance(encoded, (tuple, list)) or len(encoded) < 3 or encoded[0] is None or encoded[1] is None:
             raise RuntimeError("QI2 returned invalid image conditioning; update ComfyUI")
         positive, negative = encoded[:2]
         scaled_reference = _call_comfy_node("ImageScaleToTotalPixels", image=reference_tensor,
-            upscale_method="nearest-exact", megapixels=settings["resolution_mp"], resolution_steps=1)[0]
+            upscale_method="nearest-exact", megapixels=megapixels, resolution_steps=1)[0]
         latent_width, latent_height, _ = _call_comfy_node("GetImageSize", image=scaled_reference)
         log_event("latent", job_id=draw_id, width=latent_width, height=latent_height,
-                  source="image_2", resolution_mp=settings["resolution_mp"], upscale_method="nearest-exact", resolution_steps=1)
+                  source="image_2", resolution_mp=megapixels, upscale_method="nearest-exact", resolution_steps=1)
         latent = _call_comfy_node("EmptyLatentImage", width=latent_width, height=latent_height, batch_size=1)[0]
         _stage(draw_id, cancel_event, "sampling", 0.35, "Rendering the CG frame")
         sampler_settings = {
@@ -1444,6 +1576,13 @@ def parse_state(raw):
         value = state.get(key, "")
         if not isinstance(value, str) or (value and not _ID.fullmatch(value)):
             raise ValueError(f"CG Creator {key} is invalid")
+    if "characters" in state:
+        scenes = state["characters"]
+        if not isinstance(scenes, dict):
+            raise ValueError("Invalid CG character scenes")
+        for model_id, characters in scenes.items():
+            _id(model_id)
+            _characters(characters)
     if state.get("camera") is not None:
         _camera(state["camera"])
     if state.get("selected_variant") is not None:
@@ -1636,7 +1775,7 @@ def start_job(background_id, payload, raw_image=None):
               "model_settings": model_settings(payload.get("model_settings", {})),
               "settings": normalize_settings(payload.get("settings", {}))}
     if action == "cg":
-        values.update(name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
+        values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
         scene = model_scene(background_id, values["model_id"])
         if (scene["source_image_id"] != image_id
                 or _variant_key(scene.get("source_variant")) != _variant_key(source_variant)):
@@ -1645,6 +1784,13 @@ def start_job(background_id, payload, raw_image=None):
         if min(raw.size) < 64 or max(raw.size) > 4096 or raw.width % 16 or raw.height % 16 or raw.width * raw.height > 16_000_000:
             raise ValueError("CG frame must be 64–4096 pixels, aligned to 16 pixels, at most 16 MP")
         values["raw"] = raw
+        if values["characters"]:
+            source = values["characters"][0].get("source", {})
+            if not all(source.get(key) for key in ("character", "costume", "sprite")):
+                raise ValueError("Select a character, costume and sprite before generating CG")
+            with Image.open(character_sprite(source["character"], source["costume"], source["sprite"], source.get("emotion") or "Neutral")) as sprite:
+                _dimensions(*sprite.size)
+                values["character"] = sprite.copy()
     with _JOBS_LOCK:
         ensure_idle(background_id)
         document = load_background(background_id)
@@ -1674,12 +1820,13 @@ def _execute(job, values):
             if job["action"] == "cg":
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                     background = source.convert("RGB")
-                image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background)
+                image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background,
+                                                 character=values.get("character"))
                 runtime._check_cancel(job)
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
                     document = commit_cg(job["background_id"], values["name"], values["raw"], image, values["camera"],
-                        settings, values["model_id"], values["revision"])
+                        settings, values["model_id"], values["revision"], characters=values.get("characters", []))
                     job["published"] = True
             else:
                 scene = factory.create_scene("CG Creator")
@@ -1800,6 +1947,19 @@ def register_routes(routes):
     @routes.get(base + "/config")
     async def config(request):
         return await perform(lambda: {**configuration(), "factory": frontend_configuration()})
+
+    @routes.get(base + "/characters")
+    async def characters(request):
+        return await perform(lambda: character_catalog())
+
+    @routes.get(base + "/characters/{character}")
+    async def character_options(request):
+        return await perform(lambda: character_catalog(request.match_info["character"], request.query.get("costume")))
+
+    @routes.get(base + "/characters/{character}/sprite")
+    async def sprite(request):
+        return await serve(request, lambda: character_sprite(request.match_info["character"],
+            request.query.get("costume", ""), request.query.get("sprite", ""), request.query.get("emotion", "Neutral")), immutable=False)
 
     @routes.get(base + "/backgrounds")
     async def backgrounds(request):
