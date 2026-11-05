@@ -2,6 +2,7 @@
 
 import copy
 import json
+import shutil
 import sys
 import threading
 import types
@@ -185,7 +186,7 @@ def test_preview_revision_remains_metadata_and_does_not_change_image_path(scene)
     assert storage.load_background(scene["background_id"])["images"][0]["preview_revision"] == 4
 
 
-def test_models_and_cgs_keep_source_links_and_previous_variants(scene, tmp_path):
+def test_model_regeneration_replaces_only_its_variant_and_preserves_cgs(scene, tmp_path):
     original_fields = copy.deepcopy(scene)
     document = add_model(scene, tmp_path)
     first_model = document["models"][-1]
@@ -201,18 +202,23 @@ def test_models_and_cgs_keep_source_links_and_previous_variants(scene, tmp_path)
     cg_bytes = storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes()
     document = add_model(document, tmp_path, scene["images"][1]["image_id"])
     second_model = document["models"][-1]
-    document = add_model(document, tmp_path, scene["images"][0]["image_id"])
+    source, manifest = factory_source(tmp_path)
+    (source / "objects" / ("d" * 32) / "model.ply").write_bytes(b"regenerated model")
+    document = storage.commit_model(scene["background_id"], scene["images"][0]["image_id"], source, manifest, {}, document["revision"])
     rebuilt_model = document["models"][-1]
-    assert len(document["models"]) == 3
+    assert len(document["models"]) == 2
     assert [(model["model_id"], model["source_image_id"]) for model in document["models"]] == [
-        (first_model["model_id"], scene["images"][0]["image_id"]),
         (second_model["model_id"], scene["images"][1]["image_id"]),
         (rebuilt_model["model_id"], scene["images"][0]["image_id"])]
     assert first_cg["source_image_id"] == first_model["source_image_id"]
-    assert document["cgs"][0] == first_cg
-    assert first_model_path.read_bytes() == first_bytes
+    assert document["cgs"][0] == {**first_cg, "model_id": rebuilt_model["model_id"]}
+    assert first_model_path.read_bytes() == b"regenerated model"
+    assert storage.model_asset_path(document["background_id"], second_model["model_id"], "d" * 32, "ply").read_bytes() == first_bytes
+    assert rebuilt_model["file"] == first_model["file"]
+    assert len(list((path_for(document).parent / "model").iterdir())) == 2
     assert storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes() == cg_bytes
-    assert storage.model_scene(document["background_id"], first_model["model_id"])["source_image_id"] == first_model["source_image_id"]
+    with pytest.raises(FileNotFoundError):
+        storage.model_scene(document["background_id"], first_model["model_id"])
     cg_root = storage.root() / scene["name"] / "CG" / "Window"
     assert set(path.name for path in cg_root.iterdir()) == {"image.png"}
     assert cg_root / "image.png" == storage.cg_image_path(document["background_id"], first_cg["cg_id"])
@@ -636,14 +642,16 @@ def legacy_assets(document, tmp_path):
     return document
 
 
-def test_new_assets_have_readable_immutable_paths_with_collision_suffixes(scene, tmp_path):
+def test_models_reuse_readable_paths_and_cgs_keep_collision_suffixes(scene, tmp_path):
     document = add_model(scene, tmp_path)
     first = document["models"][0]
     first_path = storage.model_asset_path(document["background_id"], first["model_id"], "d" * 32, "ply")
     assert first["file"] == "model/Original 1/scene.json"
     assert first_path.relative_to(path_for(document).parent).as_posix() == "model/Original 1/objects/Object 1/ply.ply"
     document = add_model(document, tmp_path)
-    assert document["models"][1]["file"] == "model/Original 1 (2)/scene.json"
+    assert len(document["models"]) == 1
+    assert document["models"][0]["file"] == "model/Original 1/scene.json"
+    first = document["models"][0]
     raw = Image.new("RGB", (64, 32))
     for name, expected in (("View 1", "View 1"), ("view 1", "view 1 (2)"), ("View 1", "View 1 (3)")):
         document = storage.commit_cg(document["background_id"], name, raw, raw, CAMERA, {}, first["model_id"], None)

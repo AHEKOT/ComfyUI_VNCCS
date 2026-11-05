@@ -213,6 +213,10 @@ def _variant_key(value):
     return (variant["set_id"], variant["index"]) if variant else None
 
 
+def _model_source(model):
+    return model["source_image_id"], _variant_key(model.get("source_variant"))
+
+
 def _variant_source(document, image_id, value):
     variant = _source_variant(value)
     if variant is None:
@@ -494,11 +498,18 @@ def _recover_assets(directory):
     if target_record[kind[:-1] + "_id"] != identity:
         raise ValueError("Invalid CG asset publication identity")
     source = (_contained(directory, "model", identity) if kind == "models" else _contained(directory, "CG", _name(record["name"]), identity)) if record else pending / "data"
+    retired = {}
+    if kind == "models":
+        if record:
+            source = _model_directory(directory, identity, before)
+        retired = {_model_directory(directory, item["model_id"], before): pending / "retired" / item["model_id"]
+                   for item in before.get("models", []) if item["model_id"] != identity and _model_source(item) == _model_source(target_record)}
     moves = []
     for old, new in plan["moves"]:
         paths = tuple(_contained(directory, relative) for relative in (old, new))
         old, new = paths
         valid = old == source and new == target
+        valid |= old in retired and new == retired[old]
         if record and kind == "cgs":
             valid |= old.parent == source and new == target / old.name
         if record and kind == "models":
@@ -511,11 +522,15 @@ def _recover_assets(directory):
     _validate(current, directory.name)
     if current["background_id"] != before["background_id"]:
         raise ValueError("CG asset publication belongs to another background")
-    if any(item.get("file") == target_record["file"] and item.get(kind[:-1] + "_id") != identity for item in current.get(kind, [])):
+    if any(item.get("file") == target_record["file"] and item.get(kind[:-1] + "_id") != identity
+           and not (kind == "models" and _model_source(item) == _model_source(target_record)) for item in current.get(kind, [])):
         raise ValueError("CG asset publication belongs to another asset")
     if kind == "models" and (target / "scene.json").exists():
         scene, _ = _read_json(_contained(target, "scene.json"))
-        if scene.get("model_id") != identity or scene.get("background_id") != before["background_id"]:
+        owners = {identity}
+        if target in retired:
+            owners.add(retired[target].name)
+        if scene.get("model_id") not in owners or scene.get("background_id") != before["background_id"]:
             raise ValueError("CG asset publication model does not match its owner")
     committed = any(item.get(kind[:-1] + "_id") == identity and item.get("file") == target_record["file"] for item in current.get(kind, []))
     if not committed:
@@ -618,6 +633,27 @@ def _model_directory(directory, model_id, document):
     return _contained(directory, _asset_file(model, "models")).parent if "file" in model else _contained(directory, "model", _id(model_id))
 
 
+def _retired_model_moves(directory, document, models):
+    moves = []
+    for model in models:
+        source = _model_directory(directory, model["model_id"], document)
+        if not source.exists():
+            continue
+        scene, _ = _read_json(_contained(source, "scene.json"))
+        if scene.get("model_id") != model["model_id"] or scene.get("background_id") != document["background_id"]:
+            raise BackgroundStorageError("Retired model does not match its owner")
+        moves.append((source, _contained(directory, ".cg-assets.pending", "retired", model["model_id"])))
+    return moves
+
+
+def _replace_model_records(document, model):
+    retired = {item["model_id"] for item in document.get("models", []) if _model_source(item) == _model_source(model)}
+    document["models"] = [item for item in document.get("models", []) if item["model_id"] not in retired] + [model]
+    for cg in document.get("cgs", []):
+        if cg["model_id"] in retired:
+            cg["model_id"] = model["model_id"]
+
+
 def _copy_model(source, scene, target):
     objects = scene.get("objects")
     if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
@@ -671,10 +707,13 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
         variant = _variant_source(document, image_id, source_variant)
         if variant:
             image_path(background_id, image_id, variant)
-        if len(document.get("models", [])) >= MAX_MODELS:
+        old_models = [model for model in document.get("models", [])
+                      if _model_source(model) == (image_id, _variant_key(variant))]
+        if not old_models and len(document.get("models", [])) >= MAX_MODELS:
             raise ValueError("Background model limit reached")
         model_id = uuid.uuid4().hex
-        target = _next_asset_directory(directory, "model", _source_label(document, image_id, variant))
+        target = (_model_directory(directory, old_models[-1]["model_id"], document) if old_models
+                  else _next_asset_directory(directory, "model", _source_label(document, image_id, variant)))
         scene.update(background_id=background_id, model_id=model_id, source_image_id=image_id,
                      background_settings=settings)
         scene.pop("source_variant", None)
@@ -688,12 +727,14 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
         if variant:
             metadata["source_variant"] = variant
         stage = _contained(directory, ".cg-assets.pending", "data")
-        with _asset_publication(directory, previous, "models", metadata, [(stage, target)]):
+        moves = _retired_model_moves(directory, document, old_models) + [(stage, target)]
+        with _asset_publication(directory, previous, "models", metadata, moves):
             _copy_model(Path(scene_directory), scene, stage)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(stage, target)
-            document.setdefault("models", []).append(metadata)
-            return _commit(directory, document, previous)
+            for old, new in moves:
+                new.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(old, new)
+            _replace_model_records(document, metadata)
+            return _commit(directory, document, _json_bytes(document) if old_models else previous)
 
 
 def model_scene(background_id, model_id):
@@ -1503,7 +1544,7 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         _stage(draw_id, cancel_event, "loading", 0.03, "Loading Qwen Image 2.1")
         model, clip, vae = _load_assets(generation["diffusion_model_name"])
         _stage(draw_id, cancel_event, "loading", 0.12, "Applying CG model settings")
-        model, clip = apply_generation_lora(model, clip, anyangle_lora, 1.0)
+        model, _ = apply_generation_lora(model, None, anyangle_lora, 1.0, clip_strength=0)
         if pose_lora:
             model, _ = apply_generation_lora(model, None, pose_lora, 1.0, clip_strength=0)
         for item in generation["lora_stack"]:

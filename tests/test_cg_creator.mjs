@@ -389,6 +389,18 @@ test("restoring a frame-less workflow preserves the authored aspect instead of r
     assert.equal(JSON.parse(h.data.value).settings.aspect, "9:16");
 });
 
+test("a retired model restores the active model for the same background variant", async () => {
+    const h = harness(JSON.stringify(state())), active = "9".repeat(32);
+    const document = h.documents.get(A);
+    document.models[0].model_id = active; document.cgs[0].model_id = active;
+    await h.ready();
+    assert.equal(h.widget.state.model_id, active);
+    assert.equal(h.widget.scene.model_id, active);
+    assert.equal(h.widget.state.selected_cg_id, CG);
+    assert.deepEqual(clone(h.widget.state.camera), camera);
+    assert.equal(h.calls.some(call => call.path.endsWith(`/models/${MODEL}`)), false);
+});
+
 test("a missing 3D model does not prevent restoring a finished CG preview or its workflow output", async () => {
     const preview = { kind: "cg", cg_id: CG, zoom: 2, center: [.4, .6] }, h = harness(JSON.stringify(state({ preview })));
     h.api.handle = path => path.includes("/models/") ? response({ error: "Model file unavailable" }, 404) : undefined;
@@ -413,6 +425,7 @@ test("a completed CG job can reconnect even when its previous 3D model is unavai
 test("late model asset loading cannot overwrite a more recently configured model canvas", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const oldId = "2".repeat(32), newId = "3".repeat(32), loading = deferred(), started = deferred(), viewer = h.widget.viewer;
+    h.documents.get(B).models[0].model_id = newId;
     h.api.handle = path => path.includes("/models/") ? response(scene(path.includes(`/backgrounds/${B}/`) ? B : A, { model_id: path.split('/').at(-1), source_image_id: IMAGE })) : undefined;
     viewer.setScene = async scene => {
         if (scene.model_id === oldId) { started.resolve(); await loading.promise; }

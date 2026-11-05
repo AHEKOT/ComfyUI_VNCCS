@@ -1008,6 +1008,12 @@ class CGCreatorWidget {
             const selected = document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
             if (selected) this.state.model_id = selected.model_id;
             this.state.camera = null; this.state.frame = null;
+        } else if (this.state.model_id && !document.models.some(model => model.model_id === this.state.model_id)) {
+            const previous = this.state.model_id;
+            this.state.model_id = latestModel(document, this.state)?.model_id || "";
+            if (this.state.model_id && this.state.characters?.[previous]) {
+                this.state.characters[this.state.model_id] ??= clone(this.state.characters[previous]);
+            }
         }
         this.modelError = "";
         if (this.state.model_id) {
