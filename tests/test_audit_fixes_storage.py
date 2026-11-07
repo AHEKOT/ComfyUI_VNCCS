@@ -76,7 +76,7 @@ def test_custom_preview_pipes_are_isolated_by_workflow_scope(monkeypatch):
     assert control._preview_state_key("catalog", {"preview_scope": "workflow-a"}) == control._preview_state_key("catalog", {})
 
 
-def test_legacy_create_costume_requires_privileged_request(routes):
+def test_create_costume_requires_privileged_request(routes):
     handler = routes["/vnccs/create_costume"]
     query = {"character": "Alice", "costume": "Coat"}
     result = asyncio.run(handler(request(query, headers={"Sec-Fetch-Site": "cross-site"})))

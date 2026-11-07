@@ -105,7 +105,7 @@ def test_character_root_accepts_windows_style_sheets_path(tmp_path, monkeypatch)
     assert cg._costume_name_from_sheets_path(windows_style) == "Naked"
 
 
-def test_cache_tensor_path_rejects_external_cache(tmp_path, monkeypatch):
+def test_cached_image_dir_rejects_external_cache(tmp_path, monkeypatch):
     base = tmp_path / "output" / "VNCCS" / "Characters"
     outside = tmp_path / "outside" / "cache"
     outside.mkdir(parents=True)
@@ -113,7 +113,7 @@ def test_cache_tensor_path_rejects_external_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
     monkeypatch.setattr(cg, "character_dir", lambda name: str(base / name))
 
-    assert cg._cache_tensor_path(str(outside), "stage") == ""
+    assert cg._cached_image_dir(str(outside), "stage") == ""
 
 
 def test_emotion_output_prefix_must_stay_under_character_sprites(tmp_path, monkeypatch):
@@ -645,7 +645,7 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
     node = cg.VNCCS_EmotionsGenerator()
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cg, "_save_cached_tensor", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_save_cached_images", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(
         node,
@@ -665,7 +665,7 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
             return torch.ones(1, 4, 4)
         return None
 
-    monkeypatch.setattr(cg, "_load_cached_tensor", load_cached_item)
+    monkeypatch.setattr(cg, "_load_cached_images", load_cached_item)
 
     def capture_bg_remove(images, source_items, detailer_masks, settings, background="Green", **kwargs):
         seen["shape"] = tuple(images.shape)

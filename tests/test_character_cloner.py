@@ -23,7 +23,9 @@ def test_cloner_download_routes_share_qwen_worker_and_keep_legacy_responses(monk
 
     started = []
     monkeypatch.setattr(qwen_vl, "_QWEN_VL_DOWNLOAD_STATUS", {"status": "idle"})
-    monkeypatch.setattr(qwen_vl, "_find_qwen_vl_model", lambda: None)
+    def missing():
+        raise FileNotFoundError("model")
+    monkeypatch.setattr(qwen_vl, "_local_wizard_model", missing)
     monkeypatch.setattr(qwen_vl.threading, "Thread", lambda **kwargs:
                         types.SimpleNamespace(start=lambda: started.append(kwargs)))
     monkeypatch.setattr(cloner.web, "json_response", lambda data, status=200:
@@ -34,7 +36,6 @@ def test_cloner_download_routes_share_qwen_worker_and_keep_legacy_responses(monk
     response = asyncio.run(cloner.cloner_download_model(request))
     assert response.status == 200 and response.data == {"status": "started"}
     assert started[0]["target"] is qwen_vl._qwen_vl_download_worker
-    assert started[0]["args"] == (True,)
     status = asyncio.run(cloner.cloner_download_status(request))
     assert status.data == qwen_vl._QWEN_VL_DOWNLOAD_STATUS
     response = asyncio.run(cloner.cloner_download_model(request))
@@ -205,19 +206,6 @@ class TestClonerConfigSave:
 def _load_cloner(monkeypatch):
     """Load the cloner without tensor or model dependencies."""
     monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
-    from nodes.qwen_vl import (
-        get_qwen_vl_chat_handler, parse_wizard_json, normalize_character_wizard_traits,
-        _start_qwen_vl_download, qwen_vl_download_status,
-    )
-    assets = types.ModuleType("_vnccs.nodes.qwen_vl")
-    assets.get_qwen_vl_chat_handler = get_qwen_vl_chat_handler
-    assets.parse_wizard_json = parse_wizard_json
-    assets.normalize_character_wizard_traits = normalize_character_wizard_traits
-    assets._start_qwen_vl_download = _start_qwen_vl_download
-    assets.qwen_vl_download_status = qwen_vl_download_status
-    assets._ensure_qwen_vl_assets = lambda **kwargs: ("model.gguf", "mmproj.gguf")
-    assets.QWEN_VL_MODEL_FILENAME = "model.gguf"
-    monkeypatch.setitem(sys.modules, assets.__name__, assets)
     spec = importlib.util.spec_from_file_location(
         "_vnccs.nodes._cloner_wizard_test", Path(__file__).parents[1] / "nodes/character_cloner.py"
     )
@@ -269,15 +257,12 @@ def _run_wizard(monkeypatch, tmp_path, content, image=None):
     (image if image is not None else Image.new("RGB", (32, 64), "red")).save(tmp_path / "reference.png")
 
     calls = []
-    def complete(**kwargs):
-        calls.append(kwargs)
-        return {"choices": [{"message": {"content": content}}]}
-    llama = types.ModuleType("llama_cpp")
-    llama.llama_chat_format = types.ModuleType("llama_cpp.llama_chat_format")
-    llama.llama_chat_format.Qwen35ChatHandler = type("Qwen35ChatHandler", (), {"__init__": lambda self, **kwargs: None})
-    llama.Llama = lambda **kwargs: types.SimpleNamespace(create_chat_completion=complete)
-    monkeypatch.setitem(sys.modules, "llama_cpp", llama)
-    monkeypatch.setitem(sys.modules, "llama_cpp.llama_chat_format", llama.llama_chat_format)
+    def complete(model, system_prompt, prompt, **kwargs):
+        calls.append({"model": model, "system_prompt": system_prompt, "prompt": prompt, **kwargs})
+        return content
+    monkeypatch.setattr(cloner, "_local_wizard_model", lambda: {"name": "wizard encoder"})
+    monkeypatch.setattr(cloner, "generate_wizard_text", complete)
+    monkeypatch.setattr(cloner, "pil2tensor", lambda image: np.asarray(image)[None])
     monkeypatch.setitem(sys.modules, "json_repair", types.SimpleNamespace(loads=json.loads))
     return cloner._cloner_auto_generate_response({"image_name": "reference.png"}), calls
 
@@ -287,10 +272,10 @@ def test_wizard_requests_visible_character_traits_only(monkeypatch, tmp_path, ca
     response, calls = _run_wizard(monkeypatch, tmp_path, json.dumps(traits))
     assert response.status == 200
     assert response.data == traits
-    prompt = calls[0]["messages"][1]["content"][0]["text"]
+    prompt = calls[0]["prompt"]
     record = next(record for record in caplog.records if getattr(record, "vnccs", {}).get("event") == "prompts")
     assert record.vnccs["user"] == prompt
-    assert record.vnccs["system"] == calls[0]["messages"][0]["content"]
+    assert record.vnccs["system"] == calls[0]["system_prompt"]
     assert prompt in record.getMessage()
     assert "base64" not in record.getMessage()
     assert "do not choose from presets or a closed list" in prompt
@@ -339,18 +324,14 @@ def test_wizard_cannot_replace_character_ownership_or_authored_generation_settin
 
 @pytest.mark.parametrize("mode,size,color", [("LA", (32, 64), (0, 0)), ("RGB", (1, 1024), "red")])
 def test_caption_reference_handles_alpha_and_extreme_aspect_ratio(monkeypatch, tmp_path, mode, size, color):
-    import base64
-    import io
     from PIL import Image
 
     response, calls = _run_wizard(monkeypatch, tmp_path, '{"hair":"red hair"}', Image.new(mode, size, color))
     assert response.status == 200
-    encoded = calls[0]["messages"][1]["content"][1]["image_url"]["url"].split(",", 1)[1]
-    with Image.open(io.BytesIO(base64.b64decode(encoded))) as image:
-        assert image.mode == "RGB"
-        assert image.size == ((32, 64) if mode == "LA" else (1, 512))
-        if mode == "LA":
-            assert image.getpixel((0, 0)) == (255, 255, 255)
+    image = calls[0]["image"]
+    assert image.shape == ((1, 64, 32, 3) if mode == "LA" else (1, 512, 1, 3))
+    if mode == "LA":
+        assert np.all(image == 255)
 
 
 @pytest.mark.parametrize("content", ["", "wearing white shirt, standing, one arm raised", "[]"])

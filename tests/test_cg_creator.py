@@ -90,8 +90,8 @@ def test_selected_finished_cg_is_the_only_image_sent_downstream(execution):
     output, = execution.node.create_cg(json.dumps(execution.state))
     assert output.shape == (1, 64, 128, 3)
     np.testing.assert_array_equal(output[0, 0, 0], [0, 0, 1])
-    execution.preview.assert_called_once_with(execution.directory / "CG" / "Window" / "image.png")
-    assert not execution.frames.exists()
+    execution.preview.assert_called_once_with(execution.frames / "image.png")
+    assert execution.frames.is_dir(), "Reading a legacy CG never migrates its folder"
     execution.generation.generate_image.assert_not_called()
 
 
@@ -106,7 +106,7 @@ def test_unfinished_selection_stops_before_preview_or_generation(execution, miss
 
 def test_missing_finished_asset_does_not_generate_a_replacement(execution):
     (execution.frames / "image.png").unlink()
-    with pytest.raises(FileNotFoundError, match="missing"):
+    with pytest.raises(FileNotFoundError, match="does not exist"):
         execution.node.create_cg(json.dumps(execution.state))
     execution.preview.assert_not_called()
     execution.generation.generate_image.assert_not_called()

@@ -123,22 +123,17 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             }, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/create")
-    @PromptServer.instance.routes.get("/vnccs/create")
     async def vnccs_create_character(request):
         try:
             from .utils import validate_privileged_request
             validate_privileged_request(request)
         except ValueError as error:
             return web.json_response({"error": str(error)}, status=403)
-        if getattr(request, "method", "GET") == "POST":
-            try:
-                data = await request.json()
-                name = str(data.get("name", "")).strip()
-            except (ValueError, TypeError, AttributeError):
-                return web.json_response({"error": "Invalid create request"}, status=400)
-        else:
-            # Compatibility for older extensions; responses are explicitly no-store.
-            name = request.rel_url.query.get("name", "").strip()
+        try:
+            data = await request.json()
+            name = str(data.get("name", "")).strip()
+        except (ValueError, TypeError, AttributeError):
+            return web.json_response({"error": "Invalid create request"}, status=400)
         if not name:
             return web.json_response({"error": "name required"}, status=400)
         try:
@@ -148,7 +143,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
             return web.json_response({"error": str(e)}, status=400)
         try:
             from .nodes.character_creator_v2 import CharacterCreatorV2
-            catalog = data.get("catalog", "") if getattr(request, "method", "GET") == "POST" else ""
+            catalog = data.get("catalog", "")
             return web.json_response(await asyncio.to_thread(CharacterCreatorV2.create_character, name, catalog))
         except Exception as e:
             traceback.print_exc()
@@ -158,7 +153,7 @@ def _vnccs_register_endpoint():  # lazy registration to avoid import errors in a
                 "type": type(e).__name__,
             }, status=500)
 
-    @PromptServer.instance.routes.get("/vnccs/create_costume")
+    @PromptServer.instance.routes.post("/vnccs/create_costume")
     async def vnccs_create_costume(request):
         try:
             from .utils import validate_privileged_request

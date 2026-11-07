@@ -1,7 +1,6 @@
-import { injectStyles } from "./vnccs_common.js";
 import { validateCharacters } from "./cg_characters.mjs";
 
-const CSS = `
+export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-panel { gap:12px; overflow:visible; padding:16px; }
 .vnccs-cg-creator .cg-character-panel button { cursor:pointer; }
 .vnccs-cg-creator .cg-character-panel .vnccs-common-creator-btn-secondary { background:var(--bg-surface); color:var(--text-primary); border:1px solid var(--accent-border); }
@@ -57,7 +56,6 @@ const select = (label, key) => `<label class="cg-character-field"><span>${label}
 
 export class CGCharacterPanel {
     constructor(widget) {
-        injectStyles(CSS, "vnccs-cg-character-panel");
         this.widget = widget; this.events = new AbortController(); this.serial = 0; this.catalogKey = "";
         this.element = document.createElement("aside");
         this.element.className = "bg-panel cg-character-panel vnccs-common-creator-col"; this.element.hidden = true;

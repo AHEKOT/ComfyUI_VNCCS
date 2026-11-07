@@ -3675,7 +3675,7 @@ app.registerExtension({
                     }, [{ text: "OK", class: "vnccs-creator-btn-primary" }]);
                 };
 
-                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
+                const ensureQwenVLReady = createQwenVLModelLoader(node, () => {
                     const { overlay, modal } = showModal("Downloading QwenVL...", () => {
                         const d = document.createElement("div");
                         d.className = "vnccs-creator-character-wizard-modal";
@@ -3693,7 +3693,7 @@ app.registerExtension({
                     const barEl = modal.querySelector("#vnccs-qwenvl-bar");
                     const pctEl = modal.querySelector("#vnccs-qwenvl-pct");
                     return { overlay, statusEl, barEl, pctEl, completedMessage: "QwenVL ready." };
-                }, false);
+                });
 
                 const openCharacterWizard = () => {
                     if (node._vnccsStateRestoreError) return;

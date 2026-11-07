@@ -62,11 +62,9 @@ def workspace(monkeypatch, tmp_path):
     monkeypatch.setattr(generation, "generate_image", generated)
     document = {"schema_version": 2, "background_id": "a" * 32, "name": "Quiet room", "revision": 7,
         "archived": False, "editor": {"description": "Keep the main generator scene", "future": {"x": 3}},
-        "images": [{"image_id": "b" * 32, "file": "Sources/V1.png", "width": 128, "height": 64,
-            "settings": {"generator": "main", "seed": 3}, "preview_revision": 4},
-            {"image_id": "c" * 32, "file": "source.png", "width": 128, "height": 64,
-            "settings": {"generator": "main", "seed": 4}, "preview_revision": 1}],
-        "selected_image_id": "c" * 32, "models": [], "cgs": [],
+        "images": [{"image_id": "b" * 32, "file": "source.png", "width": 128, "height": 64,
+            "settings": {"generator": "main", "seed": 3}, "preview_revision": 4}],
+        "selected_image_id": "b" * 32, "models": [], "cgs": [],
         "generator_settings": {"model": "qi2", "sampling": {"steps": 25}, "future": [1, 2]},
         "generated_sets": [],
         "future_owner_data": {"revision": "unrelated", "values": ["keep", "all"]}}
@@ -161,15 +159,18 @@ def test_only_model_and_cg_actions_are_accepted(workspace, payload):
 
 
 @pytest.mark.parametrize("revision", [None, True, 0, 999])
-def test_job_uses_current_disk_revision_instead_of_workflow_metadata(workspace, revision):
-    service.start_job(workspace.document["background_id"], job_payload(workspace.document, "model", revision=revision))
-    values = workspace.worker.submit.call_args.args[2]
-    newer = copy.deepcopy(workspace.document)
+def test_job_uses_current_disk_revision_instead_of_saved_widget_metadata(workspace, revision):
+    document = with_model(workspace)
+    service.start_job(document["background_id"], job_payload(document, revision=revision), png())
+    newer = copy.deepcopy(document)
     newer["revision"] += 1
+    newer["editor"]["saved_after_queue"] = "Keep the authored edit"
     write_document(newer)
-    assert workspace.run_pending()["status"] == "failed"
-    assert library.load_background(newer["background_id"]) == newer
-
+    job = workspace.run_pending()
+    assert job["status"] == "completed", job["error"]
+    saved = library.load_background(newer["background_id"])
+    assert saved["revision"] == newer["revision"] + 1
+    assert saved["editor"] == newer["editor"] and len(saved["cgs"]) == 1
 
 
 @pytest.mark.parametrize("condition", ["archived", "recovered"])
@@ -213,7 +214,7 @@ def test_main_document_without_model_or_cg_arrays_is_read_without_rewriting(work
     updated = service.save_settings(document["background_id"], {"revision": document["revision"]})
     assert updated["models"] == [] and updated["cgs"] == []
     saved = library.load_background(document["background_id"])
-    assert "models" not in saved and "cgs" not in saved
+    assert saved["models"] == [] and saved["cgs"] == []
     assert_main_fields_preserved(document, saved)
     status = service.start_job(document["background_id"], job_payload(saved, "model"))
     assert status["status"] == "queued"
@@ -267,7 +268,7 @@ def test_cg_job_captures_settings_camera_and_frame_without_changing_main_variant
     cg = saved["cgs"][-1]
     assert cg["camera"] == CAMERA and cg["model_id"] == document["models"][-1]["model_id"]
     assert cg["source_image_id"] == document["models"][-1]["source_image_id"]
-    assert cg["source_image_id"] != document["selected_image_id"]
+    assert cg["source_image_id"] == document["selected_image_id"]
     with Image.open(library.cg_image_path(document["background_id"], cg["cg_id"])) as image:
         assert image.getpixel((0, 0)) == (0, 0, 255)
     assert job["result"]["document"]["cgs"][-1]["url"].endswith(f"/{cg['cg_id']}/image")
@@ -299,8 +300,8 @@ def test_character_job_captures_selected_costume_sprite_and_emotion(workspace, m
 
 def test_cg_rejects_model_from_another_source_variant(workspace):
     document = with_model(workspace)
-    with pytest.raises(ValueError, match="another background variant"):
-        service.start_job(document["background_id"], job_payload(document, image_id=document["images"][1]["image_id"]), png())
+    with pytest.raises(FileNotFoundError, match="replaced"):
+        service.start_job(document["background_id"], job_payload(document, image_id="f" * 32), png())
     workspace.worker.submit.assert_not_called()
     assert library.load_background(document["background_id"]) == document
 
@@ -340,7 +341,7 @@ def test_model_job_rejects_a_generated_set_owned_by_another_base_image(workspace
     document = with_generated_set(workspace)
     with pytest.raises(ValueError, match="another background source"):
         service.start_job(document["background_id"], job_payload(document, "model",
-            image_id=document["images"][1]["image_id"], source_variant=source_variant(document)))
+            image_id="f" * 32, source_variant=source_variant(document)))
     workspace.worker.submit.assert_not_called()
     assert library.load_background(document["background_id"]) == document
 
@@ -357,6 +358,7 @@ def test_cg_rejects_model_owned_by_another_background(workspace):
     document = with_model(workspace)
     other = {**copy.deepcopy(workspace.document), "background_id": "9" * 32, "name": "Other room"}
     write_document(other)
+    (library.root() / other["name"] / "source.png").write_bytes(png())
     other = with_model(workspace, other)
     with pytest.raises(FileNotFoundError):
         service.start_job(document["background_id"], job_payload(document, model_id=other["models"][-1]["model_id"]), png())
@@ -424,7 +426,7 @@ def test_stop_after_sampling_prevents_committing_a_finished_frame(workspace):
     assert library.load_background(document["background_id"]) == document
 
 
-def test_late_cg_cannot_replace_a_new_main_scene_revision(workspace):
+def test_late_cg_preserves_unrelated_main_settings_saved_while_sampling(workspace):
     document = with_model(workspace)
     service.start_job(document["background_id"], job_payload(document), png())
     newer = copy.deepcopy(document)
@@ -432,8 +434,23 @@ def test_late_cg_cannot_replace_a_new_main_scene_revision(workspace):
     newer["editor"]["new_main_edit"] = "Keep the newest main scene"
     write_document(newer)
     job = workspace.run_pending()
+    assert job["status"] == "completed", job["error"]
+    saved = library.load_background(document["background_id"])
+    assert saved["editor"] == newer["editor"]
+    assert saved["revision"] == newer["revision"] + 1 and len(saved["cgs"]) == 1
+
+
+def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
+    document = with_model(workspace)
+    service.start_job(document["background_id"], job_payload(document), png())
+    source = library.root() / document["name"] / document["images"][0]["file"]
+    source.write_bytes(png(color="green"))
+    metadata = (source.parent / f"{document['name']}_config.json").read_bytes()
+    job = workspace.run_pending()
     assert job["status"] == "failed" and "changed" in job["error"]
-    assert library.load_background(document["background_id"]) == newer
+    assert (source.parent / f"{document['name']}_config.json").read_bytes() == metadata
+    assert library.load_background(document["background_id"])["cgs"] == []
+    assert not (source.parent / "CG").exists()
 
 
 @pytest.mark.parametrize("use_variant", [False, True], ids=["original", "generated-variant"])
@@ -511,10 +528,10 @@ def test_cancel_after_publication_keeps_the_completed_result(workspace, monkeypa
     generation.interrupt.assert_not_called()
 
 
-def test_optional_main_owner_busy_guard_is_respected(workspace, monkeypatch):
-    owner = types.SimpleNamespace(ensure_idle=mock.Mock(side_effect=RuntimeError("Main background generator is busy")))
-    monkeypatch.setattr(library, "background_owner", lambda: owner)
-    with pytest.raises(RuntimeError, match="Main background generator"):
+def test_shared_background_job_guard_is_respected(workspace, monkeypatch):
+    monkeypatch.setattr(library.background, "_JOBS", {"main": {
+        "background_id": workspace.document["background_id"], "status": "running"}})
+    with pytest.raises(RuntimeError, match="busy"):
         service.start_job(workspace.document["background_id"], job_payload(workspace.document, "model"))
     workspace.worker.submit.assert_not_called()
 

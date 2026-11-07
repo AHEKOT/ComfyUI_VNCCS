@@ -1,4 +1,4 @@
-import { CGCharacterPanel } from "./cg_character_panel.mjs";
+import { CGCharacterPanel, CG_CHARACTER_PANEL_CSS } from "./cg_character_panel.mjs";
 import { CGCharacterEditor, loadCharacterRuntime, validateCharacters } from "./cg_characters.mjs";
 import { STYLE_PICKER_CSS } from "./character_styles.mjs";
 import { app } from "../../scripts/app.js";
@@ -16,6 +16,7 @@ const STYLE = `
 .vnccs-cg-creator { ${SAKURA_THEME_CSS} --warning:#ffaa00; --shadow-subtle:0 2px 8px rgba(0,0,0,0.3); --shadow-elevated:0 8px 32px rgba(0,0,0,0.5); }
 ${SAKURA_INTERACTION_CSS}
 ${SAKURA_CREATOR_CONTROL_CSS}
+${CG_CHARACTER_PANEL_CSS}
 ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 /* CG workspace and Utils viewport layout. */
 .vnccs-cg-creator.vnccs-i3s { position:relative; display:flex; flex-direction:column; min-height:0; box-sizing:border-box; border:0; overflow:hidden; transform-origin:top left; pointer-events:auto; font-family:var(--font); }
@@ -206,8 +207,8 @@ function variantSource(document, imageId, card) {
 }
 function sourceChoices(document) {
     const choices = [];
-    for (const [i, image] of (document?.images || []).entries()) {
-        const title = document.images.length > 1 ? `Original ${i + 1}` : "Original";
+    for (const image of (document?.images || []).filter(image => image.image_id === document.selected_image_id)) {
+        const title = "Original";
         choices.push({ key: image.image_id, image_id: image.image_id, variant: null, label: title, image });
         const latest = [...(document.generated_sets || [])].reverse().find(group => group.source_image_id === image.image_id && group.version === "");
         for (const card of document.editor?.variants || latest?.variants || []) {
@@ -841,7 +842,7 @@ const BASE = "/vnccs/cg-creator";
 const CAMERA_HINT = "Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo";
 const ASPECTS = ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "3:2", "2:3"];
 const latestModel = (doc, state) => (doc.models || []).filter(model => sameSource(model, state)).at(-1);
-const imageCGs = (doc, state) => (doc?.cgs || []).filter(cg => sameSource(cg, state));
+const imageCGs = doc => [...(doc?.cgs || [])];
 const frameAspect = size => ASPECTS.reduce((best, value) => { const ratio = key => { const [a, b] = key.split(":").map(Number); return a / b; }; return Math.abs(ratio(value) - size.width / size.height) < Math.abs(ratio(best) - size.width / size.height) ? value : best; }, ASPECTS[0]);
 
 class CGCreatorWidget {
@@ -1012,21 +1013,33 @@ class CGCreatorWidget {
     async acceptDocument(document, adopt = true, epoch = this.epoch) {
         if (this.disposed || epoch !== this.epoch) return;
         if (!adopt && document.background_id !== this.state.background_id) throw new Error("The response belongs to another background.");
+        const previousSource = this.document?.images.find(image => image.image_id === this.document.selected_image_id);
+        const currentSource = document.images.find(image => image.image_id === document.selected_image_id);
+        const replacedSource = previousSource && (previousSource.image_id !== currentSource?.image_id
+            || previousSource.preview_revision !== currentSource?.preview_revision || previousSource.url !== currentSource?.url);
+        const staleSource = this.state.selected_image_id && (this.state.selected_image_id !== document.selected_image_id
+            || this.state.selected_variant && !sourceChoices(document).some(choice => sameSource({ source_image_id: choice.image_id, source_variant: choice.variant }, this.state)));
         this.document = document; document.models ||= []; document.cgs ||= []; this.catalog = this.catalog.filter(item => item.background_id !== document.background_id);
         if (!document.archived) this.catalog.push(document);
-        if (adopt) {
+        if (adopt || !this.state.job && (replacedSource || staleSource)) {
             this.cgPreviewClose?.();
             this.state.background_id = document.background_id; this.state.selected_image_id = document.selected_image_id || document.images[0]?.image_id || "";
             this.state.selected_variant = null;
             this.state.model_id = latestModel(document, this.state)?.model_id || "";
-            this.state.settings = settingsDefaults(document.cg_settings); this.state.model_settings = { ...MODEL_DEFAULTS, ...document.model_settings };
-            this.state.selected_cg_id = imageCGs(document, this.state).at(-1)?.cg_id || "";
+            if (adopt) {
+                this.state.settings = settingsDefaults(document.cg_settings);
+                this.state.model_settings = { ...MODEL_DEFAULTS, ...document.model_settings };
+            }
+            const savedCG = !adopt && !replacedSource && document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
+            this.state.selected_cg_id = savedCG?.cg_id || (replacedSource ? "" : document.cgs.filter(cg => sameSource(cg, this.state)).at(-1)?.cg_id || "");
             const selected = document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
-            if (selected) this.state.model_id = selected.model_id;
+            if (selected && sameSource(selected, this.state) && document.models.some(model => model.model_id === selected.model_id)) this.state.model_id = selected.model_id;
             this.state.camera = null; this.state.frame = null;
         } else if (this.state.model_id && !document.models.some(model => model.model_id === this.state.model_id)) {
             const previous = this.state.model_id;
-            this.state.model_id = latestModel(document, this.state)?.model_id || "";
+            const selected = document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
+            this.state.model_id = selected ? document.models.find(model => model.model_id === selected.model_id)?.model_id || ""
+                : latestModel(document, this.state)?.model_id || "";
             if (this.state.model_id && this.state.characters?.[previous]) {
                 this.state.characters[this.state.model_id] ??= clone(this.state.characters[previous]);
             }
@@ -1383,7 +1396,7 @@ class CGCreatorWidget {
             }
             if (button.hasAttribute("data-source-choice")) {
                 const choice = sourceChoices(this.document).find(choice => choice.key === button.dataset.sourceChoice);
-                if (!choice || choice.key === selectedSource(this.document, this.state)?.key) return;
+                if (!choice || choice.key === selectedSource(this.document, this.state)?.key && !this.state.selected_cg_id) return;
                 if (document.activeElement === button) sourceFocus = choice.key;
                 this.cgPreviewClose?.();
                 navigating = this.busy = true; this.updateControls(); this.state.selected_image_id = choice.image_id; this.state.selected_variant = clone(choice.variant);
@@ -1396,11 +1409,16 @@ class CGCreatorWidget {
                 const cg = this.document.cgs.find(cg => cg.cg_id === button.dataset.cgId); if (!cg) return;
                 this.openPreview(cg);
                 if (this.busy || this.state.job || this.document?._recovery || this.document?.archived) return;
-                navigating = this.busy = true; this.updateControls(); Object.assign(this.state, { selected_cg_id: cg.cg_id, model_id: cg.model_id, camera: clone(cg.camera), frame: { width: cg.width, height: cg.height } });
+                navigating = this.busy = true; this.updateControls();
+                const model = this.document.models.find(model => model.model_id === cg.model_id);
+                Object.assign(this.state, { selected_cg_id: cg.cg_id, model_id: model?.model_id || "", camera: clone(cg.camera), frame: { width: cg.width, height: cg.height } });
                 if (cg.characters?.length || this.state.characters?.[cg.model_id]) {
                     this.state.characters ??= {}; this.state.characters[cg.model_id] = clone(cg.characters || []);
                 }
-                this.sync(); await this.showModel(epoch); if (epoch !== this.epoch || this.disposed) return; this.sync(); this.render(); return;
+                this.sync();
+                if (model) await this.showModel(epoch);
+                if (epoch !== this.epoch || this.disposed) return;
+                this.sync(); this.render(); return;
             }
             if (button.hasAttribute("data-add-character")) {
                 if (!this.canEditCamera()) return;
