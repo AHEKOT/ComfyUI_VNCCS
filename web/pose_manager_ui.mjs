@@ -1,8 +1,8 @@
 import { injectStyles, SAKURA_THEME_CSS } from "./vnccs_common.js";
-import { mountLivePreviews } from "./pose_manager_previews.mjs?v=pose-manager-15";
-import { openSetLibrary } from "./pose_set_library.mjs?v=pose-manager-15";
-import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-15";
-import { mountPoseLibrary, POSE_LIBRARY_CSS } from "./pose_manager_library.mjs?v=pose-manager-15";
+import { mountLivePreviews } from "./pose_manager_previews.mjs?v=pose-manager-17";
+import { openSetLibrary } from "./pose_set_library.mjs?v=pose-manager-17";
+import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-17";
+import { mountPoseLibrary, POSE_LIBRARY_CSS } from "./pose_manager_library.mjs?v=pose-manager-17";
 
 const CSS = `
 .vnccs-pm-shell,.vnccs-set-library { ${SAKURA_THEME_CSS} }
@@ -22,6 +22,23 @@ const CSS = `
 .vnccs-pm-shell .vnccs-ps-pose-card { position:relative; display:grid; grid-template-rows:minmax(0,1fr) 28px; gap:4px; min-width:0; min-height:0; background:none; border:0; border-radius:8px; box-shadow:none; }
 .vnccs-pm-shell .vnccs-ps-pose-card:is(:hover,.active) { border:0; box-shadow:none; transform:none; }
 .vnccs-pm-shell .vnccs-ps-pose-preview { box-sizing:border-box; height:100%; background:var(--bg-elevated); border:1px solid #30303b; border-radius:8px; }
+.vnccs-pm-shell[data-vnccs-pm-analysis] .vnccs-ps-manager-grid .vnccs-ps-pose-preview { position:relative; isolation:isolate; overflow:hidden; border-color:var(--accent); }
+.vnccs-pm-shell[data-vnccs-pm-analysis] .vnccs-ps-manager-grid .vnccs-ps-pose-preview::after {
+    content:""; position:absolute; inset:0; z-index:2; pointer-events:none; mix-blend-mode:screen;
+    background:linear-gradient(180deg, transparent, rgba(255,143,163,.22) 30%, rgba(255,235,244,.94) 50%, rgba(255,143,163,.28) 68%, transparent) bottom / 100% clamp(20px,8%,46px) no-repeat;
+    animation:vnccs-pm-proportion-scan 2200ms cubic-bezier(.4,0,.2,1) infinite;
+}
+@keyframes vnccs-pm-proportion-scan { 0% { transform:translateY(-100%); } 72%,100% { transform:translateY(0); } }
+@media (prefers-reduced-motion:reduce) {
+    .vnccs-pm-shell[data-vnccs-pm-analysis] .vnccs-ps-manager-grid .vnccs-ps-pose-preview::after { animation:none; opacity:.45; }
+}
+.vnccs-pm-shell.vnccs-ps-mode-manager[data-vnccs-pm-analysis] > .vnccs-ps-modal-overlay:has(.vnccs-ps-import-progress) {
+    justify-content:flex-start; align-items:flex-end; background:transparent; backdrop-filter:none;
+}
+.vnccs-pm-shell.vnccs-ps-mode-manager[data-vnccs-pm-analysis] > .vnccs-ps-modal-overlay:has(.vnccs-ps-import-progress) > .vnccs-ps-modal {
+    box-sizing:border-box; width:calc(21% - 12px); margin:0 6px 8px; overflow-wrap:anywhere;
+}
+.vnccs-pm-shell.vnccs-ps-mode-manager[data-vnccs-pm-analysis] > .vnccs-ps-modal-overlay:has(.vnccs-ps-import-progress) .vnccs-ps-loading-spinner { display:none; }
 .vnccs-pm-pose-library { box-sizing:border-box; width:100%; min-width:0; height:28px; padding:0 4px; border:1px solid var(--accent-border); border-radius:6px; background:var(--bg-secondary); color:var(--accent); font:inherit; font-size:11px; cursor:pointer; }
 .vnccs-pm-pose-library:hover { background:var(--bg-hover); color:var(--accent-hover); }
 .vnccs-pm-shell .vnccs-pm-live-preview { position:relative; }
@@ -75,7 +92,8 @@ export function mountManager(widget) {
         .append(widget.managerAutoAnalyzeCheckbox.closest("label"));
     for (const [key, control] of Object.entries(widget.managerControls)) {
         const nativeReset = widget.sliders[key]?.slider.closest(".vnccs-ps-field")?.querySelector(".vnccs-ps-reset-btn");
-        if (!nativeReset || !control.value) continue;
+        const value = control.value || control.input?._vnccsNumberInput;
+        if (!nativeReset || !value) continue;
         const row = document.createElement("span"), reset = nativeReset.cloneNode(true);
         row.className = "vnccs-pm-reset-value";
         reset.type = "button";
@@ -86,8 +104,8 @@ export function mountManager(widget) {
             widget.refreshPoseManagerControls();
             widget.scheduleAllManagerPreviewRefresh();
         };
-        control.value.replaceWith(row);
-        row.append(control.value, reset);
+        value.replaceWith(row);
+        row.append(value, reset);
     }
     const count = document.createElement("span");
     count.className = "vnccs-pm-count";
