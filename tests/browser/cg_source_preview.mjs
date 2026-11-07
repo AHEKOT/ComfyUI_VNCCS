@@ -125,6 +125,98 @@ try {
         return saved;
     };
     await page.goto(origin); await page.waitForFunction(() => window.ready); await ready();
+    const originalGraphExtra = await page.evaluate(() => structuredClone(widget.node.graph.extra));
+    const originalDocument = structuredClone(document);
+    for (const [width, scale, label] of [[1481, 1, 'compact'], [LAYOUT_WIDTH, 1, 'default'], [5200, 1, 'wide'], [LAYOUT_WIDTH, .7, 'scaled']]) {
+        Object.assign(document, structuredClone(originalDocument));
+        await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
+        await ready(width, scale);
+        const before = await geometry(), stable = Object.fromEntries(Object.entries(before).filter(([selector]) => selector !== '.bg-variation-cards'));
+        await capture(`storage-before-${label}`);
+        await page.locator('[data-source-choice]').nth(1).click();
+        await page.waitForFunction(() => widget.state.selected_variant?.index === 1 && !widget.busy);
+        const stale = await workflow();
+        Object.assign(document, { revision: originalDocument.revision + 1,
+            images: [{ ...originalDocument.images[0], preview_revision: 2, url: originalDocument.images[0].url.replace('v=1', 'v=2') }],
+            generated_sets: [], models: [] });
+        let missingModelRequests = 0;
+        const countModelRequests = request => { if (new URL(request.url()).pathname.startsWith(`${base}/backgrounds/${backgroundId}/models/`)) missingModelRequests++; };
+        page.on('request', countModelRequests);
+        await page.evaluate(() => widget.refreshLibrary());
+        await page.waitForFunction(() => !widget.busy && document.querySelector('[data-model-source]')?.dataset.sourceURL?.endsWith('v=2'));
+        assert.deepEqual(await page.locator('.bg-source-name').allTextContents(), ['Original']);
+        assert.equal(await page.evaluate(() => widget.state.selected_variant), null);
+        assert.equal(await page.evaluate(() => widget.state.model_id), '');
+        assert.equal(await page.locator('[data-cg-id]').count(), originalDocument.cgs.length);
+        equalGeometry(await geometry(), stable); await capture(`storage-regenerated-${label}`);
+        await page.locator('[data-cg-id]').first().click();
+        await page.waitForFunction(() => document.querySelector('[data-large-preview]')?.naturalWidth > 0 && !widget.busy);
+        const selected = await page.evaluate(() => widget.state.selected_cg_id);
+        assert.ok(originalDocument.cgs.some(cg => cg.cg_id === selected));
+        assert.equal(await page.evaluate(() => widget.document.cgs.find(cg => cg.cg_id === widget.state.selected_cg_id).model_id), modelId);
+        equalGeometry(await geometry(), stable); await capture(`storage-independent-cg-${label}`);
+        const savedState = await workflow();
+        await page.reload(); await page.waitForFunction(() => window.ready);
+        await page.evaluate(value => setup(value.width, value.scale, value.raw, value.height), { width, scale, raw: savedState.raw, height: savedState.size[1] });
+        await page.waitForFunction(() => document.querySelector('[data-large-preview]')?.naturalWidth > 0);
+        assert.equal(await page.evaluate(() => widget.state.selected_cg_id), selected);
+        await page.evaluate(value => setup(value.width, value.scale, value.raw, value.height), { width, scale, raw: stale.raw, height: stale.size[1] });
+        assert.equal(await page.evaluate(() => widget.state.selected_variant), null, 'Reload releases replaced variant references');
+        assert.equal(await page.evaluate(() => widget.state.model_id), '');
+        assert.equal(missingModelRequests, 0, 'Ready CGs and stale state never request unavailable models');
+        page.off('request', countModelRequests);
+        equalGeometry(await geometry(), stable);
+        samples.push({ name: `storage-regeneration-${label}`, width, scale, before, after: await geometry(), missingModelRequests });
+    }
+    Object.assign(document, originalDocument);
+    await page.evaluate(extra => { widget.node.onRemoved(); localStorage.clear(); widget.node.graph.extra = extra; }, originalGraphExtra);
+    for (const [width, scale, label] of [[1481, 1, 'compact'], [LAYOUT_WIDTH, 1, 'default'], [5200, 1, 'wide'], [LAYOUT_WIDTH, .7, 'scaled']]) {
+        await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
+        await ready(width, scale);
+        const before = await geometry();
+        const device = page.getByRole('combobox', { name: 'cache device', exact: true });
+        const dtype = page.getByRole('combobox', { name: 'cache dtype', exact: true });
+        assert.equal(await device.innerText(), 'auto');
+        assert.equal(await dtype.innerText(), 'default');
+        for (const [control, choices, selected] of [[device, ['auto', 'gpu', 'cpu', 'off'], 'cpu'], [dtype, ['default', 'int8', 'int4'], 'int4']]) {
+            await control.click();
+            const menu = page.getByRole('listbox', { name: await control.getAttribute('aria-label'), exact: true });
+            assert.deepEqual(await menu.getByRole('option').allTextContents(), choices);
+            equalGeometry(await geometry(), before);
+            await menu.getByRole('option', { name: selected, exact: true }).click();
+            await menu.waitFor({ state: 'detached' });
+        }
+        const current = await workflow(), settings = JSON.parse(current.raw).settings.generation;
+        assert.equal(settings.cache_device, 'cpu'); assert.equal(settings.cache_dtype, 'int4');
+        await page.evaluate(saved => setup(saved.width, saved.scale, saved.raw, saved.height), { width, scale, raw: current.raw, height: current.size[1] });
+        await settle();
+        assert.equal(await device.innerText(), 'cpu'); assert.equal(await dtype.innerText(), 'int4');
+        const picker = page.locator('.vnccs-common-creator-model-picker');
+        await picker.locator('.is-picker-head').click();
+        await picker.locator('.vnccs-common-creator-model-picker-menu [role="button"]').filter({ hasText: 'Qwen Image 2.1 Turbo INT8 ConvRot' }).click();
+        assert.equal(await device.innerText(), 'cpu'); assert.equal(await dtype.innerText(), 'int4');
+        const fit = await page.evaluate(() => {
+            const panel = document.querySelector('.bg-qi2-model-panel'), bounds = panel.getBoundingClientRect();
+            const controls = [...panel.querySelectorAll(':scope>*,input,button')].map(element => {
+                const rect = element.getBoundingClientRect();
+                return { name: element.ariaLabel || element.className, x: rect.x, y: rect.y, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height };
+            }).filter(rect => rect.width && rect.height);
+            return { panel: { x: bounds.x, y: bounds.y, right: bounds.right, bottom: bounds.bottom }, controls,
+                overflowX: panel.scrollWidth - panel.clientWidth, overflowY: panel.scrollHeight - panel.clientHeight };
+        });
+        assert.ok(fit.overflowX <= 1 && fit.overflowY <= 1, `Cache controls do not add panel scrolling at ${label}: ${JSON.stringify(fit)}`);
+        for (const control of fit.controls) assert.ok(control.x >= fit.panel.x - 1 && control.right <= fit.panel.right + 1
+            && control.y >= fit.panel.y - 1 && control.bottom <= fit.panel.bottom + 1, `${control.name} escapes the model panel at ${label}`);
+        equalGeometry(await geometry(), before);
+        await capture(`qwen-cache-${label}`);
+        await page.evaluate(() => widget.qi2.setDisabled(true));
+        assert.equal(await device.isDisabled(), true); assert.equal(await dtype.isDisabled(), true);
+        await page.evaluate(() => widget.qi2.setDisabled(false));
+        assert.equal(await device.isEnabled(), true); assert.equal(await dtype.isEnabled(), true);
+        samples.push({ name: `qwen-cache-${label}`, width, scale, bounds: await geometry(), fit });
+    }
+    await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
+    await ready();
     await page.evaluate(() => {
         const controls = document.createElement('nav'); controls.id = 'workflow-controls';
         controls.innerHTML = '<button data-workflow-tab>Workflow tab</button><button data-workflow-save>Save workflow</button><input aria-label="Workflow name" value="Original workflow"><button data-workflow-after>After preview</button>';
@@ -324,6 +416,8 @@ try {
     let release, requested;
     const pending = new Promise(done => { release = done; }), received = new Promise(done => { requested = done; });
     await page.route(`**/sets/${setId}/1*`, async route => { requested(); await pending; await route.fulfill({ contentType: "image/svg+xml", body: room.toString().replaceAll("#f4b38e", "#c7dbf0") }); });
+    // The card thumbnail already decoded its URL; use fresh pixels for the delayed-preview case.
+    await page.evaluate(() => { widget.document.generated_sets[0].images[1].url += '&delayed-preview=1'; });
     await page.locator(`[data-source-choice="${imageId}:${setId}:1"]`).click(); await received; await settle();
     await capture("loading");
     assert.equal(await page.locator("[data-model-source]").isVisible(), true, "The displayed image stays visible until the replacement is ready");
@@ -345,13 +439,14 @@ try {
     equalGeometry(await geometry(), before); await capture("crossfade");
     await page.evaluate(() => [...widget.customSelects._motionAnimations].forEach(animation => animation.finish()));
     await page.waitForFunction(() => !document.querySelector("[data-source-incoming]"));
-    assert.match(await page.locator("[data-model-source]").getAttribute("src"), /\/1\?v=1$/);
+    assert.equal(await page.locator("[data-model-source]").getAttribute("src"), `${base}/backgrounds/${backgroundId}/sets/${setId}/1?v=1&delayed-preview=1`);
     assert.equal(await page.locator("[data-enlarge]").isVisible(), true);
     equalGeometry(await geometry(), before); await capture("after"); samples.push({ width: LAYOUT_WIDTH, before, after: await geometry(), fade });
     await page.route(`**/sets/${setId}/2*`, route => route.abort());
+    await page.evaluate(() => { widget.document.generated_sets[0].images[2].url += '&failed-preview=1'; });
     await page.locator(`[data-source-choice="${imageId}:${setId}:2"]`).click();
     await page.waitForFunction(() => !document.querySelector("[data-source-incoming]"));
-    assert.match(await page.locator("[data-model-source]").getAttribute("src"), /\/1\?v=1$/);
+    assert.equal(await page.locator("[data-model-source]").getAttribute("src"), `${base}/backgrounds/${backgroundId}/sets/${setId}/1?v=1&delayed-preview=1`);
     assert.equal(await page.locator("[data-model-source]").isVisible(), true, "A failed replacement preserves the previous frame");
     assert.equal(await page.locator("[data-empty]").isVisible(), false);
     assert.match(await page.locator(".bg-hint").textContent(), /Background image unavailable/);
@@ -361,6 +456,7 @@ try {
     let releaseLate, lateRequested;
     const late = new Promise(done => { releaseLate = done; }), lateReceived = new Promise(done => { lateRequested = done; });
     await page.route(`**/sets/${setId}/3*`, async route => { lateRequested(); await late; await route.fulfill({ contentType: "image/svg+xml", body: room }); });
+    await page.evaluate(() => { widget.document.generated_sets[0].images[3].url += '&late-preview=1'; });
     await page.locator(`[data-source-choice="${imageId}:${setId}:3"]`).click(); await lateReceived;
     await page.locator(`[data-source-choice="${imageId}"]`).click();
     await page.waitForFunction(() => document.querySelector("[data-model-source]")?.src.includes('/images/') && !document.querySelector("[data-source-incoming]"));
@@ -403,6 +499,7 @@ try {
     const assetGate = new Promise(done => { releaseAssets = done; }), assetRequest = new Promise(done => { assetsRequested = done; });
     const heldAsset = `**/backgrounds/${nextBackgroundId}/sets/${setId}/3*`;
     await page.route(heldAsset, async route => { assetsRequested(); await assetGate; await route.continue(); });
+    nextDocument.generated_sets[0].images[3].url += '&delayed-assets=1';
     await switchBackground(nextBackgroundId);
     await page.waitForFunction(id => window.loadingFixtureModel === id, nextBackgroundId);
     assert.equal(await page.locator("[data-background-snapshot]").count(), 1);
@@ -433,6 +530,7 @@ try {
 
     await page.emulateMedia({ reducedMotion: "reduce" }); await switchBackground(backgroundId); await backgroundSettled();
     const failedAsset = `**/backgrounds/${nextBackgroundId}/sets/${setId}/2*`;
+    nextDocument.generated_sets[0].images[2].url += '&failed-assets=1';
     await page.route(failedAsset, route => route.abort()); await switchBackground(nextBackgroundId); await backgroundSettled();
     assert.equal(await page.evaluate(() => widget.state.background_id), backgroundId);
     assert.equal(await page.locator("[data-background-snapshot]").count(), 0); assert.equal(await page.evaluate(() => widget.busy), false);
@@ -442,6 +540,7 @@ try {
     let releaseObsolete, obsoleteRequested;
     const obsoleteGate = new Promise(done => { releaseObsolete = done; }), obsoleteRequest = new Promise(done => { obsoleteRequested = done; });
     await page.route(heldAsset, async route => { obsoleteRequested(); await obsoleteGate; await route.continue(); });
+    nextDocument.generated_sets[0].images[3].url += '&obsolete-assets=1';
     await switchBackground(nextBackgroundId); await obsoleteRequest;
     await ready(); releaseObsolete(); await page.waitForLoadState('networkidle');
     assert.equal(await page.locator("[data-background-snapshot]").count(), 0);

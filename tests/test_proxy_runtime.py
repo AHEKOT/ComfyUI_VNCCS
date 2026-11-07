@@ -261,18 +261,23 @@ def test_create_route_accepts_checked_post_and_rejects_invalid_or_cross_site_req
     assert asyncio.run(invoke([], headers)).status == 400
     assert asyncio.run(invoke({'name': '../bad'}, headers)).status == 400
     assert asyncio.run(invoke({'name': 'Bob'}, {**headers, 'Sec-Fetch-Site': 'cross-site'})).status == 403
-    assert handlers['GET', '/vnccs/create'] is handlers['POST', '/vnccs/create']
-    async def legacy_get(headers):
-        req = SimpleNamespace(method='GET', headers=headers, rel_url=SimpleNamespace(query={'name': 'Legacy'}))
-        return await handlers['GET', '/vnccs/create'](req)
+    for route in ('/vnccs/create', '/vnccs/create_costume'):
+        assert ('GET', route) not in handlers
+        assert ('POST', route) in handlers
     trusted = {'Host': 'comfy.example', 'Referer': 'https://comfy.example/comfy/', 'Sec-Fetch-Site': 'same-origin'}
-    assert asyncio.run(legacy_get(trusted)).status == 200
-    assert json.loads(Path(utils.config_path('Legacy')).read_text())['character_info']['hair'] == 'black long hair'
-    assert asyncio.run(invoke({'name': 'Cloner'}, headers)).status == 200
-    assert json.loads(Path(utils.config_path('Cloner')).read_text())['character_info']['hair'] == 'black long hair'
+    for name, transport_headers in {
+        'DirectLocal': headers,
+        'Launcher': {'Host': '127.0.0.1:8188', 'X-VNCCS-CSRF': '1'},
+        'LAN': {'Host': '192.168.1.5:8188', 'Origin': 'http://192.168.1.5:8188'},
+        'WebProxy': trusted,
+        'RewrittenProxy': {'Host': 'comfy:8188', 'Origin': 'https://pod-8188.proxy.runpod.net',
+                           'Sec-Fetch-Site': 'same-origin', 'X-VNCCS-CSRF': '1'},
+    }.items():
+        assert asyncio.run(invoke({'name': name}, transport_headers)).status == 200
+        assert json.loads(Path(utils.config_path(name)).read_text())['character_info']['hair'] == 'black long hair'
     hostile = {**trusted, 'Origin': 'https://evil.example', 'Referer': 'https://evil.example/', 'Sec-Fetch-Site': 'same-site'}
-    assert asyncio.run(legacy_get(hostile)).status == 403
-    assert asyncio.run(legacy_get({**hostile, 'Sec-Fetch-Site': 'cross-site'})).status == 403
+    assert asyncio.run(invoke({'name': 'Blocked'}, hostile)).status == 403
+    assert not Path(utils.character_dir('Blocked')).exists()
 
 
 def test_disk_inputs_and_previews_are_isolated_for_identical_nodes(tmp_path):
@@ -545,76 +550,82 @@ def test_failed_config_save_preserves_original_file(monkeypatch, tmp_path, failu
 
 
 @pytest.fixture
-def tensor_cache(generator_module, monkeypatch, tmp_path):
-    import json
-    from pathlib import Path
+def image_cache(generator_module, monkeypatch, tmp_path):
+    import numpy as np
     generator = generator_module
-    class Tensor:
-        shape = (1, 2, 2, 3)
-        def __init__(self, value):
-            self.value = value
+
+    class Pixels(np.ndarray):
         def detach(self):
             return self
-        def cpu(self):
-            return self
+
+        cpu = float = detach
+
+        def clamp(self, low, high):
+            return np.clip(self, low, high)
+
+        def numpy(self):
+            return np.asarray(self)
+
+    def image(value):
+        return np.full((1, 2, 2, 3), value / 255, dtype=np.float32).view(Pixels)
+
     monkeypatch.setattr(generator, '_safe_cache_dir', lambda value: str(value) if value else '')
-    monkeypatch.setattr(generator.torch, 'is_tensor', lambda value: isinstance(value, Tensor))
-    monkeypatch.setattr(generator.torch, 'save', lambda value, path: Path(path).write_text(json.dumps(value.value)), raising=False)
-    monkeypatch.setattr(generator, '_safe_torch_load_tensor', lambda path: Tensor(json.loads(Path(path).read_text())))
-    return generator, Tensor, str(tmp_path)
+    monkeypatch.setattr(generator.torch, 'is_tensor', lambda value: isinstance(value, Pixels))
+    monkeypatch.setattr(generator.torch, 'from_numpy', lambda array: array.view(Pixels), raising=False)
+    return generator, image, str(tmp_path)
 
 
-@pytest.mark.parametrize('failure', ['tensor', 'metadata'])
-def test_failed_input_cache_transaction_never_mixes_old_tensor_with_new_metadata(tensor_cache, monkeypatch, failure):
+@pytest.mark.parametrize('failure', ['image', 'metadata'])
+def test_failed_input_cache_transaction_never_mixes_old_images_with_new_metadata(image_cache, monkeypatch, failure):
     from pathlib import Path
-    generator, Tensor, cache = tensor_cache
-    assert generator._save_run_inputs(cache, poses=Tensor('old-pose'), prompt='old-prompt')
+    generator, image, cache = image_cache
+    assert generator._save_run_inputs(cache, poses=image(40), prompt='old-prompt')
     original = (Path(cache) / '_stage_cache' / 'inputs.json').read_bytes()
-    if failure == 'tensor':
-        def failed_save(value, path):
+    if failure == 'image':
+        def failed_save(_image, path, **kwargs):
             Path(path).write_text('partial')
             raise OSError('Disk full')
-        monkeypatch.setattr(generator.torch, 'save', failed_save)
+        monkeypatch.setattr(generator.Image.Image, 'save', failed_save)
     else:
         def failed_dump(value, handle, **kwargs):
             handle.write('partial')
             raise OSError('Disk full')
         monkeypatch.setattr(generator.json, 'dump', failed_dump)
     with pytest.raises(OSError, match='Disk full'):
-        generator._save_run_inputs(cache, poses=Tensor('new-pose'), prompt='new-prompt')
+        generator._save_run_inputs(cache, poses=image(70), prompt='new-prompt')
     restored = generator._load_run_inputs(cache)
-    assert restored['poses'].value == 'old-pose'
+    assert (restored['poses'] == image(40)).all()
     assert restored['prompt'] == 'old-prompt'
     assert (Path(cache) / '_stage_cache' / 'inputs.json').read_bytes() == original
     assert len(list((Path(cache) / '_stage_cache').iterdir())) == 2
 
 
-def test_required_tensor_loss_invalidates_the_entire_input_bundle(tensor_cache):
+def test_required_png_loss_invalidates_the_entire_input_bundle(image_cache):
     from pathlib import Path
-    generator, Tensor, cache = tensor_cache
-    generator._save_run_inputs(cache, poses=Tensor('pose'), prompt='prompt')
-    next((Path(cache) / '_stage_cache').glob('*.pt')).unlink()
+    generator, image, cache = image_cache
+    generator._save_run_inputs(cache, poses=image(40), prompt='prompt')
+    next((Path(cache) / '_stage_cache').rglob('*.png')).unlink()
     assert generator._load_run_inputs(cache) == {}
 
 
 @pytest.mark.parametrize('node_type', ['VNCCS_CharacterGenerator', 'VNCCS_CharacterCloneGenerator', 'VNCCS_ClothesGenerator'])
-def test_cache_failure_drops_live_regeneration_context_and_records_error(tensor_cache, monkeypatch, node_type):
+def test_cache_failure_drops_live_regeneration_context_and_records_error(image_cache, monkeypatch, node_type):
     import json
     import utils
     from pathlib import Path
-    generator, Tensor, cache = tensor_cache
+    generator, image, cache = image_cache
     monkeypatch.setattr(utils, 'base_output_dir', lambda: str(Path(cache) / 'characters'))
     utils.save_costume_info('Alice', 'Coat', {})
     node = getattr(generator, node_type)()
     monkeypatch.setattr(generator, '_character_cache_dir_from_sheets_path', lambda *args: cache)
     monkeypatch.setattr(generator, '_rotate_preview_cache', lambda *args: None)
     monkeypatch.setattr(node, '_list_to_batch', lambda value: value)
-    def failed_save(*args):
+    def failed_save(*args, **kwargs):
         raise OSError('Disk full')
-    monkeypatch.setattr(generator.torch, 'save', failed_save)
+    monkeypatch.setattr(generator.Image.Image, 'save', failed_save)
     scope = 'cache-failure:5'
     with pytest.raises(OSError, match='Disk full'):
-        node.process(Tensor('pose'), Tensor('character'), object(), 'prompt', unique_id=['5'],
+        node.process(image(40), image(70), object(), 'prompt', unique_id=['5'],
                      widget_data=[json.dumps({'character_name': 'Alice', 'costume': 'Coat', 'ui': {'progress_scope': scope}})])
     assert generator._get_generator_context('5', scope) is None
     assert 'Disk full' in generator.progress_snapshot(scope)['error']['message']
@@ -661,10 +672,6 @@ def creative_modules(generator_module, monkeypatch, tmp_path):
     prefix = generator_module.__package__ + '.'
     from nodes import qwen_vl
     monkeypatch.setitem(sys.modules, prefix + 'qwen_vl', qwen_vl)
-    helpers = qwen_vl
-    for name, value in {'_ensure_qwen_vl_assets': lambda *a: None, '_find_qwen_vl_model': lambda *a: None,
-                        'QWEN_VL_MODEL_FILENAME': 'unused-model'}.items():
-        monkeypatch.setattr(helpers, name, value, raising=False)
     monkeypatch.setattr(utils, 'base_output_dir', lambda: str(tmp_path))
     modules = {}
     for name in ('character_creator_v2', 'clothes_designer'):
@@ -945,12 +952,12 @@ def test_running_executions_protect_disk_cache_until_they_complete(empty_context
     assert not context._execution_locks
 
 
-def test_regenerate_reads_retained_inputs_and_rejects_evicted_workflows(tensor_cache, monkeypatch):
+def test_regenerate_reads_retained_inputs_and_rejects_evicted_workflows(image_cache, monkeypatch):
     import sys
     from pathlib import Path
     from collections import OrderedDict
     from contextlib import nullcontext
-    generator, Tensor, root = tensor_cache
+    generator, image, root = image_cache
     context = sys.modules[generator.__package__ + '.generator_context']
     monkeypatch.setattr(context, '_LIVE_GENERATOR_CONTEXTS', OrderedDict())
     monkeypatch.setattr(context, '_execution_locks', {})
@@ -962,10 +969,10 @@ def test_regenerate_reads_retained_inputs_and_rejects_evicted_workflows(tensor_c
         cache = context.scoped_cache_dir(str(base), scope)
         with context.generator_execution_lock('5', scope):
             generator._remember_generator_context('5', 'VNCCS_CharacterGenerator', cache, SimpleNamespace(seed=1), scope)
-            generator._save_run_inputs(cache, poses=Tensor(index), prompt=f'prompt-{index}')
+            generator._save_run_inputs(cache, poses=image(index), prompt=f'prompt-{index}')
     seen = []
     def process(self, poses, character, pipe, prompt, **kwargs):
-        seen.append((poses.value, prompt))
+        seen.append((round(float(poses[0, 0, 0, 0]) * 255), prompt))
     monkeypatch.setattr(generator.VNCCS_CharacterGenerator, 'process', process)
     monkeypatch.setattr(generator.torch, 'inference_mode', nullcontext, raising=False)
     monkeypatch.setattr(generator.web, 'json_response', lambda data, status=200: SimpleNamespace(data=data, status=status), raising=False)

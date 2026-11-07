@@ -490,13 +490,6 @@ def _safe_sprite_set(value, fallback="Naked"):
         return fallback
 
 
-def _safe_torch_load_tensor(path):
-    try:
-        return torch.load(path, map_location="cpu", weights_only=True)
-    except TypeError:
-        return torch.load(path, map_location="cpu")
-
-
 def _costume_name_from_sheets_path(sheets_path, fallback="Naked"):
     if isinstance(sheets_path, list):
         sheets_path = sheets_path[0] if sheets_path else ""
@@ -586,37 +579,74 @@ def _rotate_preview_cache(cache_dir):
         log_event('warning', component='Generator', level='warning', message=f"Failed to rotate cache directory '{cache_dir}': {exc}", error=str(exc))
 
 
-def _cache_tensor_path(cache_dir, key):
+def _cached_image_dir(cache_dir, key):
     cache_dir = _safe_cache_dir(cache_dir)
     if not cache_dir:
         return ""
     safe_key = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(key))
     try:
-        return safe_join_under(cache_dir, "_stage_cache", f"{safe_key}.pt")
+        return safe_join_under(cache_dir, "_stage_cache", f"{safe_key}.images")
     except ValueError:
         return ""
 
 
-def _save_cached_tensor(cache_dir, key, tensor):
-    if not cache_dir or tensor is None or not torch.is_tensor(tensor):
+def _save_cached_images(cache_dir, key, images):
+    if not cache_dir or not torch.is_tensor(images):
         return False
-    path = _cache_tensor_path(cache_dir, key)
-    if not path:
-        raise OSError("No writable generator cache path")
-    with atomic_output_path(path) as temporary:
-        torch.save(tensor.detach().cpu(), temporary)
+    directory = _cached_image_dir(cache_dir, key)
+    if not directory:
+        raise OSError("No writable generator image cache path")
+    if images.ndim != 4 or not images.shape[0] or images.shape[-1] not in (1, 3, 4):
+        raise ValueError("Generator cache requires a non-empty grayscale, RGB, or RGBA image batch")
+    count = images.shape[0]
+
+    def remove_obsolete_frames(staged, _backup):
+        for name in os.listdir(staged):
+            if re.fullmatch(r"[0-9]{4,}\.png", name) and int(name[:-4]) > count:
+                os.unlink(os.path.join(staged, name))
+
+    with staged_image_batch(directory, version_existing=False, before_publish=remove_obsolete_frames) as staged:
+        for index, image in enumerate(images, start=1):
+            pixels = image.detach().cpu().float().clamp(0, 1).numpy()
+            if pixels.shape[-1] == 1:
+                frame = Image.fromarray((pixels[..., 0] * 65535).round().astype(np.uint16))
+            else:
+                frame = Image.fromarray((pixels * 255).astype(np.uint8))
+            frame.save(os.path.join(staged, f"{index:04d}.png"), format="PNG")
+        with open(os.path.join(staged, "count"), "w", encoding="ascii") as handle:
+            handle.write(str(count))
     return True
 
 
-def _load_cached_tensor(cache_dir, key):
-    path = _cache_tensor_path(cache_dir, key)
-    if not path or not os.path.exists(path):
+def _load_cached_images(cache_dir, key):
+    directory = _cached_image_dir(cache_dir, key)
+    if not directory:
         return None
     try:
-        value = _safe_torch_load_tensor(path)
-        return value if torch.is_tensor(value) else None
+        with character_storage_lock(directory):
+            if not os.path.isdir(directory):
+                return None
+            with open(safe_join_under(directory, "count"), encoding="ascii") as handle:
+                count = int(handle.read())
+            if not 0 < count < len(os.listdir(directory)):
+                raise ValueError("Invalid cached image count")
+            for index in range(count):
+                path = safe_join_under(directory, f"{index + 1:04d}.png")
+                with Image.open(path, formats=["PNG"]) as image:
+                    if image.mode in ("I", "I;16"):
+                        pixels = np.array(image, dtype=np.float32)[..., None] / 65535.0
+                    elif image.mode in ("RGB", "RGBA"):
+                        pixels = np.array(image, dtype=np.float32) / 255.0
+                    else:
+                        raise ValueError("Invalid cached image mode")
+                if index == 0:
+                    batch = np.empty((count, *pixels.shape), dtype=np.float32)
+                if pixels.shape != batch.shape[1:]:
+                    raise ValueError("Cached images have different dimensions or channels")
+                batch[index] = pixels
+        return torch.from_numpy(batch)
     except Exception as exc:
-        log_event('warning', component='Generator', level='warning', message=f"Failed to load cached tensor '{key}': {exc}", error=str(exc))
+        log_event('warning', component='Generator', level='warning', message=f"Failed to load cached images '{key}': {exc}", error=str(exc))
         return None
 
 
@@ -660,17 +690,19 @@ def _save_run_inputs(cache_dir, **items):
     try:
         meta = {"created_at": time.time(), "items": {}}
         for key, value in items.items():
-            tensor_list = isinstance(value, list) and value and all(torch.is_tensor(item) for item in value)
-            if torch.is_tensor(value) or tensor_list:
+            image_list = isinstance(value, list) and value and all(torch.is_tensor(item) for item in value)
+            if torch.is_tensor(value) or image_list:
                 descriptors = []
-                for index, tensor in enumerate(value if tensor_list else [value]):
-                    tensor_key = f"input_{key}_{revision}_{index}"
-                    path = _cache_tensor_path(cache_dir, tensor_key)
+                for index, image in enumerate(value if image_list else [value]):
+                    if image.ndim == 3:
+                        image = image.unsqueeze(0)
+                    image_key = f"input_{key}_{revision}_{index}"
+                    path = _cached_image_dir(cache_dir, image_key)
                     created.add(path)
-                    if not _save_cached_tensor(cache_dir, tensor_key, tensor):
+                    if not _save_cached_images(cache_dir, image_key, image):
                         raise OSError(f"Could not cache required input '{key}'")
-                    descriptors.append({"type": "tensor", "shape": list(tensor.shape), "tensor_key": tensor_key})
-                meta["items"][key] = {"type": "tensor_list", "items": descriptors} if tensor_list else descriptors[0]
+                    descriptors.append({"type": "image", "shape": list(image.shape), "image_key": image_key})
+                meta["items"][key] = {"type": "image_list", "items": descriptors} if image_list else descriptors[0]
             else:
                 meta["items"][key] = {"type": "json", "value": value}
         with atomic_output_path(safe_join_under(base, "inputs.json")) as temporary:
@@ -679,7 +711,7 @@ def _save_run_inputs(cache_dir, **items):
         committed = True
         return True
     finally:
-        # A failed transaction never publishes new metadata with old tensors.
+        # A failed transaction never publishes new metadata with old images.
         # Cleanup is optional; only files referenced by inputs.json are usable.
         try:
             names = os.listdir(base) if committed else []
@@ -687,11 +719,11 @@ def _save_run_inputs(cache_dir, **items):
             names = []
         obsolete = created if not committed else {
             os.path.join(base, name) for name in names
-            if name.startswith("input_") and name.endswith(".pt") and os.path.join(base, name) not in created
+            if re.fullmatch(r"input_.+_[0-9a-f]{32}_[0-9]+\.images", name) and os.path.join(base, name) not in created
         }
         for path in obsolete:
             try:
-                os.unlink(path)
+                shutil.rmtree(path)
             except OSError:
                 pass
 
@@ -709,16 +741,18 @@ def _load_run_inputs(cache_dir, keys=None):
         for key, item in (meta.get("items") or {}).items():
             if requested is not None and key not in requested:
                 continue
-            if item.get("type") in {"tensor", "tensor_list"}:
+            if item.get("type") in {"image", "image_list"}:
                 values = []
-                for descriptor in item["items"] if item["type"] == "tensor_list" else [item]:
-                    value = _load_cached_tensor(cache_dir, descriptor.get("tensor_key") or f"input_{key}")
-                    if value is None or list(value.shape) != descriptor.get("shape", list(value.shape)):
+                for descriptor in item["items"] if item["type"] == "image_list" else [item]:
+                    value = _load_cached_images(cache_dir, descriptor["image_key"])
+                    if value is None or list(value.shape) != descriptor["shape"]:
                         return {}
                     values.append(value)
-                result[key] = values if item["type"] == "tensor_list" else values[0]
+                result[key] = values if item["type"] == "image_list" else values[0]
             elif item.get("type") == "json":
                 result[key] = item.get("value")
+            else:
+                return {}
         return result
     except FileNotFoundError:
         return {}
@@ -1345,7 +1379,7 @@ class VNCCS_CharacterGenerator:
 
     def _load_cached_stage(self, cache_dir, stage, unique_id=None, message="Loaded cached stage", expected_count=None):
         cached = (_load_upscaled_images(cache_dir, stage, expected_count) if stage in UPSCALER_STAGES
-                  else _load_cached_tensor(cache_dir, stage))
+                  else _load_cached_images(cache_dir, stage))
         if cached is not None:
             total = cached.shape[0] if torch.is_tensor(cached) and cached.ndim == 4 else 0
             paths = (_upscaled_image_paths(cache_dir, stage, total)
@@ -1371,7 +1405,7 @@ class VNCCS_CharacterGenerator:
                    cache_dir=cache_dir, preview_paths=paths)
 
     def _save_stage(self, cache_dir, stage, images, normalized=False):
-        _save_cached_tensor(cache_dir, stage, images if normalized else self._list_to_batch(images))
+        _save_cached_images(cache_dir, stage, images if normalized else self._list_to_batch(images))
 
     def _extract_pipe(self, pipe):
         out = VNCCS_Pipe().process_pipe(pipe=pipe)
@@ -2901,7 +2935,7 @@ class VNCCS_CharacterGenerator:
                     preview_cache_dir=cache_dir,
                 )
                 if regenerate_index is not None:
-                    pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
+                    pose_images = self._replace_batch_item(_load_cached_images(cache_dir, "pose_generation"), regenerate_index, pose_images)
                 self._save_stage(cache_dir, "pose_generation", pose_images)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
@@ -2943,7 +2977,7 @@ class VNCCS_CharacterGenerator:
                 normalized=bg_disabled,
             )
             if regenerate_index is not None:
-                final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
+                final_images = self._replace_batch_item(_load_cached_images(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images, normalized=bg_disabled)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from, normalized=bg_disabled)
             character_root = _character_root_from_sheets_path(sheets_path, character_name)
@@ -3040,20 +3074,27 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
         unique_id = self._unwrap_scalar(unique_id)
         self._progress_background = None
         self._begin_progress(payload, unique_id)
+        workspace_job = None
         try:
             pipe, background = self._unwrap_scalar(pipe), self._unwrap_scalar(background)
             if not torch.is_tensor(background) or background.ndim != 4 or background.shape[0] != 1:
                 raise ValueError("Background Generator requires one source IMAGE, not an image batch")
             (background_id, image_id), cards = self._background_tasks(prompt, payload)
             self._progress_background = background_id
+            with backgrounds._JOBS_LOCK:
+                backgrounds.ensure_idle(background_id)
+                workspace_job = backgrounds._new_job("background_generator")
+                workspace_job.update(background_id=background_id, action="background", status="running", node_id=str(unique_id))
+                backgrounds._JOBS[workspace_job["job_id"]] = workspace_job
             document = backgrounds.load_background(background_id)
             if document.get("_recovery") or document.get("archived"):
                 raise ValueError("The selected background is read-only; its data is retained")
-            if not cards and not self._regenerate_from(payload):
+            if not self._regenerate_from(payload):
                 # Creator may have replaced the source after workflow serialization.
                 image_id = document["selected_image_id"]
             payload = {**payload, "background_source_image_id": image_id}
             backgrounds.image_path(background_id, image_id)
+            source_signature = backgrounds.background_storage.fingerprint(backgrounds.image_path(background_id, image_id))
             values = self._extract_pipe(pipe)
             if not (self._is_qi2_pipe(values) or self._is_klein_pipe(values) or self._is_h3_pipe(values)):
                 raise ValueError("Select a QI2, Klein9b or MiniMax H3 editing model in Control Center")
@@ -3061,6 +3102,9 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
             _remember_generator_context(unique_id, "VNCCS_BackgroundGenerator", cache_dir, pipe, self._progress_scope)
             order = ("source_upscaler", "background_generation", "upscaler")
             start, selected = self._regenerate_from(payload), self._regenerate_index(payload)
+            if start and _load_run_inputs(cache_dir).get("widget_payload", {}).get("background_source_signature") != source_signature:
+                raise ValueError("The background source changed; run Background Generator normally before regenerating")
+            payload["background_source_signature"] = source_signature
             self._should_regenerate_stage(order, start, order[0])
             if start or not cards:
                 fields = ("id", "name", "time", "weather", "additional_details")
@@ -3075,7 +3119,7 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
                 _rotate_preview_cache(cache_dir)
                 _save_run_inputs(cache_dir, background=background, prompt=prompt, widget_payload=payload)
             labels = ["Original", *(card["name"] for card in cards)]
-            source = None if self._should_regenerate_stage(order, start, order[0]) else _load_cached_tensor(cache_dir, order[0])
+            source = None if self._should_regenerate_stage(order, start, order[0]) else _load_cached_images(cache_dir, order[0])
             if source is None:
                 if start and start != order[0]:
                     raise ValueError("Source cache is unavailable. Run Background Generator normally first")
@@ -3093,7 +3137,7 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
                 for index, card in enumerate(cards, start=1):
                     cache_key = f"{stage}_{index:04d}"
                     rerun = regenerate and (selected is None or index == selected)
-                    image = None if rerun else _load_cached_tensor(cache_dir, cache_key)
+                    image = None if rerun else _load_cached_images(cache_dir, cache_key)
                     if image is None and not rerun:
                         raise ValueError("Variant cache is unavailable. Run Background Generator normally first")
                     if image is None:
@@ -3110,7 +3154,7 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
                         else:
                             image = self._run_source_upscaler(results[order[1]][index], settings["upscaler"], values["seed"],
                                                               stage=stage)
-                        _save_cached_tensor(cache_dir, cache_key, image)
+                        _save_cached_images(cache_dir, cache_key, image)
                     results[stage].append(image)
                     self._emit(unique_id, stage, "running", image, f"{card['name']} ready", index + 1, len(labels),
                                cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels)
@@ -3120,8 +3164,9 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
                 [self._tensor_item_to_pil(image[0]) for image in final],
                 {"upscaler": settings["upscaler"], "generation": settings["pose_generation"],
                  "sampler": self._sampler_settings(values, settings["pose_sampler"]),
-                 "model": values.get("model_entry") or {"kind": values["model_kind"]}}, document["revision"],
-                regenerate_indices=None if not start else ([selected] if selected is not None else list(range(0 if start == order[0] else 1, len(final)))))
+                 "model": values.get("model_entry") or {"kind": values["model_kind"]}}, None,
+                regenerate_indices=None if not start else ([selected] if selected is not None else list(range(0 if start == order[0] else 1, len(final)))),
+                expected_source_signature=source_signature)
             for index, (image, path) in enumerate(zip(final, paths)):
                 self._emit(unique_id, order[2], "done", image, "Background set saved", len(labels), len(labels),
                            cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels, preview_paths=[str(path)])
@@ -3129,6 +3174,10 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
         except Exception as exc:
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
+        finally:
+            if workspace_job is not None:
+                with backgrounds._JOBS_LOCK:
+                    backgrounds._JOBS.pop(workspace_job["job_id"], None)
 
 
 class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
@@ -3206,7 +3255,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
             )
             published_each = regenerate_index is None
             if regenerate_index is not None:
-                pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, pose_stage), regenerate_index, pose_images)
+                pose_images = self._replace_batch_item(_load_cached_images(cache_dir, pose_stage), regenerate_index, pose_images)
             self._save_stage(cache_dir, pose_stage, pose_images)
         pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
         # Incremental pose events already published the complete batch. Re-emitting the
@@ -3250,7 +3299,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
         bg_disabled = self._bg_remove_disabled(settings["bg_remove"])
         if not self._should_regenerate_stage(order, regenerate_from, bg_stage):
             final_images = (
-                _load_cached_tensor(cache_dir, bg_stage) if bg_disabled
+                _load_cached_images(cache_dir, bg_stage) if bg_disabled
                 else self._load_cached_stage(cache_dir, bg_stage, unique_id, f"Using cached {bg_stage}")
             )
         else:
@@ -3270,7 +3319,7 @@ class VNCCS_CharacterCloneGenerator(VNCCS_CharacterGenerator):
                 normalized=bg_disabled,
             )
             if regenerate_index is not None:
-                final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, bg_stage), regenerate_index, final_images)
+                final_images = self._replace_batch_item(_load_cached_images(cache_dir, bg_stage), regenerate_index, final_images)
             self._save_stage(cache_dir, bg_stage, final_images, normalized=bg_disabled)
             bg_done = "Chroma key skipped for" if bg_disabled else "Background removed from"
             if not bg_disabled:
@@ -3546,7 +3595,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                     align_image1=True,
                 )
                 if regenerate_index is not None:
-                    pose_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "pose_generation"), regenerate_index, pose_images)
+                    pose_images = self._replace_batch_item(_load_cached_images(cache_dir, "pose_generation"), regenerate_index, pose_images)
                 self._save_stage(cache_dir, "pose_generation", pose_images)
             pose_total = pose_images.shape[0] if torch.is_tensor(pose_images) and pose_images.ndim == 4 else 0
             self._emit(unique_id, "pose_generation", "done", pose_images, f"Generated {pose_total} clothed pose images", pose_total, pose_total, cache_dir=cache_dir, lora_info=pose_lora_info)
@@ -3588,7 +3637,7 @@ class VNCCS_ClothesGenerator(VNCCS_CharacterGenerator):
                 normalized=bg_disabled,
             )
             if regenerate_index is not None:
-                final_images = self._replace_batch_item(_load_cached_tensor(cache_dir, "bg_remove"), regenerate_index, final_images)
+                final_images = self._replace_batch_item(_load_cached_images(cache_dir, "bg_remove"), regenerate_index, final_images)
             self._save_stage(cache_dir, "bg_remove", final_images, normalized=bg_disabled)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, costume_name, version_existing=not regenerate_from, normalized=bg_disabled)
             saved_suffix = f"; saved {len(saved_paths)} sprites to {costume_name}" if saved_paths else ""
@@ -3783,7 +3832,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
         return f"{stage}__item_{int(item_index) + 1:04d}"
 
     def _load_emotion_cache_item(self, cache_dir, stage, item_index, target_hw=None, mask=False):
-        cached = _load_cached_tensor(cache_dir, self._emotion_cache_item_key(stage, item_index))
+        cached = _load_cached_images(cache_dir, self._emotion_cache_item_key(stage, item_index))
         if cached is None:
             return None
         cached = cached.float()
@@ -3793,12 +3842,12 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             stage=f"{stage} cached item",
         )
 
-    def _save_emotion_cache_item(self, cache_dir, stage, item_index, tensor):
-        if torch.is_tensor(tensor):
-            _save_cached_tensor(
+    def _save_emotion_cache_item(self, cache_dir, stage, item_index, image, mask=False):
+        if torch.is_tensor(image):
+            _save_cached_images(
                 cache_dir,
                 self._emotion_cache_item_key(stage, item_index),
-                tensor.detach().cpu().to(dtype=torch.float16),
+                image.unsqueeze(-1) if mask and image.ndim == 3 else image,
             )
 
     def _prune_emotion_cache(self, cache_dir, group_sizes):
@@ -3809,10 +3858,10 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
             directory = safe_join_under(cache_dir, "_stage_cache")
             with os.scandir(directory) as entries:
                 for entry in entries:
-                    match = re.fullmatch(r"(emotion_[0-9]{4,})(?:_detailer_mask)?__item_([0-9]{4,})\.pt", entry.name)
-                    if (match and entry.is_file(follow_symlinks=False)
+                    match = re.fullmatch(r"(emotion_[0-9]{4,})(?:_detailer_mask)?__item_([0-9]{4,})\.images", entry.name)
+                    if (match and entry.is_dir(follow_symlinks=False)
                             and int(match[2]) > group_sizes.get(match[1], 0)):
-                        os.unlink(entry.path)
+                        shutil.rmtree(entry.path)
         except FileNotFoundError:
             pass
         except (OSError, ValueError) as error:
@@ -4756,6 +4805,7 @@ class VNCCS_EmotionsGenerator(VNCCS_CharacterGenerator):
                                 detailer_mask_cache_key,
                                 group_position,
                                 resize_mask_batch(detailer_mask, emotion_target_hw),
+                                mask=True,
                             )
 
                         raw_preview = self._emotion_preview_tensor(raw_result)

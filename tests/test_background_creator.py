@@ -99,11 +99,11 @@ def test_empty_library_and_named_document_backup(library):
     document = storage.create_background("Evening Café", {"prompt": "Sunset"})
     assert len(document["background_id"]) == 32
     assert document["schema_version"] == 2 and document["revision"] == 1
-    assert not {"models", "model", "cgs", "model_settings"} & document.keys()
+    assert document["models"] == document["cgs"] == []
     assert sorted(item.name for item in document_path(document).parent.iterdir()) == ["Evening Café_config.json", "Evening Café_config.json.backup"]
     path = document_path(document)
     assert path.is_file()
-    assert json.loads(path.read_bytes()) == document
+    assert json.loads(path.read_bytes()) == storage.background_storage.pack(document)
     assert path.with_suffix(".json.backup").read_bytes() == path.read_bytes()
     assert storage.load_background(document["background_id"]) == document
     with pytest.raises(storage.BackgroundConflictError):
@@ -121,7 +121,7 @@ def test_delete_background_removes_the_complete_saved_directory(library):
         storage.load_background(document["background_id"])
 
 
-def test_editor_revisions_selection_and_previous_json_backup(library):
+def test_editor_revisions_selection_and_current_json_backup(library):
     document = with_image()
     path = document_path(document)
     previous = path.read_bytes()
@@ -131,12 +131,13 @@ def test_editor_revisions_selection_and_previous_json_backup(library):
     assert updated["revision"] == document["revision"] + 1
     assert updated["editor"] == {key: value for key, value in state.items() if key != "selected_image_id"}
     assert updated["selected_image_id"] == state["selected_image_id"]
-    assert path.with_suffix(".json.backup").read_bytes() == previous
+    assert path.with_suffix(".json.backup").read_bytes() == path.read_bytes()
+    assert path.read_bytes() != previous
     state["prompt"] = "Mutated caller object"
     assert storage.load_background(document["background_id"])["editor"]["prompt"] == "Changed"
 
 
-def test_legacy_image_is_preserved_when_creating_the_working_preview(library):
+def test_legacy_image_becomes_the_single_working_preview(library):
     document = with_image()
     document["images"][0].pop("preview_revision")
     document_path(document).write_text(json.dumps(document))
@@ -146,10 +147,10 @@ def test_legacy_image_is_preserved_when_creating_the_working_preview(library):
     original = first_path.read_bytes()
     updated = storage.add_image(document["background_id"], Image.new("RGBA", (20, 10), "blue"),
                                 {"source": "upload"}, document["revision"])
-    assert len(updated["images"]) == 2
-    assert updated["selected_image_id"] != first_id
+    assert len(updated["images"]) == 1
+    assert updated["selected_image_id"] == first_id
     retained = storage.image_path(document["background_id"], first_id)
-    assert retained.read_bytes() == original
+    assert retained.read_bytes() != original
     assert retained == first_path
     with Image.open(storage.image_path(document["background_id"], updated["selected_image_id"])) as image:
         assert image.mode == "RGB"
@@ -169,11 +170,11 @@ def test_repeated_preview_generation_replaces_one_image_and_refreshes_its_url(li
         url = storage.public_document(document)["images"][0]["url"]
         assert url != old_url and url.endswith(f"?v={document['images'][0]['preview_revision']}")
         old_url = url
-    backup = json.loads(document_path(document).with_suffix(".json.backup").read_bytes())
+    backup = storage.background_storage.unpack(json.loads(document_path(document).with_suffix(".json.backup").read_bytes()))
     referenced = {entry["file"] for item in (document, backup) for entry in item["images"]}
     directory = library / document["name"]
     assert {path.relative_to(directory).as_posix() for path in directory.rglob("*.png")} == referenced
-    assert len(referenced) == 2
+    assert referenced == {"source.png"}
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -209,15 +210,15 @@ storage.add_image(sys.argv[3], Image.new('RGB', (8, 8), 'blue'), {'cache_key': '
     assert child.returncode == 77, child.stderr
     saved = storage.load_background(document["background_id"])
     assert "_recovery" not in saved
-    if phase == "primary":
+    if phase == "backup":
         assert saved["images"][-1]["settings"] == {"cache_key": "blue"}
         with Image.open(storage.image_path(saved["background_id"], saved["selected_image_id"])) as image:
             assert image.getpixel((0, 0)) == (0, 0, 255)
     else:
         assert primary.read_bytes() == previous
-    if old_image:
+    if old_image and phase != "backup":
         assert old_image.read_bytes() == old_pixels
-    backup = json.loads(primary.with_suffix(".json.backup").read_bytes())
+    backup = storage.background_storage.unpack(json.loads(primary.with_suffix(".json.backup").read_bytes()))
     for item in (saved, backup):
         storage._validate(item, document["name"])
         for entry in item["images"]:
@@ -270,7 +271,7 @@ storage.publish_background_set(document['background_id'], document['selected_ima
                             document["background_id"], phase, mode], capture_output=True, text=True, timeout=30)
     assert child.returncode == 77, child.stderr
     saved = storage.load_background(document["background_id"])
-    if phase != "primary":
+    if phase != "backup":
         assert saved == document
         assert files(library) == before
     else:
@@ -278,7 +279,7 @@ storage.publish_background_set(document['background_id'], document['selected_ima
         group = saved["generated_sets"][-1]
         with Image.open(storage.background_set_image_path(saved["background_id"], group["set_id"], 1)) as image:
             assert image.getpixel((0, 0)) == (0, 0, 255)
-    backup = json.loads(document_path(saved).with_suffix(".json.backup").read_bytes())
+    backup = storage.background_storage.unpack(json.loads(document_path(saved).with_suffix(".json.backup").read_bytes()))
     for item in (saved, backup):
         storage._validate(item, saved["name"])
         for group in item.get("generated_sets", []):
@@ -306,34 +307,34 @@ def test_invalid_publication_recovery_preserves_every_file(library, damaged):
     assert files(library) == before
 
 
-def test_retired_sources_are_pruned_only_after_primary_and_backup_release_them(library):
+def test_source_replacement_uses_one_file_and_matching_current_backup(library):
     document = with_image()
     old_path = storage.image_path(document["background_id"], document["selected_image_id"])
-    old_pixels = old_path.read_bytes()
     updated = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "blue"), {})
-    assert old_path.read_bytes() == old_pixels
     current_path = storage.image_path(updated["background_id"], updated["selected_image_id"])
-    assert current_path != old_path
+    assert current_path == old_path
+    assert updated["selected_image_id"] == document["selected_image_id"]
+    with Image.open(current_path) as image:
+        assert image.getpixel((0, 0)) == (0, 0, 255)
     storage.save_background(updated["background_id"], {"description": "A saved edit"})
-    assert not old_path.exists()
     assert current_path.is_file()
+    primary = document_path(updated)
+    assert primary.with_suffix(".json.backup").read_bytes() == primary.read_bytes()
 
 
-def test_retired_source_cleanup_failure_does_not_roll_back_a_committed_image(library, monkeypatch):
+def test_source_replacement_preserves_unrelated_legacy_files(library):
     document = with_image()
-    retired = storage.image_path(document["background_id"], document["selected_image_id"])
-    document = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "blue"), {})
-    unlink = Path.unlink
-    def remove(path, *args, **kwargs):
-        if path == retired:
-            raise PermissionError("Retired source is locked")
-        return unlink(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "unlink", remove)
-    saved = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "green"), {"cache_key": "green"})
-    assert saved == storage.load_background(saved["background_id"])
-    with Image.open(storage.image_path(saved["background_id"], saved["selected_image_id"])) as image:
+    directory = document_path(document).parent
+    retained = directory / "Sources" / "V1.png"
+    retained.parent.mkdir()
+    Image.new("RGB", (8, 8), "yellow").save(retained)
+    original = retained.read_bytes()
+    for color in ("blue", "green"):
+        document = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), color), {"cache_key": color})
+        assert document == storage.load_background(document["background_id"])
+        assert retained.read_bytes() == original
+    with Image.open(storage.image_path(document["background_id"], document["selected_image_id"])) as image:
         assert image.getpixel((0, 0)) == (0, 128, 0)
-    assert retired.is_file()
 
 
 @pytest.mark.parametrize("existing", [False, True])
@@ -1119,7 +1120,7 @@ def test_http_save_preserves_legacy_selected_image_references(routes, workspace)
     first_id = document["selected_image_id"]
     document = storage.add_image(document["background_id"], Image.new("RGB", (128, 64), "green"),
                                  {"source": "upload"}, document["revision"])
-    assert document["selected_image_id"] != first_id
+    assert document["selected_image_id"] == first_id
     response = call(routes, "PATCH", "/backgrounds/{background_id}",
         Request({"revision": document["revision"], "editor": document["editor"], "selected_image_id": first_id},
                 info={"background_id": document["background_id"]}))
@@ -1320,9 +1321,9 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     updated = storage.load_background(document["background_id"])
     assert len(updated["images"]) == 1 and updated["selected_image_id"] == original_id
     assert updated["images"][0]["preview_revision"] > original_revision
-    assert storage.image_path(document["background_id"], original_id) != original_image
-    assert original_image.read_bytes() == original_pixels
-    backup = json.loads(document_path(updated).with_suffix(".json.backup").read_bytes())
+    assert storage.image_path(document["background_id"], original_id) == original_image
+    backup = storage.background_storage.unpack(json.loads(document_path(updated).with_suffix(".json.backup").read_bytes()))
+    assert backup["images"] == updated["images"]
     assert document_path(updated).parent / backup["images"][0]["file"] == original_image
 
 
@@ -1688,22 +1689,22 @@ def test_deleted_variants_stay_deleted_in_json_and_prompt_without_removing_image
             assert after[path] == contents
 
 
-def test_replacing_preview_preserves_sources_of_already_saved_background_sets(library):
+def test_replacing_preview_invalidates_current_sets_and_preserves_output_files(library):
     document = with_image("Saved set source")
     identity = document["selected_image_id"]
-    original = storage.image_path(document["background_id"], identity).read_bytes()
     cards = generation.normalize_editor(document["editor"])["variants"]
     storage.publish_background_set(document["background_id"], identity, cards,
         [Image.new("RGB", (16, 8)) for _ in range(len(cards) + 1)], {}, document["revision"])
     document = storage.load_background(document["background_id"])
-    sets = copy.deepcopy(document["generated_sets"])
-    document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), "blue"), {}, document["revision"])
-    current = document["selected_image_id"]
-    assert current != identity
-    document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), "green"), {}, document["revision"])
-    assert len(document["images"]) == 2 and document["selected_image_id"] == current
-    assert document["generated_sets"] == sets
-    assert storage.image_path(document["background_id"], identity).read_bytes() == original
+    output_files = files(document_path(document).parent / "Images")
+    retired_set = document["generated_sets"][0]["set_id"]
+    for color in ("blue", "green"):
+        document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), color), {}, document["revision"])
+        assert len(document["images"]) == 1 and document["selected_image_id"] == identity
+        assert document["generated_sets"] == []
+        assert files(document_path(document).parent / "Images") == output_files
+    with pytest.raises(FileNotFoundError):
+        storage.background_set_image_path(document["background_id"], retired_set, 0)
 
 
 def test_background_sets_publish_current_images_version_previous_images_and_same_json(library, monkeypatch):
@@ -1736,11 +1737,12 @@ def test_background_sets_publish_current_images_version_previous_images_and_same
     more = storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, settings, saved["revision"])
     assert more == paths and all(path.is_file() for path in paths)
     updated = storage.load_background(document["background_id"])
-    assert [group["version"] for group in updated["generated_sets"]] == ["V1", ""]
+    assert [group["version"] for group in updated["generated_sets"]] == [""]
     for index, path in enumerate(paths):
         archived = path.parent / "V1" / path.name
         assert archived.read_bytes() == before_failure[path.relative_to(library).as_posix()]
-        assert storage.background_set_image_path(document["background_id"], saved["generated_sets"][0]["set_id"], index) == archived
+        with pytest.raises(FileNotFoundError):
+            storage.background_set_image_path(document["background_id"], saved["generated_sets"][0]["set_id"], index)
 
 
 def test_publishing_background_sets_does_not_expire_the_creators_comfy_cache(library, monkeypatch):
@@ -1898,7 +1900,7 @@ def test_saved_sets_publish_only_after_commit_and_serve_fresh_owned_images(route
     assert call(routes, "GET", "/backgrounds/{background_id}/sets/{set_id}/{index}", Request(info=info)).status == 404
     group = saved["generated_sets"][-1]
     group["images"][1]["file"] = "source.png"
-    monkeypatch.setattr(storage, "_locate", lambda _id: (storage.root() / saved["name"], saved, storage._json_bytes(saved)))
+    monkeypatch.setattr(storage, "_locate", lambda _id: (storage.root() / saved["name"], saved, document_path(saved).read_bytes()))
     with pytest.raises(ValueError, match="outside its saved set"):
         storage.background_set_image_path(document["background_id"], group["set_id"], 1)
     group["images"][1]["file"] = "Images/01_Morning.png"
@@ -2196,7 +2198,7 @@ def test_background_regeneration_changes_only_selected_file_and_keeps_archives(l
     saved = storage.load_background(document["background_id"])
     current = storage.public_document(saved)["generated_sets"][-1]
     assert result == paths and current["set_id"] == old["set_id"]
-    assert [group["version"] for group in saved["generated_sets"]] == ["V1", ""]
+    assert [group["version"] for group in saved["generated_sets"]] == [""]
     assert not (paths[0].parent / "V2").exists()
     for index, path in enumerate(paths):
         relative = path.relative_to(library).as_posix()
@@ -2218,7 +2220,7 @@ def test_every_full_background_run_uses_next_readable_version(library):
     for _ in range(3):
         storage.publish_background_set(document["background_id"], document["selected_image_id"], cards, images, {}, document["revision"])
         document = storage.load_background(document["background_id"])
-    assert [group["version"] for group in document["generated_sets"]] == ["V1", "V2", ""]
+    assert [group["version"] for group in document["generated_sets"]] == [""]
     directory = library / document["name"]
     assert {path.name for path in (directory / "Images").iterdir()} == {"V1", "V2", "00_Original.png", "01_Morning.png", "02_Evening.png", "03_Night.png"}
     assert not (directory / "background").exists()
@@ -2227,7 +2229,7 @@ def test_every_full_background_run_uses_next_readable_version(library):
     assert storage.image_path(document["background_id"], document["selected_image_id"]).name == "source.png"
 
 
-def test_backup_references_the_retained_source_and_archived_output_files(library):
+def test_backup_tracks_current_source_and_outputs_without_archived_records(library):
     document = with_image("Recoverable outputs")
     cards = generation.normalize_editor({})["variants"]
     images = [Image.new("RGB", (16, 8), "red") for _ in range(4)]
@@ -2236,16 +2238,18 @@ def test_backup_references_the_retained_source_and_archived_output_files(library
                                        images, {}, document["revision"])
         document = storage.load_background(document["background_id"])
     path = document_path(document)
-    backup = json.loads(path.with_suffix(".json.backup").read_bytes())
-    assert backup["generated_sets"][-1]["version"] == "V1"
-    assert all("/V1/" in entry["file"] for entry in backup["generated_sets"][-1]["images"])
+    backup = storage.background_storage.unpack(json.loads(path.with_suffix(".json.backup").read_bytes()))
+    assert [group["version"] for group in backup["generated_sets"]] == [""]
+    assert all("/V1/" not in entry["file"] for entry in backup["generated_sets"][0]["images"])
+    assert path.with_suffix(".json.backup").read_bytes() == path.read_bytes()
     old_id = document["selected_image_id"]
     document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), "blue"), {}, document["revision"])
-    backup = json.loads(path.with_suffix(".json.backup").read_bytes())
+    backup = storage.background_storage.unpack(json.loads(path.with_suffix(".json.backup").read_bytes()))
+    assert backup["generated_sets"] == []
     retained = next(entry for entry in backup["images"] if entry["image_id"] == old_id)
     assert retained["file"] == "source.png"
     with Image.open(path.parent / retained["file"]) as image:
-        assert image.getpixel((0, 0)) == (255, 0, 0)
+        assert image.getpixel((0, 0)) == (0, 0, 255)
 
 
 def test_additional_authored_fields_survive_http_save_and_reopening(routes, library):

@@ -465,7 +465,7 @@ export function showModelDownloadDialog(node, show, readFiles, download, start =
 }
 
 // Each widget owns its dialog styling; model preparation and polling are shared.
-export function createQwenVLModelLoader(node, showModal, createProgressModal, vision = true) {
+export function createQwenVLModelLoader(node, createProgressModal) {
     let disposed = false;
     const cleanups = new Set();
     registerCleanup(node, () => {
@@ -483,35 +483,18 @@ export function createQwenVLModelLoader(node, showModal, createProgressModal, vi
         };
         cleanups.add(cancel);
         try {
-            const suffix = vision ? "" : "?vision=false";
-            const response = await api.fetchApi(`/vnccs/qwen_vl_model_status${suffix}`);
+            const response = await api.fetchApi("/vnccs/qwen_vl_model_status");
             if (disposed) return false;
-            if (!response.ok) throw new Error("Failed to check Qwen3.5 model files.");
+            if (!response.ok) throw new Error("Failed to check wizard model files.");
             const modelStatus = await response.json();
             if (disposed) return false;
             if (modelStatus.ready) return true;
-            const approved = await new Promise(resolve => {
-                resolvePending = resolve;
-                const dialog = showModal("Qwen3.5 Model Required", () => {
-                    const text = document.createElement("div");
-                    text.textContent = `${modelStatus.message || modelStatus.model_name} Download the required files from Hugging Face now?`;
-                    return text;
-                }, [
-                    { text: "Cancel", action: () => { resolve(false); return false; } },
-                    { text: "DOWNLOAD & INSTALL", class: "primary", action: () => { resolve(true); return false; } },
-                ]);
-                overlay = dialog.overlay;
-                dialog.modal.addEventListener("keydown", event => {
-                    if (event.key === "Escape") resolve(false);
-                }, true);
-            });
-            if (!approved || disposed) return false;
-            const start = await api.fetchApi(`/vnccs/qwen_vl_download_model${suffix}`, { method: "POST" });
+            const start = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
             if (disposed) return false;
             if (!start.ok && start.status !== 409) {
                 let error;
                 try { error = await start.json(); } catch (_) { error = { error: await start.text() }; }
-                throw new Error(error?.error || error?.message || "Failed to start QwenVL download.");
+                throw new Error(error?.error || error?.message || "Failed to start the wizard model download.");
             }
             const progressModal = createProgressModal();
             overlay = progressModal.overlay;
@@ -538,7 +521,7 @@ export function createQwenVLModelLoader(node, showModal, createProgressModal, vi
                             resolve(true);
                             return;
                         }
-                        if (data.status === "error") throw new Error(data.error || "QwenVL download failed.");
+                        if (data.status === "error") throw new Error(data.error || "Wizard model download failed.");
                         timer = setTimeout(poll, 700);
                     } catch (error) {
                         overlay.remove();

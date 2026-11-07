@@ -68,7 +68,7 @@ def test_provider_discovery_uses_registered_mount_instead_of_checkout_name(monke
         bridge.provider()
 
 
-def test_background_edits_and_regeneration_preserve_model_sources_and_cgs(library):
+def test_background_regeneration_invalidates_model_and_preserves_independent_cg(library):
     document = owner.create_background("Room", {"description": "Original background"})
     document = owner.add_image(document["background_id"], Image.new("RGB", (64, 32), "red"), {})
     image_id = document["selected_image_id"]
@@ -84,10 +84,12 @@ def test_background_edits_and_regeneration_preserve_model_sources_and_cgs(librar
     cg_id = document["cgs"][0]["cg_id"]
     document = owner.save_background(document["background_id"], {"description": "New authored settings"})
     document = owner.add_image(document["background_id"], Image.new("RGB", (64, 32), "green"), {})
-    assert document["selected_image_id"] != image_id
-    assert owner.image_path(document["background_id"], image_id).read_bytes() == old_source
+    assert document["selected_image_id"] == image_id
+    assert owner.image_path(document["background_id"], image_id).read_bytes() != old_source
     assert storage.cg_image_path(document["background_id"], cg_id).is_file()
-    assert storage.load_background(document["background_id"])["models"][0]["model_id"] == model_id
+    loaded = storage.load_background(document["background_id"])
+    assert loaded["models"] == []
+    assert loaded["cgs"][0]["model_id"] == model_id
 
 
 def test_cg_reads_recover_the_background_publication_journal(library, monkeypatch):

@@ -49,6 +49,58 @@ async function geometry() {
             sidebarWidth: sidebar.width, titleRemoved: !w.managerPanel.querySelector(".vnccs-ps-manager-title") };
     });
 }
+async function verifyProportionAnalysis(index) {
+    const position = () => page.evaluate(() => {
+        const w = poseNode.studioWidget;
+        return [w.container, w.managerSidebar, ...w.managerGrid.children].map(element => {
+            const { x, y, width, height } = element.getBoundingClientRect();
+            return [x, y, width, height];
+        });
+    });
+    const emit = (active, token) => page.evaluate(async ({ active, token }) => {
+        const { api } = await import("/scripts/api.js");
+        api.dispatchEvent(new CustomEvent("vnccs_pose_image_progress", {
+            detail: { node_id: String(poseNode.id), sync_token: token, active },
+        }));
+    }, { active, token });
+    const grid = page.locator(".vnccs-ps-manager-grid:visible"), token = `proportion-test-${index}`;
+    const before = await position();
+    await emit(true, token);
+    try {
+        assert.equal(await grid.getAttribute("aria-busy"), "true");
+        await emit(false, "obsolete-proportion-test");
+        assert.equal(await grid.getAttribute("aria-busy"), "true");
+        const during = await grid.evaluate(grid => {
+            const w = poseNode.studioWidget;
+            const cards = [...grid.querySelectorAll(".vnccs-ps-pose-preview")];
+            const modal = w.container.querySelector(".vnccs-ps-modal-overlay:has(.vnccs-ps-import-progress) .vnccs-ps-modal");
+            for (const animation of grid.getAnimations({ subtree: true })) {
+                if (animation.animationName !== "vnccs-pm-proportion-scan") continue;
+                animation.pause(); animation.currentTime = 720;
+            }
+            const box = modal.getBoundingClientRect(), sidebar = w.managerSidebar.getBoundingClientRect();
+            return { names: cards.map(card => getComputedStyle(card, "::after").animationName),
+                progressFits: box.right <= sidebar.right + 1 && box.bottom <= sidebar.bottom + 1
+                    && box.top >= w.managerSidebar.lastElementChild.getBoundingClientRect().bottom
+                    && modal.scrollWidth <= modal.clientWidth + 1 };
+        });
+        assert.deepEqual(during.names, Array(12).fill("vnccs-pm-proportion-scan"));
+        assert.ok(during.progressFits, "Analysis progress stays beside the cards");
+        assert.deepEqual(await position(), before);
+        await shot(`proportion-analysis-${index}`);
+        if (index === 1) {
+            await page.emulateMedia({ reducedMotion: "reduce" });
+            assert.ok(await grid.evaluate(grid => [...grid.querySelectorAll(".vnccs-ps-pose-preview")].every(card => {
+                const scan = getComputedStyle(card, "::after");
+                return scan.animationName === "none" && Number(scan.opacity) > 0;
+            })));
+            await page.emulateMedia({ reducedMotion: "no-preference" });
+        }
+    } finally { await emit(false, token); }
+    assert.equal(await grid.getAttribute("aria-busy"), null);
+    assert.equal(await page.locator(".vnccs-ps-modal-overlay:has(.vnccs-ps-import-progress)").count(), 0);
+    assert.deepEqual(await position(), before);
+}
 async function cardGeometry(card, count) {
     const result = await card.evaluate(card => {
         const preview = card.querySelector(".vnccs-set-preview"), rect = preview.getBoundingClientRect();
@@ -125,6 +177,9 @@ async function compactPoseGrid() {
 }
 try {
     await page.route("**/vnccs/pose_library/repositories/auto_refresh", route => route.fulfill({ json: { tasks: [] } }));
+    await page.route("**/vnccs/sam3d/import_status/proportion-test-*", route => route.fulfill({
+        json: { message: "Analyzing body proportions…", progress: 46 },
+    }));
     await page.goto(url);
     await page.waitForFunction(() => window.LiteGraph?.registered_node_types?.VNCCS_PoseManager && window.app?.vueAppReady
         && (app.graph?._nodes?.length || document.body.innerText.includes("Node graph")), null, { timeout: 45000 });
@@ -275,6 +330,7 @@ try {
         assert.ok(report.titleRemoved);
         reports.push(report);
         await shot(`node-${i}`);
+        await verifyProportionAnalysis(i);
         const counts = i === 0 ? [1, 2, 3, 5, 7, 10, 11, 13, 16, 24] : [10, 13];
         for (const count of counts) {
             await page.evaluate(({ count, poses }) => {
@@ -299,6 +355,10 @@ try {
     await verifyPoseSetSettings(page, output);
     await page.evaluate(saved => mount(saved, .85), saved);
     await ready(12);
+    await page.evaluate(() => {
+        const widget = poseNode.studioWidget;
+        for (const index of [0, 5, 11]) widget.setPosePrompt(index, "Selected card pose");
+    });
     await verifyPoseCardLibrary(page, output);
     const selectedPoses = await page.evaluate(() => poseNode.serialize());
     await page.evaluate(saved => mount(saved, .85), selectedPoses);
@@ -447,7 +507,7 @@ try {
     await remove.click();
     await confirmation.getByRole("button", { name: "Delete", exact: true }).click();
     await card.waitFor({ state: "detached" });
-    assert.deepEqual(deletionRequests, [{ id: item.id }, { id: item.id }]);
+    assert.deepEqual(deletionRequests, [{ source: "local", id: item.id }, { source: "local", id: item.id }]);
     assert.deepEqual(deletionLoads, [], "Delete never triggers a set load");
     page.off("request", recordDeletion);
     assert.equal(await page.evaluate(() => JSON.stringify(poseNode.studioWidget.poses)), beforeDelete,
@@ -530,8 +590,11 @@ try {
     assert.deepEqual(errors, []);
     const version = (await readFile(new URL("../../web/vnccs_pose_manager.js", import.meta.url), "utf8"))
         .match(/pose_manager_ui\.mjs\?v=([^"\s]+)/)[1];
-    assert.equal(moduleURLs.size, 5);
-    assert.ok([...moduleURLs].every(url => new URL(url).searchParams.get("v") === version));
+    // Character Generator also loads the shared grid with its own cache key.
+    const managerModules = [...moduleURLs].map(url => new URL(url)).filter(url =>
+        !url.pathname.endsWith("/preview_grid_layout.mjs") || url.searchParams.get("v") === version);
+    assert.equal(managerModules.length, 5);
+    assert.ok(managerModules.every(url => url.searchParams.get("v") === version));
     await writeFile(join(output, "results.json"), JSON.stringify({ reports, libraryBounds, cardReports, pixels, executedImages: 12 }, null, 2));
     console.log("PASS: native single canvas, zero slider encodes, 12-pose sets, node-local library, save/load, real execution, damaged state preservation.");
 } catch (error) {

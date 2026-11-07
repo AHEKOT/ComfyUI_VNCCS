@@ -36,15 +36,12 @@ def _source_image_path(image):
     parts.append(safe_relative_path(data.get("name"), "image_name"))
     return safe_join_under(directory, *parts)
 
-try:
-    from .qwen_vl import get_qwen_vl_chat_handler, parse_wizard_json, normalize_character_wizard_traits
-    from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME, _start_qwen_vl_download, qwen_vl_download_status
-except Exception:
-    from nodes.qwen_vl import get_qwen_vl_chat_handler, parse_wizard_json, normalize_character_wizard_traits
-    from nodes.qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME, _start_qwen_vl_download, qwen_vl_download_status
+from .qwen_vl import (
+    QWEN_VL_MODEL_FILENAME, _local_wizard_model, _start_qwen_vl_download,
+    generate_wizard_text, normalize_character_wizard_traits, parse_wizard_json,
+    qwen_vl_download_status,
+)
 
-# VNCCS Installer (REMOVED: User requested Qwen2)
-# Reverted to manual update instructions if needed.
 
 def pil2tensor(image):
     return torch.from_numpy(np.array(image).astype(np.float32) / 255.0).unsqueeze(0)
@@ -211,97 +208,36 @@ if server:
     @server.PromptServer.instance.routes.post("/vnccs/cloner_download_model")
     @privileged_route
     async def cloner_download_model(request):
-        response = _start_qwen_vl_download(require_mmproj=True)
+        response = _start_qwen_vl_download()
         if response.status == 409:
             return web.Response(status=409, text="Download already in progress")
+        if response.status >= 400:
+            return response
         return web.json_response({"status": "started"})
 
     @logged_operation("Cloner", "wizard")
     def _cloner_auto_generate_response(post):
         try:
-            import llama_cpp
-            import llama_cpp.llama_chat_format
-        except ImportError as error:
-            return web.json_response({"error": "DEPENDENCY_MISSING", "message": str(error), "model_name": "llama-cpp-python"}, status=500)
-        
-        lib_ver = getattr(llama_cpp, "__version__", "unknown")
-        
-        try:
-            try:
-                HandlerCls = get_qwen_vl_chat_handler(llama_cpp)
-            except RuntimeError as exc:
-                return web.json_response({
-                    "error": "DEPENDENCY_MISSING",
-                    "message": f"{exc} Lib Version: {lib_ver}",
-                    "model_name": f"llama-cpp-python {lib_ver}",
-                }, status=500)
-            
-            # Proceed with HandlerCls...
-
-            
             image_data = post.get("image_name")
-            
             if not image_data:
                 return web.Response(status=400, text="No image provided")
-            
-            # ... (Image Resolution Code same as before) ...
-            # 1. Locate Image
-            if isinstance(image_data, dict):
-                img_name = image_data.get("name")
-                subfolder = image_data.get("subfolder", "")
-                img_type = image_data.get("type", "input")
-            else:
-                img_name = image_data
-                subfolder = ""
-                img_type = "input"
-
-            if img_type == "input": base_dir = folder_paths.get_input_directory()
-            elif img_type == "temp": base_dir = folder_paths.get_temp_directory()
-            else: base_dir = folder_paths.get_output_directory()
-            
             try:
-                image_parts = []
-                if subfolder:
-                    image_parts.append(safe_relative_path(subfolder, "subfolder"))
-                image_parts.append(safe_relative_path(img_name, "image_name"))
-                image_path = safe_join_under(base_dir, *image_parts)
-            except ValueError as e:
-                return web.Response(status=400, text=str(e))
-
-            if not image_path or not os.path.exists(image_path):
-                return web.Response(status=404, text=f"Image {img_name} not found")
+                image_path = _source_image_path(image_data)
+            except ValueError as exc:
+                return web.Response(status=400, text=str(exc))
+            if not os.path.isfile(image_path):
+                return web.Response(status=404, text="Source image not found")
 
             try:
-                model_path, mmproj_path = _ensure_qwen_vl_assets(allow_download=False)
-            except Exception as e:
+                model = _local_wizard_model()
+            except (FileNotFoundError, ValueError) as exc:
                 return web.json_response({
-                    "error": "MODEL_MISSING" if isinstance(e, FileNotFoundError) else "MODEL_INVALID",
-                    "message": str(e),
-                    "model_name": QWEN_VL_MODEL_FILENAME
+                    "error": "MODEL_MISSING" if isinstance(exc, FileNotFoundError) else "MODEL_INVALID",
+                    "message": str(exc),
+                    "model_name": QWEN_VL_MODEL_FILENAME,
                 }, status=500)
-            
-             # 4. Initialize Llama
-            try:
-                log_event("wizard_handler", level="debug", handler=HandlerCls.__name__)
 
-                log_stage("loading_wizard_model", component="Cloner", model=os.path.basename(model_path))
-                log_event("wizard_projector", level="debug", model=os.path.basename(mmproj_path))
-
-                chat_handler = HandlerCls(clip_model_path=mmproj_path, enable_thinking=False, verbose=False)
-                
-                llm = llama_cpp.Llama(
-                    model_path=model_path,
-                    chat_handler=chat_handler,
-                    n_ctx=4096, # Safe default for VL
-                    n_gpu_layers=-1, # Auto
-                    verbose=False
-                )
-                # ... Inference code ...
-                if not llm:
-                    raise RuntimeError("Failed to initialize Llama model.")
-
-                # 5. Run Inference
-                prompt_instruction = """Analyze the character in the image and strictly output valid JSON.
+            prompt_instruction = """Analyze the character in the image and strictly output valid JSON.
 Extract visible physical character traits using concise comma-separated tags.
 Describe colors and physical traits in your own words; do not choose from presets or a closed list.
 
@@ -330,87 +266,53 @@ Rules:
 - Do not include clothing, footwear, wearable accessories, held objects, pose, actions, facial expressions, camera framing, or background in character trait fields.
 
 Return all keys in a raw JSON object. Do not output the word 'tag' as a value."""
+            system_prompt = (
+                "You extract visible physical character identity, with no outfit or pose descriptions. "
+                "Output valid JSON only."
+            )
+            with Image.open(image_path) as source:
+                image = _composite_pil_alpha(ImageOps.exif_transpose(source))
+                image.thumbnail((512, 512), Image.Resampling.LANCZOS)
+                reference = pil2tensor(image)
+            log_stage("describing_reference", component="Cloner")
+            log_prompts("Character reference description", system=system_prompt, user=prompt_instruction)
+            content = generate_wizard_text(
+                model, system_prompt, prompt_instruction, max_length=1024, temperature=0.2, image=reference,
+            )
+            log_stage("parsing_description", component="Cloner")
+            log_event("wizard_output", component="Cloner", level="debug", output=content)
+            if not content or not content.strip():
+                log_event("warning", component="Cloner", level="warning", message='Error: Empty response from LLM')
+                return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard returned an empty response. Please try again."}, status=502)
 
-                # Helper for Base64 with Resizing (Max 512px)
-                import base64
-                import io
-                from PIL import Image
+            data = parse_wizard_json(content)
 
-                with Image.open(image_path) as img:
-                    img = _composite_pil_alpha(ImageOps.exif_transpose(img))
-                    img.thumbnail((512, 512), Image.Resampling.LANCZOS)
+            # Only structured character traits may reach the character fields.
+            if isinstance(data, dict):
+                trait_keys = {"sex", "age", "race", "skin_color", "hair", "eyes", "face", "body", "additional_details", "aesthetics", "nsfw"}
+                data = {key: value for key, value in data.items() if key in trait_keys}
+                normalized = normalize_character_wizard_traits(data)
+                for key in data.keys() & normalized.keys():
+                    data[key] = normalized[key]
+                if "aesthetics" in data:
+                    value = data["aesthetics"]
+                    data["aesthetics"] = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value or "")
+                if "nsfw" in data:
+                    data["nsfw"] = data["nsfw"] is True or str(data["nsfw"]).lower() == "true"
+                # Ensure keys exist? Frontend handles missing keys.
+                log_event("traits_ready", component="Cloner", fields=len(data))
+                return web.json_response(data)
+            else:
+                log_event("warning", component="Cloner", level="warning", message='Failed to extract character JSON.')
+                return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard did not return a character JSON object. Please try again."}, status=502)
 
-                    # Save to buffer
-                    buffered = io.BytesIO()
-                    img.save(buffered, format="JPEG", quality=85)
-                    b64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-                messages = [
-                    {"role": "system", "content": "You extract visible physical character identity, with no outfit or pose descriptions. Output valid JSON only."},
-                    {"role": "user", "content": [
-                        {"type": "text", "text": prompt_instruction},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}} 
-                    ]}
-                ]
-                
-                log_stage("describing_reference", component="Cloner")
-                log_prompts("Character reference description", system=messages[0]["content"], user=prompt_instruction)
-                response = llm.create_chat_completion(
-                    messages=messages,
-                    max_tokens=1024,
-                    temperature=0.2
-                )
-                log_stage("parsing_description", component="Cloner")
-                
-                content = response["choices"][0]["message"]["content"]
-                log_event("wizard_output", component="Cloner", level="debug", output=content)
-                
-                # 6. Robust JSON Extraction
-                if not content or not content.strip():
-                     log_event("warning", component="Cloner", level="warning", message='Error: Empty response from LLM')
-                     return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard returned an empty response. Please try again."}, status=502)
-
-                data = parse_wizard_json(content)
-
-                # Only structured character traits may reach the character fields.
-                if isinstance(data, dict):
-                    trait_keys = {"sex", "age", "race", "skin_color", "hair", "eyes", "face", "body", "additional_details", "aesthetics", "nsfw"}
-                    data = {key: value for key, value in data.items() if key in trait_keys}
-                    normalized = normalize_character_wizard_traits(data)
-                    for key in data.keys() & normalized.keys():
-                        data[key] = normalized[key]
-                    if "aesthetics" in data:
-                        value = data["aesthetics"]
-                        data["aesthetics"] = ", ".join(str(item) for item in value) if isinstance(value, list) else str(value or "")
-                    if "nsfw" in data:
-                        data["nsfw"] = data["nsfw"] is True or str(data["nsfw"]).lower() == "true"
-                    # Ensure keys exist? Frontend handles missing keys.
-                    log_event("traits_ready", component="Cloner", fields=len(data))
-                    return web.json_response(data)
-                else:
-                    log_event("warning", component="Cloner", level="warning", message='Failed to extract character JSON.')
-                    return web.json_response({"error": "INVALID_RESPONSE", "message": "The image wizard did not return a character JSON object. Please try again."}, status=502)
-
-            except Exception as e:
-                log_event('exception', component='Cloner', level='debug', exc_info=True, message='Operation failed', error=str(e))
-                
-                # Detect specific Qwen/Llama errors
-                err_msg = str(e)
-                err_code = "INFERENCE_ERROR"
-
-                # Only trigger "Missing Model" dialog if it's actually about files
-                if "mmproj" in err_msg.lower() or "not found" in err_msg.lower() or "no file" in err_msg.lower():
-                     err_code = "MMPROJ_MISSING"
-                
-                return web.json_response({
-                    "error": err_code, 
-                    "message": f"Engine Error: {err_msg}",
-                    "model_name": "Qwen2VL (Check Console)"
-                }, status=500)
-
-        except Exception as e:
-            log_event('exception', component='Cloner', level='debug', exc_info=True, message='Operation failed', error=str(e))
-            return web.Response(status=500, text=str(e))
+        except Exception as exc:
+            log_event("exception", component="Cloner", level="debug", exc_info=True, message="Operation failed", error=str(exc))
+            return web.json_response({
+                "error": "INFERENCE_ERROR",
+                "message": f"Engine Error: {exc}",
+                "model_name": QWEN_VL_MODEL_FILENAME,
+            }, status=500)
 
 
     @server.PromptServer.instance.routes.post("/vnccs/cloner_auto_generate")

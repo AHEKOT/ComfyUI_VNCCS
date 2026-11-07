@@ -26,6 +26,7 @@ from PIL import Image, ImageOps
 from .runtime_cleanup import inference_lock, cleanup_runtime
 from ..operation_logger import log_event
 from ..utils import staged_image_batch
+from . import background_storage
 
 
 MAX_JSON_BYTES = 4 * 1024 * 1024
@@ -134,6 +135,7 @@ def _dimensions(width, height):
 
 
 def _validate(document, directory_name):
+    document = background_storage.unpack(document)
     if not isinstance(document, dict) or type(document.get("schema_version")) is not int or document["schema_version"] != 2:
         raise ValueError("Unsupported Background Creator document version")
     _id(document.get("background_id"))
@@ -190,6 +192,8 @@ def _validate(document, directory_name):
 
 def _read_document(directory):
     try:
+        background_storage.recover(directory, _atomic)
+        background_storage.recover_assets(directory, _atomic)
         _recover_set_publication(directory)
     except (OSError, ValueError, TypeError, KeyError) as error:
         raise BackgroundStorageError("Cannot recover background publication; original files are preserved") from error
@@ -197,12 +201,16 @@ def _read_document(directory):
     path = _contained(directory, filename)
     try:
         document, payload = _read_json(path)
-        return _validate(document, directory.name), payload
+        allow_unsigned = isinstance(document, dict) and document.get("schema_version") == 2
+        document = _validate(document, directory.name)
+        return background_storage.hydrate(directory, background_storage.current(document), allow_unsigned=allow_unsigned), payload
     except (OSError, ValueError, TypeError, KeyError, RecursionError) as primary_error:
         try:
             backup = _contained(directory, filename + ".backup")
             document, payload = _read_json(backup)
-            _validate(document, directory.name)
+            allow_unsigned = isinstance(document, dict) and document.get("schema_version") == 2
+            document = _validate(document, directory.name)
+            document = background_storage.hydrate(directory, background_storage.current(document), allow_unsigned=allow_unsigned)
         except (OSError, ValueError, TypeError, KeyError, RecursionError) as backup_error:
             raise BackgroundStorageError(f"Cannot restore background '{directory.name}'; original files are preserved") from backup_error
         document["_recovery"] = {"source": filename + ".backup", "error": str(primary_error)}
@@ -252,30 +260,13 @@ def _editable(background_id, expected_revision):
     return directory, document, payload
 
 
-def _commit(directory, document, previous):
+def _commit(directory, document, previous, *, files=None):
     document["revision"] += 1
     _validate(document, directory.name)
-    encoded = _json_bytes(document)
-    backup = _contained(directory, f"{directory.name}_config.json.backup")
-    old_backup = backup.read_bytes() if backup.exists() else None
-    _atomic(backup, previous)
-    try:
-        _atomic(_contained(directory, f"{directory.name}_config.json"), encoded)
-    except BaseException:
-        if old_backup is None:
-            backup.unlink(missing_ok=True)
-        else:
-            _atomic(backup, old_backup)
-        raise
-    if old_backup is not None:
-        try:
-            retired = _validate(json.loads(old_backup), directory.name)
-            retained = {image["file"] for item in (document, json.loads(previous)) for image in item["images"]}
-            for image in retired["images"]:
-                if image["file"] not in retained:
-                    _contained(directory, image["file"]).unlink(missing_ok=True)
-        except (OSError, ValueError, TypeError, KeyError, RecursionError) as error:
-            log_event("warning", component="Background Creator", message="Background saved; could not clean retired source files", error=str(error))
+    current = background_storage.current(document)
+    document.clear()
+    document.update(current)
+    background_storage.publish(directory, document, _atomic, files)
     return document
 
 
@@ -302,12 +293,10 @@ def create_background(name, initial_state=None):
         document = {
             "schema_version": 2, "background_id": uuid.uuid4().hex, "name": name,
             "revision": 1, "archived": False, "editor": editor, "images": [],
-            "selected_image_id": "",
+            "selected_image_id": "", "generated_sets": [], "models": [], "cgs": [],
         }
-        encoded = _json_bytes(document)
         directory.mkdir(parents=True, exist_ok=False)
-        _atomic(_contained(directory, f"{name}_config.json.backup"), encoded)
-        _atomic(_contained(directory, f"{name}_config.json"), encoded)
+        background_storage.publish(directory, document, _atomic)
         return document
 
 
@@ -359,40 +348,15 @@ def add_image(background_id, image, settings, expected_revision=None):
     payload = _image_bytes(image)
     with _LOCK:
         directory, document, previous = _editable(background_id, expected_revision)
-        selected = next((item for item in document["images"] if item["image_id"] == document["selected_image_id"]), None)
-        current = document["images"][-1] if document["images"] else None
-        sources = {item["source_image_id"] for item in document.get("generated_sets", [])}
-        sources.update(item["source_image_id"] for item in document.get("models", []))
-        replace = selected is current and current is not None and "preview_revision" in current and current["image_id"] not in sources
-        if not replace and len(document["images"]) >= MAX_IMAGES:
-            raise ValueError("Background image limit reached")
-        if current:
-            source = _contained(directory, current["file"])
-            if (not source.is_file() and not replace) or source.exists() and source.stat().st_size > MAX_IMAGE_BYTES:
-                raise BackgroundStorageError("Background source is missing or too large; existing data is retained")
-        target = _contained(directory, "source.png")
-        if current or target.exists():
-            number = 1
-            while _contained(directory, "Sources", f"V{number}.png").exists():
-                number += 1
-            target = _contained(directory, "Sources", f"V{number}.png")
-        try:
-            # Publish a new file before switching JSON; a process crash cannot replace old pixels.
-            _atomic(target, payload)
-            image_id = current["image_id"] if replace else uuid.uuid4().hex
-            entry = {"image_id": image_id, "file": target.relative_to(directory).as_posix(), "width": image.width, "height": image.height,
-                     "settings": settings, "preview_revision": document["revision"] + 1}
-            if replace:
-                current.update(entry)
-            else:
-                document["images"].append(entry)
-            document["selected_image_id"] = image_id
-            return _commit(directory, document, previous)
-        except BaseException:
-            target.unlink(missing_ok=True)
-            if target.parent != directory and target.parent.exists() and not any(target.parent.iterdir()):
-                target.parent.rmdir()
-            raise
+        current = next((item for item in document["images"] if item["image_id"] == document["selected_image_id"]), None)
+        image_id = current["image_id"] if current else uuid.uuid4().hex
+        entry = {"image_id": image_id, "file": "source.png", "width": image.width, "height": image.height,
+                 "settings": settings, "preview_revision": document["revision"] + 1}
+        document["images"] = [entry]
+        document["selected_image_id"] = image_id
+        document["generated_sets"] = []
+        document["models"] = []
+        return _commit(directory, document, previous, files={"source.png": payload})
 
 
 def image_path(background_id, image_id):
@@ -464,7 +428,7 @@ def _recover_set_publication(directory):
     shutil.rmtree(transaction)
 
 
-def publish_background_set(background_id, source_image_id, cards, images, settings, expected_revision, *, regenerate_indices=None):
+def publish_background_set(background_id, source_image_id, cards, images, settings, expected_revision, *, regenerate_indices=None, expected_source_signature=None):
     """Publish current images with the same V* archives and staged writes as sprites."""
     cards = normalize_variants(cards)
     if len(images) != len(cards) + 1:
@@ -477,7 +441,15 @@ def publish_background_set(background_id, source_image_id, cards, images, settin
         directory, document, previous = _editable(background_id, expected_revision)
         if source_image_id not in {image["image_id"] for image in document["images"]}:
             raise ValueError("Background set source image does not exist")
-        saved_backup = json.loads(previous)
+        if expected_source_signature is not None:
+            source = background_storage.source_path(directory, document, source_image_id)
+            if background_storage.fingerprint(source) != expected_source_signature:
+                raise BackgroundConflictError("Background source changed while generating variants; the result was not published")
+            keys = ("id", "name", "time", "weather", "additional_details")
+            current_cards = normalize_editor(document["editor"])["variants"]
+            if [[card[key] for key in keys] for card in cards] != [[card[key] for key in keys] for card in current_cards]:
+                raise BackgroundConflictError("Background variant settings changed while generating; the result was not published")
+        saved_backup = background_storage.unpack(json.loads(previous))
         sets = document.setdefault("generated_sets", [])
         current = next((group for group in sets if group["version"] == ""), None)
         target = _contained(directory, "Images")
@@ -491,22 +463,9 @@ def publish_background_set(background_id, source_image_id, cards, images, settin
                 raise ValueError("Run Background Generator normally before regenerating changed backgrounds")
             item = current
         else:
-            if current:
-                version = 1
-                while _contained(target, f"V{version}").exists():
-                    version += 1
-                current["version"] = f"V{version}"
-                for entry in current["images"]:
-                    old = _contained(directory, entry["file"])
-                    if old.parent != target or not old.is_file():
-                        raise BackgroundStorageError("A current background image is missing; existing data is retained")
-                    entry["file"] = f"Images/V{version}/{old.name}"
-                for group in saved_backup.get("generated_sets", []):
-                    if group["set_id"] == current["set_id"]:
-                        group.update(copy.deepcopy(current))
             item = {"set_id": uuid.uuid4().hex, "version": "", "source_image_id": source_image_id,
                     "variants": cards, "settings": settings, "images": []}
-            sets.append(item)
+            document["generated_sets"] = [item]
         indices = set(range(len(images)) if regenerate_indices is None else regenerate_indices)
         def prepare_publication(stage, rollback):
             transaction = _contained(directory, ".vnccs-background-publication")
@@ -520,7 +479,7 @@ def publish_background_set(background_id, source_image_id, cards, images, settin
             _atomic(_contained(transaction, "transaction.json"), _json_bytes({
                 "stage": Path(stage).name, "rollback": Path(rollback).name if rollback else None,
                 "before": hashlib.sha256(previous).hexdigest(),
-                "after": hashlib.sha256(_json_bytes(published)).hexdigest(), "had_backup": backup.exists(),
+                "after": hashlib.sha256(_json_bytes(background_storage.pack(published))).hexdigest(), "had_backup": backup.exists(),
             }))
 
         try:
@@ -1482,7 +1441,7 @@ def _run_background(state, draw_id):
             raise BackgroundStorageError("The selected background is read-only; its data is preserved")
         editor = _resolve_editor_seed(normalize_editor(state.get("editor", document["editor"])), state.get("_vnccs_seed_resolved") is True)
         requested_image = state.get("selected_image_id", "")
-        selected = requested_image or document["selected_image_id"]
+        selected = document["selected_image_id"]
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         if selected and image is None:
             raise ValueError("Selected image does not belong to this background")
@@ -1559,7 +1518,7 @@ class VNCCS_BackgroundCreator:
         editor = normalize_editor(state.get("editor", document["editor"]))
         if editor["generation"]["seed_mode"] == "randomize" and state.get("_vnccs_seed_resolved") is not True:
             return float("nan")
-        selected = state.get("selected_image_id") or document["selected_image_id"]
+        selected = document["selected_image_id"]
         image = next((item for item in document["images"] if item["image_id"] == selected), None)
         path = _path(document["name"], image["file"]) if image else None
         key = None if image and image["settings"].get("source") == "upload" else _background_cache_key(editor)
@@ -1576,7 +1535,8 @@ API_BASE = "/vnccs/background-creator"
 MAX_REQUEST_BYTES = 34 * 1024 * 1024
 _WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vnccs-background")
 _JOBS = {}
-_JOBS_LOCK = threading.RLock()
+_JOBS_LOCK = background_storage.JOBS_LOCK
+background_storage.register_jobs("background", lambda: _JOBS)
 
 
 def public_document(document):
@@ -1593,9 +1553,10 @@ def public_document(document):
 
 
 def ensure_idle(background_id):
-    with _JOBS_LOCK:
-        if any(job.get("background_id") == background_id and job["status"] in {"queued", "running"} for job in _JOBS.values()):
-            raise BackgroundConflictError("This background is busy. Wait for the job or stop it first.")
+    try:
+        background_storage.ensure_idle(background_id)
+    except RuntimeError as error:
+        raise BackgroundConflictError(str(error)) from error
 
 
 def start_job(background_id, payload, raw_image=None):

@@ -90,6 +90,8 @@ def test_bg_output_reuses_normalized_batch_and_saved_previews(tmp_path, monkeypa
         expected_stages = {stage: expected.clone() for stage in bg_stages}
         if regenerate_index is not None:
             payload.update(regenerate_from=bg_stages[-1], regenerate_index=regenerate_index)
+            for stage in bg_stages:
+                expected_stages[stage] = (expected_stages[stage] * 255).to(torch.uint8).float() / 255
             up_stage = bg_stages[-1].replace("bg_remove", "upscaler")
             with Image.open(next(root.rglob(f"{up_stage}_{regenerate_index + 1:02d}.png"))) as image:
                 restored = torch.from_numpy(np.array(image, dtype=np.float32) / 255.0)
@@ -111,8 +113,9 @@ def test_bg_output_reuses_normalized_batch_and_saved_previews(tmp_path, monkeypa
         for stage in bg_stages:
             final = next(event for event in reversed(events) if event["stage"] == stage and event["status"] == "done")
             assert len(final["images"]) == images.shape[0]
-            cached = torch.load(next(root.rglob(f"{stage}.pt")), weights_only=True)
-            assert torch.equal(cached, expected_stages[stage])
+            cache = next(root.rglob(f"{stage}.images")).parent.parent
+            cached = cg._load_cached_images(str(cache), stage)
+            assert torch.equal(cached, (expected_stages[stage] * 255).to(torch.uint8).float() / 255)
             if bypass:
                 assert all("images" not in event for event in events
                            if event["stage"] == stage and event["status"] == "running")

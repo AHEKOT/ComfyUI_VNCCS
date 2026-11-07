@@ -2,6 +2,7 @@
 
 import copy
 import json
+import shutil
 import sys
 import threading
 import types
@@ -44,11 +45,9 @@ def scene(monkeypatch, tmp_path):
     monkeypatch.setattr(sys.modules["nodes"], "NODE_CLASS_MAPPINGS", {}, raising=False)
     document = {"schema_version": 2, "background_id": "a" * 32, "name": "Quiet room", "revision": 7,
                 "archived": False, "editor": {"description": "Keep this scene", "new_generator_option": {"x": 3}},
-                "images": [{"image_id": "b" * 32, "file": "Sources/V1.png", "width": 64, "height": 32,
-                            "settings": {"generator": "main", "seed": 3}, "preview_revision": 4},
-                           {"image_id": "c" * 32, "file": "source.png", "width": 64, "height": 32,
-                            "settings": {"generator": "main", "seed": 4}, "preview_revision": 1}],
-                "selected_image_id": "c" * 32, "models": [], "cgs": [],
+                "images": [{"image_id": "b" * 32, "file": "source.png", "width": 64, "height": 32,
+                            "settings": {"generator": "main", "seed": 3}, "preview_revision": 4}],
+                "selected_image_id": "b" * 32, "models": [], "cgs": [],
                 "generator_settings": {"model": "qi2", "sampling": {"steps": 25}, "future": [1, 2]},
                 "generated_sets": [],
                 "future_owner_data": {"revision": "unrelated", "values": ["keep", "all"]}}
@@ -80,6 +79,26 @@ def add_model(document, tmp_path, image_id=None):
                                 source, manifest, {"seed": 4}, document["revision"])
 
 
+def test_cg_character_snapshot_survives_disk_reload_and_rejects_invalid_pose(scene, tmp_path):
+    document = add_model(scene, tmp_path)
+    character = {"id": "f" * 32, "position": [1, 2, -3], "scale": .2,
+                 "mesh": {"age": 32, "gender": 0, "weight": .7}, "light": {"intensity": 2, "color": "#ffddee"},
+                 "source": {"character": "Maya", "costume": "Casual", "sprite": "sprite_pose_1.png", "emotion": "Happy"},
+                 "pose": {"bones": {"hand_l": [0, 25, 0]}, "bonePositions": {}, "modelRotation": [0, 45, 0]}}
+    raw = Image.new("RGB", (64, 32), "red")
+    document = storage.commit_cg(scene["background_id"], "Character", raw, raw, CAMERA, {},
+                                 document["models"][0]["model_id"], None, characters=[character])
+    assert storage.load_background(scene["background_id"])["cgs"][-1]["characters"] == [character]
+    character["pose"]["bones"]["hand_l"][1] = 99
+    assert document["cgs"][-1]["characters"][0]["pose"]["bones"]["hand_l"][1] == 25
+    before = files(storage.root())
+    character["position"][0] = float("nan")
+    with pytest.raises(ValueError, match="character transform"):
+        storage.commit_cg(scene["background_id"], "Invalid", raw, raw, CAMERA, {},
+                          document["models"][0]["model_id"], None, characters=[character])
+    assert files(storage.root()) == before
+
+
 def test_no_background_generation_or_document_authoring_api(scene):
     for name in ("create_background", "add_image", "archive_background", "save_background", "save_editor"):
         assert not hasattr(storage, name)
@@ -88,7 +107,6 @@ def test_no_background_generation_or_document_authoring_api(scene):
 
 
 def test_save_only_cg_owned_settings_and_preserve_all_main_fields(scene):
-    previous = path_for(scene).read_bytes()
     originals = {image["image_id"]: storage.image_path(scene["background_id"], image["image_id"]).read_bytes()
                  for image in scene["images"]}
     model_settings = {"seed": 14, "gaussians": 262144}
@@ -96,7 +114,7 @@ def test_save_only_cg_owned_settings_and_preserve_all_main_fields(scene):
     updated = storage._save_settings(scene["background_id"], model_settings, cg_settings, scene["revision"])
     assert updated == {**scene, "revision": scene["revision"] + 1,
                        "model_settings": model_settings, "cg_settings": cg_settings}
-    assert path_for(scene).with_suffix(".json.backup").read_bytes() == previous
+    assert path_for(scene).with_suffix(".json.backup").read_bytes() == path_for(scene).read_bytes()
     model_settings["seed"] = 999
     cg_settings["camera"]["position"][0] = 999
     assert storage.load_background(scene["background_id"])["model_settings"]["seed"] == 14
@@ -122,11 +140,11 @@ def test_cg_deletion_preserves_other_data_assets_and_saved_workflow_references(s
         document = storage.commit_cg(scene["background_id"], name, raw, raw, CAMERA, {},
                                      document["models"][0]["model_id"], document["revision"])
     target = document["cgs"][0]
-    before = files(storage.root()); previous = path_for(document).read_bytes()
+    before = files(storage.root())
     updated = storage._archive_cg(scene["background_id"], target["cg_id"], document["revision"])
     assert updated == {**document, "revision": document["revision"] + 1,
                        "cgs": [{**target, "archived": True}, document["cgs"][1]]}
-    assert path_for(updated).with_suffix(".json.backup").read_bytes() == previous
+    assert path_for(updated).with_suffix(".json.backup").read_bytes() == path_for(updated).read_bytes()
     for path, data in before.items():
         if not path.endswith((".json", ".json.backup")):
             assert (storage.root() / path).read_bytes() == data
@@ -165,7 +183,8 @@ def test_preview_revision_remains_metadata_and_does_not_change_image_path(scene)
     assert storage.load_background(scene["background_id"])["images"][0]["preview_revision"] == 4
 
 
-def test_models_and_cgs_keep_source_links_and_previous_variants(scene, tmp_path):
+def test_model_regeneration_replaces_only_its_variant_and_preserves_cgs(source_variants, tmp_path):
+    scene, (morning, _night) = source_variants
     original_fields = copy.deepcopy(scene)
     document = add_model(scene, tmp_path)
     first_model = document["models"][-1]
@@ -176,25 +195,31 @@ def test_models_and_cgs_keep_source_links_and_previous_variants(scene, tmp_path)
                                  {"seed": 3}, first_model["model_id"], document["revision"])
     first_cg = document["cgs"][-1]
     assert (first_cg["width"], first_cg["height"]) == finished.size
-    with Image.open(storage.cg_image_path(document["background_id"], first_cg["cg_id"], "raw")) as capture:
-        assert capture.size == raw.size
+    with pytest.raises(FileNotFoundError):
+        storage.cg_image_path(document["background_id"], first_cg["cg_id"], "raw")
     cg_bytes = storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes()
-    document = add_model(document, tmp_path, scene["images"][1]["image_id"])
+    variant_source, variant_manifest = factory_source(tmp_path)
+    document = storage.commit_model(scene["background_id"], scene["selected_image_id"], variant_source, variant_manifest, {}, document["revision"], morning)
     second_model = document["models"][-1]
-    document = add_model(document, tmp_path, scene["images"][0]["image_id"])
+    source, manifest = factory_source(tmp_path)
+    (source / "objects" / ("d" * 32) / "model.ply").write_bytes(b"regenerated model")
+    document = storage.commit_model(scene["background_id"], scene["images"][0]["image_id"], source, manifest, {}, document["revision"])
     rebuilt_model = document["models"][-1]
-    assert len(document["models"]) == 3
+    assert len(document["models"]) == 2
     assert [(model["model_id"], model["source_image_id"]) for model in document["models"]] == [
-        (first_model["model_id"], scene["images"][0]["image_id"]),
-        (second_model["model_id"], scene["images"][1]["image_id"]),
+        (second_model["model_id"], scene["selected_image_id"]),
         (rebuilt_model["model_id"], scene["images"][0]["image_id"])]
     assert first_cg["source_image_id"] == first_model["source_image_id"]
     assert document["cgs"][0] == first_cg
-    assert first_model_path.read_bytes() == first_bytes
+    assert first_model_path.read_bytes() == b"regenerated model"
+    assert storage.model_asset_path(document["background_id"], second_model["model_id"], "d" * 32, "ply").read_bytes() == first_bytes
+    assert rebuilt_model["file"] == first_model["file"]
+    assert len(list((path_for(document).parent / "model").iterdir())) == 2
     assert storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes() == cg_bytes
-    assert storage.model_scene(document["background_id"], first_model["model_id"])["source_image_id"] == first_model["source_image_id"]
+    with pytest.raises(FileNotFoundError):
+        storage.model_scene(document["background_id"], first_model["model_id"])
     cg_root = storage.root() / scene["name"] / "CG" / "Window"
-    assert set(path.name for path in cg_root.iterdir()) == {"raw.png", "image.png"}
+    assert set(path.name for path in cg_root.iterdir()) == {"image.png", "Window_config.json"}
     assert cg_root / "image.png" == storage.cg_image_path(document["background_id"], first_cg["cg_id"])
     for key in ("editor", "images", "selected_image_id", "generated_sets", "generator_settings", "future_owner_data"):
         assert document[key] == original_fields[key]
@@ -382,11 +407,12 @@ def test_current_main_documents_without_cg_arrays_are_read_without_rewriting(sce
     scene.pop("cgs")
     write_document(scene)
     before = files(storage.root())
-    assert storage.load_background(scene["background_id"]) == scene
-    assert storage.list_backgrounds() == [scene]
+    expected = {**scene, "models": [], "cgs": []}
+    assert storage.load_background(scene["background_id"]) == expected
+    assert storage.list_backgrounds() == [expected]
     assert files(storage.root()) == before
     document = add_model(scene, tmp_path)
-    assert len(document["models"]) == 1 and "cgs" not in document
+    assert len(document["models"]) == 1 and document["cgs"] == []
     for key in ("editor", "images", "generated_sets", "generator_settings", "future_owner_data"):
         assert document[key] == scene[key]
     raw = Image.new("RGB", (64, 32))
@@ -439,13 +465,14 @@ def test_morning_night_models_and_cgs_keep_exact_variant_references(source_varia
         (references[0]["set_id"], 1), (references[1]["set_id"], 2)]
     for key in ("editor", "images", "generated_sets", "generator_settings", "future_owner_data"):
         assert document[key] == original_metadata[key]
-    # Saved models/CG remain usable if the owner later removes its generated set.
+    # Ready CGs retain provenance when their variant is no longer current.
     document["generated_sets"] = []
     document["revision"] += 1
     write_document(document)
-    assert storage.load_background(scene["background_id"])["models"] == document["models"]
+    assert storage.load_background(scene["background_id"])["models"] == []
     for model, cg in zip(document["models"], document["cgs"]):
-        assert storage.model_scene(scene["background_id"], model["model_id"])["source_variant"] == model["source_variant"]
+        with pytest.raises(FileNotFoundError):
+            storage.model_scene(scene["background_id"], model["model_id"])
         assert storage.cg_image_path(scene["background_id"], cg["cg_id"]).is_file()
 
 
@@ -467,7 +494,7 @@ def test_invalid_variant_references_do_not_write(source_variants, invalid):
 def test_variant_source_ownership_and_file_containment_are_checked(source_variants):
     scene, (morning, _night) = source_variants
     with pytest.raises(ValueError, match="another background source"):
-        storage.image_path(scene["background_id"], scene["images"][1]["image_id"], morning)
+        storage.image_path(scene["background_id"], "f" * 32, morning)
     scene["generated_sets"][-1]["images"][1]["file"] = "../outside.png"
     write_document(scene)
     before = files(storage.root())
@@ -513,15 +540,21 @@ def current_scene(scene):
     return types.SimpleNamespace(document=document, directory=directory, path=path, publish=publish)
 
 
-def test_latest_sources_current_variants_and_archives_resolve_without_rewriting(current_scene):
+def test_only_current_variants_resolve_while_archived_files_are_preserved(current_scene):
     current = current_scene
     before = files(storage.root().parent)
-    assert storage.load_background(current.document["background_id"]) == current.document
-    assert storage.list_backgrounds() == [current.document]
+    expected = storage.background_storage.current(current.document)
+    assert storage.load_background(current.document["background_id"]) == expected
+    assert storage.list_backgrounds() == [expected]
     for image in current.document["images"]:
         assert storage.image_path(current.document["background_id"], image["image_id"]) == current.directory / image["file"]
     for group, expected in zip(current.document["generated_sets"], ((255, 165, 0), (255, 255, 0))):
         variant = {"set_id": group["set_id"], "index": 1, "variant_id": "morning", "name": "Morning"}
+        if group["version"]:
+            with pytest.raises(ValueError, match="another background source"):
+                storage.image_path(current.document["background_id"], current.document["selected_image_id"], variant)
+            assert (current.directory / group["images"][1]["file"]).is_file()
+            continue
         path = storage.image_path(current.document["background_id"], current.document["selected_image_id"], variant)
         assert path == current.directory / group["images"][1]["file"]
         with Image.open(path) as image:
@@ -537,10 +570,10 @@ def test_models_cgs_and_config_use_the_current_background_layout(current_scene, 
     raw = Image.new("RGB", (64, 32))
     document = storage.commit_cg(document["background_id"], "Window", raw, raw, CAMERA, {}, model["model_id"], document["revision"])
     assert storage.cg_image_path(document["background_id"], document["cgs"][0]["cg_id"]).is_relative_to(current.directory / "CG")
-    assert json.loads(current.path.read_bytes()) == document
+    assert json.loads(current.path.read_bytes()) == storage.background_storage.pack(document)
     assert not (current.directory / f"{document['name']}.json").exists()
     for key in ("images", "editor", "generated_sets", "generator_settings", "future_owner_data"):
-        assert document[key] == current.document[key]
+        assert document[key] == storage.background_storage.current(current.document)[key]
 
 
 @pytest.mark.parametrize("recoverable", [True, False])
@@ -603,10 +636,12 @@ def legacy_assets(document, tmp_path):
         old, new = f"objects/Object {index}", f"objects/{item['object_id']}"
         (legacy_model / old).rename(legacy_model / new)
         item["files"] = {key: relative.replace(old + "/", new + "/", 1) for key, relative in item["files"].items()}
+    manifest.pop("source_signature", None)
     manifest_path.write_text(json.dumps(manifest))
     (legacy_model / "user-note.txt").write_text("Preserve unknown files")
     cg_path = directory / Path(cg.pop("file")).parent
-    cg.pop("raw_file")
+    (cg_path / f"{cg_path.name}_config.json").unlink()
+    raw.save(cg_path / "raw.png")
     legacy_cg = cg_path / cg["cg_id"]
     legacy_cg.mkdir()
     for name in ("raw.png", "image.png"):
@@ -616,123 +651,81 @@ def legacy_assets(document, tmp_path):
     return document
 
 
-def test_new_assets_have_readable_immutable_paths_with_collision_suffixes(scene, tmp_path):
+def test_models_reuse_readable_paths_and_cgs_keep_collision_suffixes(scene, tmp_path):
     document = add_model(scene, tmp_path)
     first = document["models"][0]
     first_path = storage.model_asset_path(document["background_id"], first["model_id"], "d" * 32, "ply")
-    assert first["file"] == "model/Original 1/scene.json"
-    assert first_path.relative_to(path_for(document).parent).as_posix() == "model/Original 1/objects/Object 1/ply.ply"
+    assert first["file"] == "model/Original/scene.json"
+    assert first_path.relative_to(path_for(document).parent).as_posix() == "model/Original/objects/Object 1/ply.ply"
     document = add_model(document, tmp_path)
-    assert document["models"][1]["file"] == "model/Original 1 (2)/scene.json"
+    assert len(document["models"]) == 1
+    assert document["models"][0]["file"] == "model/Original/scene.json"
+    first = document["models"][0]
     raw = Image.new("RGB", (64, 32))
     for name, expected in (("View 1", "View 1"), ("view 1", "view 1 (2)"), ("View 1", "View 1 (3)")):
         document = storage.commit_cg(document["background_id"], name, raw, raw, CAMERA, {}, first["model_id"], None)
         assert document["cgs"][-1]["file"] == f"CG/{expected}/image.png"
-        assert document["cgs"][-1]["raw_file"] == f"CG/{expected}/raw.png"
+        assert "raw_file" not in document["cgs"][-1]
     assert first_path.read_bytes() == b"immutable Gaussian fixture"
     assert all(not storage._ID.fullmatch(path.name) for path in path_for(document).parent.rglob("*") if path.is_dir())
 
 
-def test_legacy_assets_migrate_without_changing_workflow_identity_or_unrelated_data(scene, tmp_path):
-    legacy = legacy_assets(scene, tmp_path)
-    before = copy.deepcopy(legacy)
-    directory = path_for(legacy).parent
-    image_bytes = {item["file"]: (directory / item["file"]).read_bytes() for item in legacy["images"]}
-    migrated = storage.load_background(legacy["background_id"])
-    assert migrated["models"][0]["file"] == "model/Original 1/scene.json"
-    assert migrated["cgs"][0]["file"] == "CG/View 1/image.png"
-    for kind in ("models", "cgs"):
-        for old, new in zip(before[kind], migrated[kind]):
-            assert {key: new[key] for key in old} == old
-    for key in before.keys() - {"models", "cgs", "revision"}:
-        assert migrated[key] == before[key]
-    model_id, cg_id = before["models"][0]["model_id"], before["cgs"][0]["cg_id"]
-    manifest = storage.model_scene(legacy["background_id"], model_id)
-    assert manifest["objects"][0]["object_id"] == "d" * 32
-    assert manifest["objects"][0]["files"]["ply"] == "objects/Object 1/ply.ply"
-    assert storage.model_asset_path(legacy["background_id"], model_id, "d" * 32, "ply").read_bytes() == b"immutable Gaussian fixture"
-    assert storage.cg_image_path(legacy["background_id"], cg_id) == directory / "CG/View 1/image.png"
-    for branch in ("model/Original 1", "CG/View 1"):
-        assert (directory / branch / "user-note.txt").read_text() == "Preserve unknown files"
-    assert all((directory / relative).read_bytes() == data for relative, data in image_bytes.items())
-    assert all(not storage._ID.fullmatch(path.name) for path in directory.rglob("*") if path.is_dir())
-    backup = json.loads(path_for(legacy).with_suffix(".json.backup").read_bytes())
-    assert all((directory / item["file"]).is_file() for kind in ("models", "cgs") for item in backup[kind])
-    after = files(directory)
-    assert storage.load_background(legacy["background_id"]) == migrated
-    assert files(directory) == after
-
-
-@pytest.mark.parametrize("failure", ["root-move", "object-move", "manifest", "backup", "primary"])
-def test_failed_legacy_model_migration_restores_every_original_byte(scene, tmp_path, monkeypatch, failure):
+def test_legacy_assets_are_read_only_until_explicit_migration(scene, tmp_path):
     legacy = legacy_assets(scene, tmp_path)
     directory = path_for(legacy).parent
     before = files(directory)
-    replace = storage.os.replace
-    fired = False
-    def fail_once(source, destination):
-        nonlocal fired
-        destination = Path(destination)
-        matches = failure == "root-move" and destination == directory / "model/Original 1"
-        matches |= failure == "object-move" and destination.name == "Object 1"
-        matches |= failure == "manifest" and destination == directory / "model/Original 1/scene.json"
-        matches |= failure == "backup" and destination == path_for(legacy).with_suffix(".json.backup")
-        matches |= failure == "primary" and destination == path_for(legacy)
-        if matches and not fired:
-            fired = True
-            raise OSError("Injected migration interruption")
-        return replace(source, destination)
-    monkeypatch.setattr(storage.os, "replace", fail_once)
-    with pytest.raises(OSError, match="Injected migration interruption"):
-        storage.load_background(legacy["background_id"])
-    assert fired
+    loaded = storage.load_background(legacy["background_id"])
+    assert loaded == legacy
     assert files(directory) == before
-    assert not (directory / ".cg-assets.pending").exists()
-    assert storage.load_background(legacy["background_id"])["models"][0]["file"] == "model/Original 1/scene.json"
-
-
-@pytest.mark.parametrize("failure", ["move", "primary"])
-def test_legacy_cg_flattening_rolls_back_and_retries(scene, tmp_path, monkeypatch, failure):
-    document = legacy_assets(scene, tmp_path)
-    # Isolate the CG transaction from the preceding model transaction.
-    model = document["models"][0]
-    model["file"] = f"model/{model['model_id']}/scene.json"
-    write_document(document)
-    directory = path_for(document).parent
-    before, replace, fired = files(directory), storage.os.replace, False
-    def fail_once(source, target):
-        nonlocal fired
-        if not fired and Path(target) == (directory / "CG/View 1/raw.png" if failure == "move" else path_for(document)):
-            fired = True
-            raise OSError("CG migration failed")
-        return replace(source, target)
-    monkeypatch.setattr(storage.os, "replace", fail_once)
-    with pytest.raises(OSError, match="CG migration failed"):
-        storage.load_background(document["background_id"])
-    assert fired and files(directory) == before
-    assert storage.load_background(document["background_id"])["cgs"][0]["file"] == "CG/View 1/image.png"
-
-
-def test_interrupted_legacy_migration_replays_journal_before_reopening(scene, tmp_path, monkeypatch):
-    legacy = legacy_assets(scene, tmp_path)
-    directory = path_for(legacy).parent
-    recover, replace = storage._recover_assets, storage.os.replace
-    monkeypatch.setattr(storage, "_recover_assets", lambda _directory: None)
-    def interrupt(source, destination):
-        if Path(destination).name == "Object 1":
-            raise OSError("Process stopped after root rename")
-        return replace(source, destination)
-    monkeypatch.setattr(storage.os, "replace", interrupt)
-    with pytest.raises(OSError, match="Process stopped"):
-        storage.load_background(legacy["background_id"])
-    assert (directory / ".cg-assets.pending/plan.json").exists()
-    monkeypatch.setattr(storage, "_recover_assets", recover)
-    monkeypatch.setattr(storage.os, "replace", replace)
+    owner = storage.background_storage
+    report = owner.migrate_directory(directory)
+    assert report["changes"] and not report["applied"]
+    assert files(directory) == before
+    backup = tmp_path / "migration-backup"
+    assert owner.migrate_directory(directory, backup, apply=True)["applied"]
     migrated = storage.load_background(legacy["background_id"])
     assert migrated["models"][0]["model_id"] == legacy["models"][0]["model_id"]
-    assert migrated["models"][0]["file"] == "model/Original 1/scene.json"
-    assert migrated["cgs"][0]["file"] == "CG/View 1/image.png"
-    assert not (directory / ".cg-assets.pending").exists()
+    assert migrated["cgs"][0]["cg_id"] == legacy["cgs"][0]["cg_id"]
+    model_id, cg_id = legacy["models"][0]["model_id"], legacy["cgs"][0]["cg_id"]
+    assert storage.model_asset_path(legacy["background_id"], model_id, "d" * 32, "ply").read_bytes() == b"immutable Gaussian fixture"
+    assert storage.cg_image_path(legacy["background_id"], cg_id) == directory / f"CG/View 1/{cg_id}/image.png"
+    assert json.loads(path_for(legacy).read_bytes())["schema_version"] == 3
+    assert owner.migrate_directory(directory)["changes"] == []
+    for relative, data in before.items():
+        if not relative.endswith((".json", ".json.backup")):
+            assert (directory / relative).read_bytes() == data
+    owner.restore_migration(directory, backup)
+    assert files(directory) == before
+
+
+@pytest.mark.parametrize("failure", ["manifest", "cg-config", "backup", "primary"])
+def test_failed_explicit_migration_restores_every_original_byte(scene, tmp_path, monkeypatch, failure):
+    legacy = legacy_assets(scene, tmp_path)
+    directory = path_for(legacy).parent
+    before = files(directory)
+    owner = storage.background_storage
+    atomic, fired = owner.atomic, False
+    model_id, cg_id = legacy["models"][0]["model_id"], legacy["cgs"][0]["cg_id"]
+    targets = {"manifest": directory / f"model/{model_id}/scene.json",
+               "cg-config": directory / f"CG/View 1/{cg_id}/{cg_id}_config.json",
+               "backup": path_for(legacy).with_suffix(".json.backup"), "primary": path_for(legacy)}
+    def fail_once(path, payload):
+        nonlocal fired
+        if Path(path) == targets[failure] and not fired:
+            fired = True
+            raise OSError("Injected migration interruption")
+        return atomic(path, payload)
+    # publish's default writer is captured at definition time.
+    original_publish = owner.publish
+    monkeypatch.setattr(owner, "publish", lambda directory, document, **kwargs:
+                        original_publish(directory, document, writer=fail_once, **kwargs))
+    with pytest.raises(OSError, match="Injected migration interruption"):
+        owner.migrate_directory(directory, tmp_path / "failed-backup", apply=True)
+    assert fired and files(directory) == before
+    assert not (directory / ".background-write.pending").exists()
+    monkeypatch.setattr(owner, "publish", original_publish)
+    assert owner.migrate_directory(directory, tmp_path / "retry-backup", apply=True)["applied"]
+    assert owner.migrate_directory(directory)["changes"] == []
 
 
 @pytest.mark.parametrize("operation", ["model", "cg"])
@@ -809,3 +802,22 @@ def test_asset_paths_cannot_alias_another_record_on_case_insensitive_systems(sce
     with pytest.raises(storage.BackgroundStorageError):
         storage.load_background(document["background_id"])
     assert files(storage.root()) == before
+
+
+def test_character_catalog_uses_costume_sprites_and_available_emotions(monkeypatch, tmp_path):
+    from _vnccs import utils
+    monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(utils, "load_config", lambda name, **kwargs: {"character_info": {"age": 32, "sex": "female"}, "costumes": {"Casual": {}}})
+    folder = tmp_path / "Maya" / "Sprites" / "Casual"
+    for emotion in ("Neutral", "Happy"):
+        (folder / emotion).mkdir(parents=True)
+        Image.new("RGB", (8, 8)).save(folder / emotion / ("sprite_pose_1.png" if emotion == "Neutral" else "sprite_Happy_0001.png"))
+    Image.new("RGB", (8, 8)).save(folder / "Neutral" / "sprite_pose_2.png")
+    catalog = storage.character_catalog("Maya", "Casual")
+    assert (catalog["age"], catalog["gender"]) == (32, "female")
+    assert catalog["sprites"] == [{"name": "sprite_pose_1.png", "emotions": ["Neutral", "Happy"]},
+                                  {"name": "sprite_pose_2.png", "emotions": ["Neutral"]}]
+    assert storage.character_sprite("Maya", "Casual", "sprite_pose_1.png", "Happy") == folder / "Happy" / "sprite_Happy_0001.png"
+    for filename in ("../secret.png", "..\\secret.png", "/secret.png"):
+        with pytest.raises(ValueError):
+            storage.character_sprite("Maya", "Casual", filename)

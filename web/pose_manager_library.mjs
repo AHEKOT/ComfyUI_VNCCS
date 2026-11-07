@@ -1,7 +1,7 @@
 import { api } from "../../scripts/api.js";
 import { cacheIdentity, checkedJSON, mediaURL } from "./vnccs_transport.js";
 import { createLoadingOverlay } from "./vnccs_common.js";
-import { packPreviewRows } from "./preview_grid_layout.mjs?v=pose-manager-15";
+import { packPreviewRows } from "./preview_grid_layout.mjs?v=pose-manager-17";
 
 const BASE = "/vnccs/pose-manager/sprites";
 let helpersPromise;

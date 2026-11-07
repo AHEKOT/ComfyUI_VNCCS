@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
+import { webcrypto } from "node:crypto";
 import { FactoryCommandHistory } from "./fixtures/factory_history.mjs";
 import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, connectionSource, cleanupSource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
 
@@ -29,6 +30,40 @@ test("malformed nested profiles are retained as invalid workflow data", () => {
         const raw = JSON.stringify(state(changes));
         assert.throws(() => readState(raw), /settings/i);
     }
+});
+
+test("unavailable Pose Studio leaves the background usable and Add Character retryable", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const saved = h.data.value, viewer = h.widget.viewer;
+    h.context.loadCharacterRuntime = async () => { throw new Error("Pose Studio assets are unavailable."); };
+    await h.control("[data-add-character]").click();
+    assert.equal(h.widget.busy, false); assert.equal(h.control("[data-add-character]").disabled, false);
+    assert.equal(h.data.value, saved); assert.equal(h.widget.viewer, viewer);
+    assert.match(h.widget.status.textContent, /Pose Studio assets are unavailable/);
+});
+
+test("corrupt character state retains its original bytes during restoration", async () => {
+    const raw = JSON.stringify(state({ characters: { [MODEL]: [{ id: B, position: [0, 0, 0], scale: -1, pose: {} }] } }));
+    const h = harness(raw); await h.ready();
+    assert.equal(h.data.value, raw); assert.equal(h.widget.restoreFailed, true);
+    assert.equal(h.control("[data-add-character]").disabled, true);
+});
+
+test("Add Character works without randomUUID and adds only one character", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    h.context.crypto = { getRandomValues: values => webcrypto.getRandomValues(values) };
+    const entries = new Map();
+    h.widget.characters = {
+        entries, snapshot: () => [...entries.values()],
+        add(id) { entries.set(id, { id, position: [0, 0, 0], scale: 1,
+            pose: { bones: {}, bonePositions: {}, modelRotation: [0, 0, 0] } }); },
+    };
+    await h.control("[data-add-character]").click();
+    await h.control("[data-add-character]").click();
+    assert.equal(entries.size, 1, h.widget.status.textContent);
+    assert.ok([...entries.keys()].every(id => /^[a-f0-9]{32}$/.test(id)));
+    assert.deepEqual(readState(h.data.value).characters[MODEL], [...entries.values()]);
+    assert.equal(h.control("[data-add-character]").disabled, false);
 });
 
 // Only the DOM operations used by the widget are emulated; no browser or GPU is involved.
@@ -354,6 +389,18 @@ test("restoring a frame-less workflow preserves the authored aspect instead of r
     assert.equal(JSON.parse(h.data.value).settings.aspect, "9:16");
 });
 
+test("a retired model restores the active model for the same background variant", async () => {
+    const h = harness(JSON.stringify(state())), active = "9".repeat(32);
+    const document = h.documents.get(A);
+    document.models[0].model_id = active; document.cgs[0].model_id = active;
+    await h.ready();
+    assert.equal(h.widget.state.model_id, active);
+    assert.equal(h.widget.scene.model_id, active);
+    assert.equal(h.widget.state.selected_cg_id, CG);
+    assert.deepEqual(clone(h.widget.state.camera), camera);
+    assert.equal(h.calls.some(call => call.path.endsWith(`/models/${MODEL}`)), false);
+});
+
 test("a missing 3D model does not prevent restoring a finished CG preview or its workflow output", async () => {
     const preview = { kind: "cg", cg_id: CG, zoom: 2, center: [.4, .6] }, h = harness(JSON.stringify(state({ preview })));
     h.api.handle = path => path.includes("/models/") ? response({ error: "Model file unavailable" }, 404) : undefined;
@@ -378,6 +425,7 @@ test("a completed CG job can reconnect even when its previous 3D model is unavai
 test("late model asset loading cannot overwrite a more recently configured model canvas", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const oldId = "2".repeat(32), newId = "3".repeat(32), loading = deferred(), started = deferred(), viewer = h.widget.viewer;
+    h.documents.get(B).models[0].model_id = newId;
     h.api.handle = path => path.includes("/models/") ? response(scene(path.includes(`/backgrounds/${B}/`) ? B : A, { model_id: path.split('/').at(-1), source_image_id: IMAGE })) : undefined;
     viewer.setScene = async scene => {
         if (scene.model_id === oldId) { started.resolve(); await loading.promise; }
@@ -779,29 +827,40 @@ test("read-only backup recovery disables generation while retaining the saved CG
     assert.match(h.widget.status.textContent, /read-only|read only/i);
 });
 
-function variantBackground() {
-    const secondImage = "4".repeat(32), latest = "5".repeat(32), secondModel = "6".repeat(32), secondCG = "7".repeat(32);
-    const document = background(); document.images.push({ image_id: secondImage, width: 1024, height: 768, url: "/second-background.png" });
-    document.models = [{ model_id: MODEL, source_image_id: IMAGE }, { model_id: latest, source_image_id: IMAGE }, { model_id: secondModel, source_image_id: secondImage }];
-    document.model = document.models.at(-1); document.cgs[0].camera.fov = 73;
-    document.cgs.push({ cg_id: secondCG, model_id: secondModel, source_image_id: secondImage, name: "Second variant view",
-        width: 1024, height: 768, camera: { ...camera, fov: 56 }, url: "/second-cg.png" });
-    return { document, secondImage, latest, secondModel, secondCG };
-}
-
-test("image selection binds its latest model and only its own CG gallery", async () => {
-    const { document, secondImage, latest, secondModel, secondCG } = variantBackground(), h = harness(JSON.stringify(state()));
-    h.documents.set(A, document); await h.ready();
-    await h.control(`[data-source-choice="${secondImage}"]`).click();
-    assert.equal(h.widget.state.model_id, secondModel); assert.equal(h.widget.state.selected_cg_id, "");
-    assert.equal(h.widget.scene.source_image_id, secondImage); assert.equal(h.widget.host.hidden, false);
-    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [secondCG]);
-    await h.control("[data-cg-id]").click(); assert.equal(h.widget.viewer.camera.fov, 56);
-    await h.control(`[data-source-choice="${IMAGE}"]`).click();
-    assert.equal(h.widget.state.model_id, latest); assert.equal(h.widget.state.selected_cg_id, "");
-    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [CG]);
-    await h.control("[data-cg-id]").click();
-    assert.equal(h.widget.state.model_id, MODEL); assert.equal(h.widget.viewer.camera.fov, 73); assert.equal(h.widget.state.selected_image_id, IMAGE);
+test("a regenerated source clears stale model and variant selection while ready CGs retain their provenance", async () => {
+    const oldImage = "4".repeat(32), oldModel = "6".repeat(32), oldCG = "7".repeat(32), setId = "8".repeat(32);
+    const ref = { set_id: setId, index: 1, variant_id: "morning", name: "Morning" }, document = background();
+    document.images[0].preview_revision = 3;
+    document.images.push({ image_id: oldImage, width: 1024, height: 768, url: "/retired-background.png" });
+    document.generated_sets = [{ set_id: setId, version: "", source_image_id: IMAGE,
+        variants: [{ id: "morning", name: "Morning" }], images: [{ url: "/original-set.png" }, { url: "/morning.png", width: 1280, height: 720 }] }];
+    document.models[0].source_variant = ref; document.model = document.models[0];
+    Object.assign(document.cgs[0], { source_variant: ref, camera: { ...camera, fov: 73 } });
+    document.cgs.push({ cg_id: oldCG, model_id: oldModel, source_image_id: oldImage, name: "Earlier source view",
+        width: 1024, height: 768, camera: { ...camera, fov: 56 }, url: "/earlier-cg.png" });
+    const h = harness(JSON.stringify(state({ selected_variant: ref }))); h.documents.set(A, document); await h.ready();
+    assert.deepEqual(sourceChoices(document).map(choice => choice.label), ["Original", "Morning"]);
+    assert.equal(h.control(`[data-source-choice="${oldImage}"]`), null);
+    const savedCGs = clone(h.widget.document.cgs), replaced = clone(document);
+    replaced.revision = 4; replaced.images = [{ ...document.images[0], preview_revision: 4, url: "/regenerated-source.png?v=4" }];
+    replaced.models = []; replaced.model = null; replaced.generated_sets = [];
+    h.documents.set(A, replaced); const requests = h.calls.length;
+    await h.widget.acceptDocument(replaced, false); await h.widget.sourceLoad?.onload?.();
+    assert.equal(h.widget.state.selected_image_id, IMAGE); assert.equal(h.widget.state.model_id, "");
+    assert.equal(h.widget.state.selected_variant, null); assert.equal(h.widget.state.selected_cg_id, "");
+    assert.deepEqual(sourceChoices(h.widget.document).map(choice => choice.label), ["Original"]);
+    assert.equal(h.control("[data-model-source]").src, "/regenerated-source.png?v=4");
+    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [oldCG, CG]);
+    assert.deepEqual(clone(h.widget.document.cgs), savedCGs);
+    for (const [id, fov, url] of [[CG, 73, document.cgs[0].url], [oldCG, 56, "/earlier-cg.png"]]) {
+        await h.control(`[data-cg-id="${id}"]`).click();
+        assert.equal(h.widget.state.selected_cg_id, id); assert.equal(h.widget.state.model_id, "");
+        assert.equal(h.widget.state.selected_image_id, IMAGE); assert.equal(h.widget.state.camera.fov, fov);
+        assert.equal(h.control("[data-large-preview]").src, url);
+        assert.equal(JSON.parse(h.data.value).camera.fov, fov);
+    }
+    assert.equal(h.calls.slice(requests).some(call => call.path.includes("/models/")), false);
+    assert.deepEqual(clone(h.widget.document.cgs), savedCGs, "Opening finished CGs preserves their original model, source and camera");
 });
 
 test("image preview fills the model surface without modal padding, borders or control rows", () => {
@@ -1145,14 +1204,14 @@ test("named generated variants preserve exact model, CG, preview and workflow ow
     assert.equal(h.widget.state.model_id, variantModel); assert.deepEqual(clone(h.widget.state.selected_variant), ref);
     await h.control("[data-source-incoming]").onload();
     assert.equal(h.control("[data-model-source]").src, "/morning.png");
-    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [variantCG]);
+    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [variantCG, CG]);
     assert.deepEqual(JSON.parse(h.data.value).selected_variant, ref);
     assert.equal(h.control(`[data-source-choice="${choices[1].key}"]`).attributes.get("aria-pressed"), "true");
     assert.equal(h.control(`[data-source-choice="${choices[0].key}"]`).querySelector("img").src, document.images[0].url);
     await h.control("[data-cg-id]").click(); assert.equal(h.widget.state.selected_cg_id, variantCG);
     await h.control(`[data-source-choice="${choices[0].key}"]`).click();
     assert.equal(h.widget.state.model_id, MODEL); assert.equal(h.widget.state.selected_variant, null);
-    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [CG]);
+    assert.deepEqual(h.control("[data-cgs]").querySelectorAll("[data-cg-id]").map(card => card.dataset.cgId), [variantCG, CG]);
 });
 
 test("source selections keep every card and image in the same slot", async () => {
@@ -1327,7 +1386,7 @@ test("current variant selection excludes archives while saved references retain 
     assert.equal(sourceChoices(doc).length, 1, "An archived set does not become the current variant");
 });
 
-test("compact dock preserves stored prompts and profiles while fixing cache defaults", async () => {
+test("compact dock preserves stored prompts, profiles and Qwen cache settings", async () => {
     const settings = { ...settingsDefaults(), prompt: "Keep this authored instruction", generation: {
         ...settingsDefaults().generation, cache_device: "cpu", cache_dtype: "int4",
         lora_stack: [{ name: "saved-style.safetensors", strength: 0.4 }], future_option: "retain" } };
@@ -1341,7 +1400,7 @@ test("compact dock preserves stored prompts and profiles while fixing cache defa
     assert.deepEqual(JSON.parse(h.data.value).settings.generation.lora_stack, settings.generation.lora_stack);
     assert.equal(JSON.parse(h.data.value).settings.generation.future_option, "retain");
     assert.equal(JSON.parse(h.data.value).settings.prompt, settings.prompt);
-    assert.equal(JSON.parse(h.data.value).settings.generation.cache_device, "default");
-    assert.equal(JSON.parse(h.data.value).settings.generation.cache_dtype, "default");
+    assert.equal(JSON.parse(h.data.value).settings.generation.cache_device, "cpu");
+    assert.equal(JSON.parse(h.data.value).settings.generation.cache_dtype, "int4");
     assert.equal(JSON.parse(h.data.value).settings.generation.prompt_enhance, false);
 });

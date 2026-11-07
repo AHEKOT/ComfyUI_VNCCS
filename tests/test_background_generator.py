@@ -55,8 +55,9 @@ def pipeline(tmp_path, monkeypatch):
         "_safe_cache_part": lambda value: str(value), "scoped_cache_dir": lambda path, scope: path,
         "_remember_generator_context": lambda *args: None, "_rotate_preview_cache": lambda path: None,
         "_save_run_inputs": lambda path, **kwargs: inputs.update(kwargs),
-        "_save_cached_tensor": lambda path, key, value: cache.__setitem__(key, value),
-        "_load_cached_tensor": lambda path, key: cache.get(key), "_upscaler_mode": lambda value: value.get("mode", "seedvr"),
+        "_load_run_inputs": lambda path: inputs,
+        "_save_cached_images": lambda path, key, value: cache.__setitem__(key, value),
+        "_load_cached_images": lambda path, key: cache.get(key), "_upscaler_mode": lambda value: value.get("mode", "seedvr"),
         "require_h3_still_support": lambda: None, "H3_FRAME_COUNT": 5}
     module = ast.fix_missing_locations(ast.Module(body=[base, node_class], type_ignores=[]))
     exec(compile(module, "background_generator_contract", "exec"), namespace)
@@ -108,6 +109,21 @@ def test_three_stages_share_original_and_never_upscale_it_twice(pipeline, mode):
     assert saved["generator_settings"]["sampler"]["seed"] == 42
     assert saved["editor"] == p.document["editor"]
     assert p.node.RETURN_NAMES[0] == "backgrounds" and p.node.OUTPUT_IS_LIST == (True, False, True)
+
+
+def test_background_generator_owns_workspace_until_failure_and_releases_it(pipeline, monkeypatch):
+    p = pipeline
+    identity = p.document["background_id"]
+
+    def fail(*args, **kwargs):
+        with pytest.raises(backgrounds.BackgroundConflictError, match="busy"):
+            backgrounds.ensure_idle(identity)
+        raise OSError("Generation stopped")
+
+    monkeypatch.setattr(p.node, "_run_source_upscaler", fail)
+    with pytest.raises(OSError, match="Generation stopped"):
+        p.node.process([object()], [tensor()], p.prompts, ["{}"], ["node-7"])
+    backgrounds.ensure_idle(identity)
     assert set(p.node.INPUT_TYPES()["required"]) == {"pipe", "background", "prompt", "widget_data"}
 
 
@@ -257,6 +273,9 @@ def test_each_variant_logs_its_full_actual_prompt_before_model_execution(pipelin
     entries[0]["weather"] = "Light rain"
     entries[0]["additional_details"] = "Keep the blue curtains open and preserve every existing object. " * 20
     prompts = [json.dumps(entry) for entry in entries]
+    editor = copy.deepcopy(p.document["editor"])
+    editor["variants"] = [{key: entry[key] for key in ("id", "name", "time", "weather", "additional_details")} for entry in entries]
+    backgrounds.save_background(p.document["background_id"], editor, p.document["revision"])
     run = p.node._background_variant
     seen = []
     def variant(source, pipe, values, prompt, settings, unique_id):

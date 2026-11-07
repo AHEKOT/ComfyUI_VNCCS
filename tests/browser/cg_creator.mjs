@@ -1,3 +1,4 @@
+import { verifyCharacters } from "./cg_characters.mjs";
 // Adapted from VNCCS tests/browser/background_creator.mjs: real widget, local fixtures, After captures.
 import assert from "node:assert/strict";
 import vm from "node:vm";
@@ -19,6 +20,7 @@ for (const name of ["after", "after-compact", "after-resize-landscape", "after-r
 for (const name of ["after.geometry.json", "report.json"]) await rm(join(output, name), { force: true });
 const room = await readFile(new URL("./fixtures/room.svg", import.meta.url));
 const splat = roomSplat(), assets = new Map();
+let baseline = false;
 let document = { ...structuredClone(initial), cg_settings: settingsDefaults() }, job = null, readOnly = false, catalogAvailable = true;
 const scenes = new Map([[modelId, structuredClone(scene)]]);
 const config = () => ({ factory: { version: 1, module_url: "/extensions/Utils/factory3d/viewer.js" }, settings: settingsDefaults(), model: "Qwen Image 2.1 INT8 ConvRot", installed: true,
@@ -74,7 +76,7 @@ const server = createServer(async (request, response) => {
         } else if (url.pathname.startsWith("/web/")) {
             const path = resolve(project, "." + decodeURIComponent(url.pathname));
             assert.ok(path.startsWith(join(project, "web") + sep));
-            content = await readFile(path); type = mime[extname(path)] || "application/octet-stream";
+            content = await readFile(baseline && url.pathname === "/web/vnccs_cg_creator.js" ? process.argv[5] : path); type = mime[extname(path)] || "application/octet-stream";
         } else if (url.pathname === "/fixture") content = JSON.stringify(publicDocument());
         else if (url.pathname === "/vnccs/control_center/check") {
             if (!catalogAvailable) { response.writeHead(404, { "Content-Type": type }).end(JSON.stringify({ error: "Control Center is not installed" })); return; }
@@ -84,6 +86,15 @@ const server = createServer(async (request, response) => {
             let raw = ""; for await (const part of request) raw += part;
             const payload = JSON.parse(raw); assert.equal(payload.repo_id, "MIUProject/VNCCS_v3.0"); mutations.push({ download: payload }); content = "{}";
         } else if (url.pathname === `${base}/config`) content = JSON.stringify(config());
+        else if (url.pathname === `${base}/characters`) content = JSON.stringify({ characters: ["Maya", "Alex"] });
+        else if (url.pathname === `${base}/characters/Maya` || url.pathname === `${base}/characters/Alex`) content = JSON.stringify({
+            character: url.pathname.split("/").at(-1), age: url.pathname.endsWith("Alex") ? 40 : 25,
+            gender: url.pathname.endsWith("Alex") ? "male" : "female", costumes: ["Casual", "Evening"],
+            costume: url.searchParams.get("costume") || "Casual", sprites: [1, 2, 3, 4].map(n => ({ name: `sprite_pose_${n}.png`, emotions: n === 1 ? ["Neutral", "Happy"] : ["Neutral"] })) });
+        else if (/^\/vnccs\/cg-creator\/characters\/[^/]+\/sprite$/.test(url.pathname)) {
+            content = '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="240" viewBox="0 0 160 240"><rect width="160" height="240" fill="#191721"/><circle cx="80" cy="44" r="23" fill="#e2c7b7"/><path d="M55 72L105 72L120 150L100 155L97 230H83L80 164L77 230H63L60 155L40 150Z" fill="#9d92b7"/></svg>'; type = "image/svg+xml";
+        } else if (url.pathname === "/vnccs/pose_library/list") content = JSON.stringify({ poses: [{ name: "Standing", category: "Standing", has_preview: false }] });
+        else if (url.pathname === "/vnccs/pose_library/get/Standing") content = JSON.stringify({ pose: { bones: { upperarm_l: [0, 0, 35] }, modelRotation: [0, 0, 0] } });
         else if (url.pathname === `${base}/backgrounds`) content = JSON.stringify({ backgrounds: [publicDocument()] });
         else if (url.pathname.startsWith(`${base}/backgrounds/${backgroundId}/models/`) && scenes.has(url.pathname.split("/").at(-1))) content = JSON.stringify(scenes.get(url.pathname.split("/").at(-1)));
         else if (url.pathname.endsWith(`/objects/${scene.objects[0].object_id}/splat`)) { content = splat; type = "application/octet-stream"; }
@@ -120,7 +131,7 @@ const server = createServer(async (request, response) => {
                 document = { ...document, revision: document.revision + 1, models: [...document.models, metadata] };
             } else {
                 const cgId = "9".repeat(32), imageURL = `${base}/backgrounds/${backgroundId}/cg/${cgId}/image`; assets.set(imageURL, job.image);
-                document = { ...document, revision: document.revision + 1, cgs: [...document.cgs, { cg_id: cgId, name: job.values.name, camera: job.values.camera,
+                document = { ...document, revision: document.revision + 1, cgs: [...document.cgs, { cg_id: cgId, name: job.values.name, camera: job.values.camera, characters: job.values.characters || [],
                     model_id: variantModelId, source_image_id: imageId, source_variant: job.values.source_variant,
                     width: job.image.readUInt32BE(16), height: job.image.readUInt32BE(20), url: imageURL }] };
             }
@@ -139,8 +150,8 @@ const server = createServer(async (request, response) => {
     } catch (error) { errors.push(String(error)); response.writeHead(500).end(JSON.stringify({ error: String(error) })); }
 });
 await new Promise((done, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", done); });
-const origin = `http://127.0.0.1:${server.address().port}`;
-const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader"], ...(process.argv[2] ? { executablePath: process.argv[2] } : {}) })
+const origin = `http://cg-creator.test:${server.address().port}`;
+const browser = await chromium.launch({ headless: true, args: ["--enable-unsafe-swiftshader", "--host-resolver-rules=MAP cg-creator.test 127.0.0.1", "--no-proxy-server"], ...(process.argv[2] ? { executablePath: process.argv[2] } : {}) })
     .catch(error => { server.close(); throw error; });
 const page = await browser.newPage({ viewport: { width: 6000, height: 3500 }, deviceScaleFactor: 1 });
 page.on("pageerror", error => errors.push({ message: String(error), stack: error.stack, scenario: scenarios.at(-1)?.name }));
@@ -197,7 +208,12 @@ const verifyQwenModelSwitch = async (width = LAYOUT_WIDTH) => {
     scenarios.push({ name: "qwen-model-switch-no-phantom-footer-" + width, samples });
 };
 try {
+    if (process.argv[5]) {
+        baseline = true; await page.goto(origin); await page.waitForFunction(() => window.ready);
+        await page.evaluate(async () => { await setup(); await widget.viewer.capturePreview({ width: 512, height: 288 }); }); await settle(); await capture("before"); baseline = false;
+    }
     await page.goto(origin, { waitUntil: "domcontentloaded" }); await page.waitForFunction(() => window.ready);
+    await verifyCharacters(page, { shot: capture, settle, geometry, scenarios });
     await verifyQwenModelSwitch();
     await verifyQwenModelSwitch(2102);
 
@@ -227,7 +243,8 @@ try {
         assert.equal(await page.locator("[data-cg-id] > span").count(), 0, "CG cards reserve no row for FOV");
         assert.equal(await page.locator("[data-source-choice]").count(), 4, "Every source retains its card, including the selected original");
         assert.equal(await page.locator('.vnccs-common-creator-lora-stack,[data-qi2-setting*="lora_stack"],[data-qi2-setting="generation.turbo"]').count(), 0);
-        assert.equal(await page.locator('[data-prompt],.vnccs-common-creator-qi2-cache,[data-qi2-setting="generation.cache_device"],[data-qi2-setting="generation.cache_dtype"]').count(), 0);
+        assert.equal(await page.locator('[data-prompt]').count(), 0);
+        assert.equal(await page.locator('[data-qi2-setting="generation.cache_device"],[data-qi2-setting="generation.cache_dtype"]').count(), 2);
         assert.equal(await page.getByLabel("Prompt Enhancement", { exact: true }).count(), 0);
         assert.equal(await page.locator("[data-save-view]").isEnabled(), true);
         const bounds = await geometry(), scale = bounds.widget.width / LAYOUT_WIDTH;
@@ -672,11 +689,14 @@ try {
     assert.match(await page.locator("[data-model-status]").textContent(), /Creating model/);
     assert.equal(await page.locator(".bg-job-feedback,progress,[data-stop]").count(), 0);
     assert.equal(await page.locator(".bg-status,footer").count(), 0); await capture("after-model-generating");
-    await page.request.post(origin + "/__fixture__/complete"); await page.waitForFunction(() => !widget.busy);
+    await page.evaluate(() => fetch("/__fixture__/complete", { method: "POST" })); await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.evaluate(() => widget.state.model_id), variantModelId);
     await chooseSelect(page.locator("[data-aspect]"), "9:16");
     assert.ok(await page.evaluate(() => widget.viewer.getCaptureSettings().height > widget.viewer.getCaptureSettings().width), "Aspect selection immediately previews a portrait frame");
     await chooseSelect(page.locator("[data-aspect]"), "4:3");
+    await page.locator("[data-add-character]").click();
+    await page.waitForFunction(() => widget.characters?.entries.size === 1 && !widget.busy);
+    const generatedCharacters = await page.evaluate(() => widget.characters.snapshot());
     await page.locator("[data-save-view]").click();
     const nameDialog = page.getByRole("dialog"), sceneName = nameDialog.getByLabel("Scene name (required)");
     await nameDialog.getByRole("button", { name: "Generate", exact: true }).click();
@@ -715,13 +735,16 @@ try {
     scenarios.push({ name: "animated-transient-card-and-preview-during-generation" });
     assert.equal(job.values.action, "cg"); assert.deepEqual(job.values.source_variant, sourceVariant); assert.equal(job.values.settings.generation.sampler, "dpmpp_2m");
     assert.equal(job.values.name, "Morning camera");
+    assert.deepEqual(job.values.characters, generatedCharacters, "The generation request includes the captured character pose");
     assert.equal(job.values.settings.generation.cache_device, "default"); assert.equal(job.values.settings.generation.cache_dtype, "default");
     assert.equal(job.values.settings.prompt, "Change the camera angle from <image2> to <image1>.");
     assert.equal(job.values.settings.generation.prompt_enhance, false);
-    await page.request.post(origin + "/__fixture__/complete"); await page.waitForFunction(() => !widget.busy);
+    await page.evaluate(() => fetch("/__fixture__/complete", { method: "POST" })); await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.locator("[data-pending-cg]").count(), 0);
     assert.equal(await page.locator("[data-cgs] .bg-cg-card").count(), 1);
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).selected_cg_id), "9".repeat(32));
+    assert.deepEqual(document.cgs.at(-1).characters, generatedCharacters, "The saved CG retains its character composition");
+    assert.deepEqual(await page.evaluate(() => widget.characters.snapshot()), generatedCharacters);
     await capture("after-completed"); scenarios.push({ name: "named-variant-model-and-cg", model: mutations.find(item => item.action === "model"), cg: job.values });
     await page.route(`**${base}/backgrounds/${backgroundId}/models/${variantModelId}`, route => route.fulfill({ status: 404, json: { error: "Fixture model unavailable" } }), { times: 1 });
     await page.locator("[data-cgs] .bg-cg-card").click();

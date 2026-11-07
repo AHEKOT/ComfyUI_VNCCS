@@ -30,8 +30,9 @@ from urllib.parse import quote
 from PIL import Image
 
 from ..operation_logger import log_event, log_stage, logged_operation
-from ..utils import get_full_path_agnostic, _safe_get_model_folder_paths, validate_privileged_request
+from ..utils import get_full_path_agnostic, _safe_get_model_folder_paths, validate_privileged_request, is_sprite_archive_dir
 from . import background_creator as background
+from . import background_storage
 from .runtime_cleanup import cleanup_runtime, inference_stage
 
 
@@ -213,6 +214,10 @@ def _variant_key(value):
     return (variant["set_id"], variant["index"]) if variant else None
 
 
+def _model_source(model):
+    return model["source_image_id"], _variant_key(model.get("source_variant"))
+
+
 def _variant_source(document, image_id, value):
     variant = _source_variant(value)
     if variant is None:
@@ -276,13 +281,12 @@ def _validate(document, directory_name):
         if "archived" in cg and type(cg["archived"]) is not bool:
             raise ValueError("Invalid background CG archive state")
         _name(cg.get("name"))
-        model_id = _id(cg.get("model_id"))
-        if model_id not in model_sources or cg.get("source_image_id") != model_sources[model_id]:
-            raise ValueError("CG does not match its background and model variant")
-        if _variant_key(cg.get("source_variant")) != model_variants[model_id]:
-            raise ValueError("CG does not match its saved source variant")
+        _id(cg.get("model_id"))
+        _id(cg.get("source_image_id"))
+        _source_variant(cg.get("source_variant"))
         _dimensions(cg.get("width"), cg.get("height"))
         _camera(cg.get("camera"))
+        _characters(cg.get("characters", []))
         if "file" in cg or "raw_file" in cg:
             relative = _asset_file(cg, "cgs").casefold()
             if relative in asset_paths:
@@ -292,26 +296,9 @@ def _validate(document, directory_name):
 
 
 def _read_document(directory):
-    try:
-        _recover_assets(directory)
-        background._recover_set_publication(directory)
-    except (OSError, ValueError, TypeError, KeyError) as error:
-        raise BackgroundStorageError("Cannot recover background publication; original files are preserved") from error
-    filename = f"{directory.name}_config.json"
-    path = _contained(directory, filename)
-    try:
-        document, payload = _read_json(path)
-        _validate(document, directory.name)
-    except (OSError, ValueError, TypeError, KeyError, RecursionError) as primary_error:
-        try:
-            backup = _contained(directory, filename + ".backup")
-            document, payload = _read_json(backup)
-            _validate(document, directory.name)
-        except (OSError, ValueError, TypeError, KeyError, RecursionError) as backup_error:
-            raise BackgroundStorageError(f"Cannot restore background '{directory.name}'; original files are preserved") from backup_error
-        document["_recovery"] = {"source": filename + ".backup", "error": str(primary_error)}
-        return document, payload
-    return _migrate_assets(directory, document, payload)
+    document, payload = background._read_document(directory)
+    _validate(document, directory.name)
+    return document, payload
 
 
 def _directories():
@@ -428,13 +415,8 @@ def image_path(background_id, image_id, source_variant=None):
     _id(image_id)
     with background._LOCK:
         directory, document, _previous = _locate(background_id)
-        image = next((item for item in document["images"] if item["image_id"] == image_id), None)
-        if image is None:
-            raise FileNotFoundError("Background image does not exist")
         variant = _variant_source(document, image_id, source_variant)
-        if variant:
-            return background_set_image_path(background_id, variant["set_id"], variant["index"])
-        path = _contained(directory, image["file"])
+        path = background_storage.source_path(directory, document, image_id, variant)
         if not path.is_file():
             raise FileNotFoundError("Background image file is missing")
         return path
@@ -443,11 +425,11 @@ def image_path(background_id, image_id, source_variant=None):
 def _asset_file(record, kind):
     relative = record.get("file")
     branch, filename = ("model", "scene.json") if kind == "models" else ("CG", "image.png")
-    if (not isinstance(relative, str) or "\\" in relative or relative != Path(relative).as_posix() or len(Path(relative).parts) != 3
+    if (not isinstance(relative, str) or "\\" in relative or relative != Path(relative).as_posix() or len(Path(relative).parts) not in ({3, 4} if kind == "cgs" else {3})
             or Path(relative).parts[0] != branch or Path(relative).name != filename):
         raise ValueError("Invalid CG Creator saved asset path")
     _name(Path(relative).parts[1])
-    if kind == "cgs" and record.get("raw_file") != str(Path(relative).with_name("raw.png")).replace("\\", "/"):
+    if kind == "cgs" and "raw_file" in record and record["raw_file"] != str(Path(relative).with_name("raw.png")).replace("\\", "/"):
         raise ValueError("Invalid CG Creator raw image path")
     return relative
 
@@ -469,69 +451,11 @@ def _next_asset_directory(directory, branch, name, *, flatten=None):
 def _source_label(document, image_id, variant):
     if variant:
         return _name(variant.get("name") or f"Variant {variant['index']}")
-    return "Original" if len(document["images"]) == 1 else f"Original {next(index for index, image in enumerate(document['images'], 1) if image['image_id'] == image_id)}"
+    return "Original"
 
 
 def _recover_assets(directory):
-    pending = _contained(directory, ".cg-assets.pending")
-    if not pending.exists():
-        return
-    if not (pending / "plan.json").exists():
-        if any(path.is_symlink() or not path.is_file() or path.name not in {"before.json", "before.backup", "scene.before.json"} and not path.name.endswith(".tmp") for path in pending.iterdir()):
-            raise ValueError("Incomplete CG asset publication journal")
-        shutil.rmtree(pending)
-        return
-    plan, _ = _read_json(_contained(pending, "plan.json"))
-    kind, identity = plan["kind"], _id(plan["id"])
-    if kind not in {"models", "cgs"}:
-        raise ValueError("Invalid CG asset publication journal")
-    before, _ = _read_json(_contained(pending, "before.json"))
-    _validate(before, directory.name)
-    record = next((item for item in before.get(kind, []) if item[kind[:-1] + "_id"] == identity), None)
-    target_record = plan["record"]
-    target = _contained(directory, _asset_file(target_record, kind)).parent
-    if target_record[kind[:-1] + "_id"] != identity:
-        raise ValueError("Invalid CG asset publication identity")
-    source = (_contained(directory, "model", identity) if kind == "models" else _contained(directory, "CG", _name(record["name"]), identity)) if record else pending / "data"
-    moves = []
-    for old, new in plan["moves"]:
-        paths = tuple(_contained(directory, relative) for relative in (old, new))
-        old, new = paths
-        valid = old == source and new == target
-        if record and kind == "cgs":
-            valid |= old.parent == source and new == target / old.name
-        if record and kind == "models":
-            valid |= old.parent == target / "objects" and new.parent == old.parent and bool(_ID.fullmatch(old.name)) and bool(re.fullmatch(r"Object [1-9][0-9]*", new.name))
-        if not valid:
-            raise ValueError("CG asset publication escaped its owner")
-        moves.append(paths)
-    path = _contained(directory, f"{directory.name}_config.json")
-    current, _ = _read_json(path)
-    _validate(current, directory.name)
-    if current["background_id"] != before["background_id"]:
-        raise ValueError("CG asset publication belongs to another background")
-    if any(item.get("file") == target_record["file"] and item.get(kind[:-1] + "_id") != identity for item in current.get(kind, [])):
-        raise ValueError("CG asset publication belongs to another asset")
-    if kind == "models" and (target / "scene.json").exists():
-        scene, _ = _read_json(_contained(target, "scene.json"))
-        if scene.get("model_id") != identity or scene.get("background_id") != before["background_id"]:
-            raise ValueError("CG asset publication model does not match its owner")
-    committed = any(item.get(kind[:-1] + "_id") == identity and item.get("file") == target_record["file"] for item in current.get(kind, []))
-    if not committed:
-        for old, new in reversed(moves):
-            if new.exists() and not old.exists():
-                old.parent.mkdir(parents=True, exist_ok=True)
-                os.replace(new, old)
-        if plan.get("manifest"):
-            _atomic(_contained(source, "scene.json"), _contained(pending, "scene.before.json").read_bytes())
-        backup = _contained(directory, f"{directory.name}_config.json.backup")
-        if plan["had_backup"]:
-            _atomic(backup, _contained(pending, "before.backup").read_bytes())
-        else:
-            backup.unlink(missing_ok=True)
-    elif source.exists() and source != pending / "data" and source != target and not any(source.iterdir()):
-        source.rmdir()
-    shutil.rmtree(pending)
+    return background_storage.recover_assets(directory, _atomic)
 
 
 @contextmanager
@@ -539,7 +463,9 @@ def _asset_publication(directory, previous, kind, record, moves, *, manifest=Non
     pending = _contained(directory, ".cg-assets.pending")
     pending.mkdir(exist_ok=False)
     try:
-        _atomic(pending / "before.json", previous)
+        saved = json.loads(previous)
+        before = background_storage.hydrate(directory, background_storage.unpack(saved), allow_unsigned=saved.get("schema_version") == 2)
+        _atomic(pending / "before.json", _json_bytes(before))
         backup = _contained(directory, f"{directory.name}_config.json.backup")
         if backup.exists():
             _atomic(pending / "before.backup", backup.read_bytes())
@@ -558,63 +484,29 @@ def _asset_publication(directory, previous, kind, record, moves, *, manifest=Non
         _recover_assets(directory)
 
 
-def _migrate_assets(directory, document, payload):
-    for kind in ("models", "cgs"):
-        for record in document.get(kind, []):
-            if "file" in record:
-                continue
-            identity = record[kind[:-1] + "_id"]
-            source = _contained(directory, "model", identity) if kind == "models" else _contained(directory, "CG", record["name"], identity)
-            if not source.exists():
-                continue
-            variant = record.get("source_variant")
-            name = _source_label(document, record["source_image_id"], variant) if kind == "models" else record["name"]
-            target = _next_asset_directory(directory, "model" if kind == "models" else "CG", name, flatten=source.parent if kind == "cgs" else None)
-            updated = {**record, "file": (target / ("scene.json" if kind == "models" else "image.png")).relative_to(directory).as_posix()}
-            if kind == "cgs":
-                updated["raw_file"] = (target / "raw.png").relative_to(directory).as_posix()
-            moves, scene, original = [(source, target)], None, None
-            if kind == "models":
-                scene, original = _read_json(_contained(source, "scene.json"))
-                if scene.get("model_id") != identity or scene.get("background_id") != document["background_id"]:
-                    raise ValueError("Legacy model does not match its saved owner")
-                for index, item in enumerate(scene["objects"], 1):
-                    old = f"objects/{_id(item['object_id'])}"
-                    new = f"objects/Object {index}"
-                    _contained(source, old)
-                    if _contained(source, new).exists():
-                        raise FileExistsError("Legacy object migration target already exists")
-                    moves.append((_contained(target, old), _contained(target, new)))
-                    for key, relative in item["files"].items():
-                        if not isinstance(relative, str) or not relative.startswith(old + "/"):
-                            raise ValueError("Legacy model asset does not match its object")
-                        _contained(source, relative)
-                        item["files"][key] = new + relative[len(old):]
-            elif target == source.parent:
-                if any(_contained(target, item.name).exists() for item in source.iterdir()):
-                    target = _next_asset_directory(directory, "CG", name)
-                    updated.update(file=(target / "image.png").relative_to(directory).as_posix(), raw_file=(target / "raw.png").relative_to(directory).as_posix())
-                    moves = [(source, target)]
-                else:
-                    moves = [(item, _contained(target, item.name)) for item in source.iterdir()]
-            with _asset_publication(directory, payload, kind, updated, moves, manifest=original):
-                for old, new in moves:
-                    new.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(old, new)
-                if scene is not None:
-                    _atomic(_contained(target, "scene.json"), _json_bytes(scene))
-                record.update(updated)
-                # Recovery backups resolve the renamed assets without requiring old ID folders.
-                document = _commit(directory, document, _json_bytes(document))
-            payload = _contained(directory, f"{directory.name}_config.json").read_bytes()
-    return document, payload
-
-
 def _model_directory(directory, model_id, document):
     model = next((item for item in document.get("models", []) if item["model_id"] == model_id), None)
     if model is None:
         raise FileNotFoundError("Background model variant does not exist")
     return _contained(directory, _asset_file(model, "models")).parent if "file" in model else _contained(directory, "model", _id(model_id))
+
+
+def _retired_model_moves(directory, document, models):
+    moves = []
+    for model in models:
+        source = _model_directory(directory, model["model_id"], document)
+        if not source.exists():
+            continue
+        scene, _ = _read_json(_contained(source, "scene.json"))
+        if scene.get("model_id") != model["model_id"] or scene.get("background_id") != document["background_id"]:
+            raise BackgroundStorageError("Retired model does not match its owner")
+        moves.append((source, _contained(directory, ".cg-assets.pending", "retired", model["model_id"])))
+    return moves
+
+
+def _replace_model_records(document, model):
+    retired = {item["model_id"] for item in document.get("models", []) if _model_source(item) == _model_source(model)}
+    document["models"] = [item for item in document.get("models", []) if item["model_id"] not in retired] + [model]
 
 
 def _copy_model(source, scene, target):
@@ -670,12 +562,26 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
         variant = _variant_source(document, image_id, source_variant)
         if variant:
             image_path(background_id, image_id, variant)
-        if len(document.get("models", [])) >= MAX_MODELS:
+        old_models = [model for model in document.get("models", [])
+                      if _model_source(model) == (image_id, _variant_key(variant))]
+        if not old_models and len(document.get("models", [])) >= MAX_MODELS:
             raise ValueError("Background model limit reached")
         model_id = uuid.uuid4().hex
-        target = _next_asset_directory(directory, "model", _source_label(document, image_id, variant))
+        target = (_model_directory(directory, old_models[-1]["model_id"], document) if old_models
+                  else _contained(directory, "model", _source_label(document, image_id, variant)))
+        retired_moves = _retired_model_moves(directory, document, old_models)
+        if target.exists() and not retired_moves:
+            retired, _ = _read_json(_contained(target, "scene.json"))
+            if retired.get("background_id") != background_id:
+                raise BackgroundStorageError("Existing model belongs to another background; files are preserved")
+            if (any(model["model_id"] == retired.get("model_id") for model in document["models"])
+                    and _model_source(retired) != (image_id, _variant_key(variant))):
+                target = _next_asset_directory(directory, "model", _source_label(document, image_id, variant))
+            else:
+                retired_moves.append((target, _contained(directory, ".cg-assets.pending", "retired", _id(retired["model_id"]))))
         scene.update(background_id=background_id, model_id=model_id, source_image_id=image_id,
-                     background_settings=settings)
+                     background_settings=settings,
+                     source_signature=background_storage.fingerprint(image_path(background_id, image_id, variant)))
         scene.pop("source_variant", None)
         if variant:
             scene["source_variant"] = variant
@@ -687,12 +593,14 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
         if variant:
             metadata["source_variant"] = variant
         stage = _contained(directory, ".cg-assets.pending", "data")
-        with _asset_publication(directory, previous, "models", metadata, [(stage, target)]):
+        moves = retired_moves + [(stage, target)]
+        with _asset_publication(directory, previous, "models", metadata, moves):
             _copy_model(Path(scene_directory), scene, stage)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(stage, target)
-            document.setdefault("models", []).append(metadata)
-            return _commit(directory, document, previous)
+            for old, new in moves:
+                new.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(old, new)
+            _replace_model_records(document, metadata)
+            return _commit(directory, document, _json_bytes(document) if old_models else previous)
 
 
 def model_scene(background_id, model_id):
@@ -736,10 +644,117 @@ def model_asset_path(background_id, model_id, object_id, kind):
         return path
 
 
-def commit_cg(background_id, name, raw, finished, camera, settings, model_id, expected_revision):
+def _character_sprite_files(root):
+    from ..utils import safe_join_under
+    for name in ("Neutral", "neutral", ""):
+        folder = root / name
+        if not folder.is_dir():
+            continue
+        files = [file for file in sorted(folder.iterdir()) if file.is_file()
+                 and file.suffix.lower() in {".png", ".webp", ".jpg", ".jpeg", ".bmp"}]
+        if files:
+            return [Path(safe_join_under(str(root), str(file.relative_to(root)))) for file in files]
+    return []
+
+
+def character_catalog(character=None, costume=None):
+    from ..utils import (list_characters, list_costumes, character_dir, load_config,
+                         character_storage_lock, ensure_safe_name, safe_join_under)
+    if character is None:
+        return {"characters": list_characters()}
+    character = ensure_safe_name(character, "character")
+    with character_storage_lock(character_dir(character)):
+        config = load_config(character, strict=True)
+        if config is None:
+            raise FileNotFoundError("Character not found")
+        info = config.get("character_info", {})
+        costumes = list_costumes(character)
+        costume = ensure_safe_name(costume, "costume") if costume else (costumes[0] if costumes else "")
+        sprites = []
+        if costume:
+            root = Path(safe_join_under(character_dir(character), "Sprites", costume))
+            for index, file in enumerate(_character_sprite_files(root), start=1):
+                emotions = ["Neutral"]
+                for folder in sorted(root.iterdir()):
+                    if folder.is_dir() and folder.name.lower() != "neutral" and not is_sprite_archive_dir(folder.name):
+                        candidate = Path(safe_join_under(str(root), folder.name, f"sprite_{folder.name}_{index:04d}.png"))
+                        if candidate.is_file():
+                            emotions.append(folder.name)
+                sprites.append({"name": file.name, "emotions": emotions})
+        return {"character": character, "age": info.get("age", 25), "gender": info.get("sex") or info.get("gender", ""),
+                "costumes": costumes, "costume": costume, "sprites": sprites}
+
+
+def character_sprite(character, costume, sprite, emotion="Neutral"):
+    from ..utils import character_dir, ensure_safe_name, safe_join_under
+    root = Path(safe_join_under(character_dir(ensure_safe_name(character, "character")), "Sprites",
+                               ensure_safe_name(costume, "costume")))
+    if not isinstance(sprite, str) or not re.fullmatch(r"[^/\\\x00-\x1f]{1,255}", sprite) or sprite in {".", ".."}:
+        raise ValueError("Invalid character sprite")
+    emotion = ensure_safe_name(emotion, "emotion")
+    for index, file in enumerate(_character_sprite_files(root), start=1):
+        if file.name != sprite:
+            continue
+        if emotion.lower() == "neutral":
+            return file
+        candidate = Path(safe_join_under(str(root), emotion, f"sprite_{emotion}_{index:04d}.png"))
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("Character sprite not found")
+
+
+def _characters(value):
+    if not isinstance(value, list) or len(value) > 16:
+        raise ValueError("Invalid CG characters")
+    def vector(value):
+        return (isinstance(value, list) and len(value) == 3
+                and all(type(n) in (int, float) and math.isfinite(n) and abs(n) <= 1e6 for n in value))
+    ids = set()
+    for item in value:
+        if not isinstance(item, dict) or _id(item.get("id")) in ids:
+            raise ValueError("Invalid or duplicate CG character")
+        ids.add(item["id"])
+        scale, pose = item.get("scale"), item.get("pose")
+        if (not vector(item.get("position")) or type(scale) not in (int, float)
+                or not .001 <= scale <= 1000 or not isinstance(pose, dict)
+                or not vector(pose.get("modelRotation"))):
+            raise ValueError("Invalid CG character transform")
+        for key in ("bones", "bonePositions"):
+            bones = pose.get(key)
+            if (not isinstance(bones, dict) or len(bones) > 256
+                    or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,96}", name)
+                           or not vector(rotation) for name, rotation in bones.items())):
+                raise ValueError("Invalid CG character pose")
+        for key, bounds in {"mesh": {"age": (1, 90), "gender": (0, 1), "weight": (0, 1), "muscle": (0, 1), "height": (0, 2)},
+                            "light": {"x": (-100, 100), "y": (-100, 100), "z": (-100, 100), "intensity": (0, 5)}}.items():
+            if key not in item:
+                continue
+            settings = item[key]
+            if not isinstance(settings, dict):
+                raise ValueError("Invalid CG character settings")
+            for name, number in settings.items():
+                if key == "light" and name == "color":
+                    if not isinstance(number, str) or not re.fullmatch(r"#[0-9a-fA-F]{6}", number):
+                        raise ValueError("Invalid CG character light color")
+                elif name not in bounds or type(number) not in (int, float) or not math.isfinite(number) or not bounds[name][0] <= number <= bounds[name][1]:
+                    raise ValueError("Invalid CG character settings")
+        if "source" in item:
+            source = item["source"]
+            if (not isinstance(source, dict) or any(key not in {"character", "costume", "sprite", "emotion"}
+                    or not isinstance(text, str) or len(text) > 255 or re.search(r"[\\/\x00-\x1f]", text)
+                    or text in {".", ".."} for key, text in source.items())):
+                raise ValueError("Invalid CG character source")
+        if ("origin" in item and not vector(item["origin"]) or "baseScale" in item and
+                (type(item["baseScale"]) not in (int, float) or not .001 <= item["baseScale"] <= 1000)):
+            raise ValueError("Invalid CG character placement")
+    return copy.deepcopy(value)
+
+
+def commit_cg(background_id, name, raw, finished, camera, settings, model_id, expected_revision, characters=None):
     name, model_id = _name(name), _id(model_id)
     camera, settings = _camera(camera), _object(settings, "CG settings")
-    raw_bytes, finished_bytes = _image_bytes(raw), _image_bytes(finished)
+    characters = _characters([] if characters is None else characters)
+    finished_bytes = _image_bytes(finished)
     with background._LOCK:
         directory, document, previous = _editable(background_id, expected_revision)
         model = model_scene(background_id, model_id)
@@ -749,16 +764,14 @@ def commit_cg(background_id, name, raw, finished, camera, settings, model_id, ex
         target = _next_asset_directory(directory, "CG", name)
         metadata = {"cg_id": cg_id, "name": name, "background_id": background_id,
                     "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera, "settings": settings,
-                    "width": finished.width, "height": finished.height,
-                    "file": (target / "image.png").relative_to(directory).as_posix(),
-                    "raw_file": (target / "raw.png").relative_to(directory).as_posix()}
+                    "width": finished.width, "height": finished.height, "characters": characters,
+                    "file": (target / "image.png").relative_to(directory).as_posix()}
         variant = _source_variant(model.get("source_variant"))
         if variant:
             metadata["source_variant"] = variant
         _json_bytes(metadata)
         stage = _contained(directory, ".cg-assets.pending", "data")
         with _asset_publication(directory, previous, "cgs", metadata, [(stage, target)]):
-            _atomic(_contained(stage, "raw.png"), raw_bytes)
             _atomic(_contained(stage, "image.png"), finished_bytes)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, target)
@@ -787,6 +800,8 @@ def cg_image_path(background_id, cg_id, kind="image"):
         cg = next((item for item in document.get("cgs", []) if item["cg_id"] == cg_id), None)
         if cg is None:
             raise FileNotFoundError("Background CG does not exist")
+        if kind == "raw" and "file" in cg and "raw_file" not in cg:
+            raise FileNotFoundError("Background CG raw image is not stored")
         path = (_contained(directory, cg["file"] if kind == "image" else cg["raw_file"]) if "file" in cg
                 else _contained(directory, "CG", cg["name"], cg_id, f"{kind}.png"))
         if not path.is_file():
@@ -920,7 +935,7 @@ def normalize_settings(data: Any) -> dict[str, Any]:
             if incoming[key] not in choices:
                 raise ValueError(f"Unsupported {key}")
             generation[key] = incoming[key]
-    generation.update(cache_device="default", cache_dtype="default", prompt_enhance=False)
+    generation.update(prompt_enhance=False)
     previous = incoming.get("turbo_previous_settings")
     if previous is not None:
         if not isinstance(previous, dict):
@@ -1030,6 +1045,17 @@ def _asset_name(category: str, name: str) -> str:
     if len(matches) != 1:
         raise FileNotFoundError(f"Install exactly one {name} in ComfyUI models/{category}")
     return matches[0]
+
+
+@lru_cache(maxsize=1)
+def resolve_pose_lora() -> str:
+    from . import vnccs_control_center as center
+    with open(center._get_packaged_cc_path(), encoding="utf-8") as handle:
+        config = json.load(handle)
+    entry = center._find_entry(config.get("lora", []), "VNCCS Pose Studio QI2")
+    if entry is None:
+        raise ValueError("QI2 Pose Studio LoRA is not configured in Control Center")
+    return _asset_name("loras", center._rel_within_folder(entry["local_path"]))
 
 
 def configuration() -> dict[str, Any]:
@@ -1356,28 +1382,59 @@ def _tensor_to_pil(tensor):
     return Image.fromarray(np.clip(255. * tensor.cpu().numpy().squeeze(), 0, 255).astype(np.uint8)).convert("RGB")
 
 
+def _save_dataset(references, image, prompt):
+    dataset = _contained(root().parent, "QI2_CG_Dataset")
+    sample_id = uuid.uuid4().hex
+    files = [(f"control{slot.removeprefix('image_')}", ".png", _image_bytes(control))
+             for slot, _source, control in references]
+    files.extend([("img", ".txt", prompt.encode("utf-8")), ("img", ".png", _image_bytes(image))])
+    written = []
+    try:
+        for directory, extension, payload in files:
+            target = _contained(dataset, directory, sample_id + extension)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("xb") as stream:
+                written.append(target)
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+    except BaseException:
+        for target in written:
+            target.unlink(missing_ok=True)
+        raise
+
+
 @logged_operation("CGCreator", "refine")
-def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background):
+def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
         raise ValueError("CG refinement requires a captured frame")
     if not isinstance(background, Image.Image):
         raise ValueError("AnyAngle requires the original background as image 1")
+    if character is not None and not isinstance(character, Image.Image):
+        raise ValueError("Pose Studio requires the selected character sprite as image 3")
     width, height = reference.size
     if any(value < 64 or value > 4096 or value % 16 for value in (width, height)) or width * height > 16_000_000:
         raise ValueError("Captured frame dimensions must be multiples of 16, between 64 and 4096, and at most 16 MP")
     generation = settings["generation"]
     import torch
+    megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
+    resolution = 32 * round(32 * math.sqrt(megapixels))
     prompt = ANYANGLE_PROMPT
+    if character is not None:
+        prompt += " White dummy is character from image3"
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
         _stage(draw_id, cancel_event, "loading", 0.01, "Installing AnyAngle LoRA if needed")
         anyangle_lora = resolve_anyangle_lora(cancel_event)
+        pose_lora = resolve_pose_lora() if character is not None else None
         _stage(draw_id, cancel_event, "loading", 0.03, "Loading Qwen Image 2.1")
         model, clip, vae = _load_assets(generation["diffusion_model_name"])
         _stage(draw_id, cancel_event, "loading", 0.12, "Applying CG model settings")
-        model, clip = apply_generation_lora(model, clip, anyangle_lora, 1.0)
+        model, _ = apply_generation_lora(model, None, anyangle_lora, 1.0, clip_strength=0)
+        if pose_lora:
+            model, _ = apply_generation_lora(model, None, pose_lora, 1.0, clip_strength=0)
         for item in generation["lora_stack"]:
             if item["name"].replace("\\", "/").rsplit("/", 1)[-1].casefold() == ANYANGLE_FILENAME.casefold():
                 continue
@@ -1386,27 +1443,32 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         if generation["turbo"]:
             model = _call_comfy_node("LoraLoaderModelOnly", model=model, lora_name=_asset_name("loras", TURBO_LORA), strength_model=1.0)[0]
         # The cache provider calls its default device selection "auto".
-        model = _call_comfy_node("QwenImage21Cache", model=model, device="auto", dtype="default")[0]
+        cache_device = "auto" if generation["cache_device"] == "default" else generation["cache_device"]
+        model = _call_comfy_node("QwenImage21Cache", model=model, device=cache_device, dtype=generation["cache_dtype"])[0]
         _stage(draw_id, cancel_event, "conditioning", 0.3, "Encoding the original background and camera frame")
         background, reference = background.convert("RGB"), reference.convert("RGB")
-        for slot, source, image in (("image_1", "original background", background),
-                                    ("image_2", "captured camera frame", reference)):
+        references = [("image_1", "original background", background), ("image_2", "captured camera frame", reference)]
+        if character is not None:
+            character = Image.alpha_composite(Image.new("RGBA", character.size, "white"), character.convert("RGBA")).convert("RGB")
+            references.append(("image_3", "selected character sprite", character))
+        for slot, source, image in references:
             log_event("reference_image", job_id=draw_id, slot=slot, source=source,
                       width=image.width, height=image.height, rgb_sha256=hashlib.sha256(image.tobytes()).hexdigest())
         log_event("conditioning", job_id=draw_id, prompt=prompt, negative_prompt="",
-                  resolution=1024, cache_device="auto", cache_dtype="default", truncate=False)
-        background_tensor, reference_tensor = _pil_to_tensor(background), _pil_to_tensor(reference)
+                  resolution=resolution, cache_device=cache_device, cache_dtype=generation["cache_dtype"], truncate=False)
+        images = {slot: _pil_to_tensor(image) for slot, _source, image in references}
+        reference_tensor = images["image_2"]
         encoded = _call_comfy_node("TextEncodeQwenImage21", clip=clip, vae=vae, prompt=prompt,
-            negative_prompt="", resolution=1024,
-            images={"image_1": background_tensor, "image_2": reference_tensor})
+            negative_prompt="", resolution=resolution,
+            images=images)
         if not isinstance(encoded, (tuple, list)) or len(encoded) < 3 or encoded[0] is None or encoded[1] is None:
             raise RuntimeError("QI2 returned invalid image conditioning; update ComfyUI")
         positive, negative = encoded[:2]
         scaled_reference = _call_comfy_node("ImageScaleToTotalPixels", image=reference_tensor,
-            upscale_method="nearest-exact", megapixels=settings["resolution_mp"], resolution_steps=1)[0]
+            upscale_method="nearest-exact", megapixels=megapixels, resolution_steps=1)[0]
         latent_width, latent_height, _ = _call_comfy_node("GetImageSize", image=scaled_reference)
         log_event("latent", job_id=draw_id, width=latent_width, height=latent_height,
-                  source="image_2", resolution_mp=settings["resolution_mp"], upscale_method="nearest-exact", resolution_steps=1)
+                  source="image_2", resolution_mp=megapixels, upscale_method="nearest-exact", resolution_steps=1)
         latent = _call_comfy_node("EmptyLatentImage", width=latent_width, height=latent_height, batch_size=1)[0]
         _stage(draw_id, cancel_event, "sampling", 0.35, "Rendering the CG frame")
         sampler_settings = {
@@ -1421,6 +1483,8 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
                                                 turbo=generation["turbo"])
         _stage(draw_id, cancel_event, "decoding", 0.9, "Decoding the CG image")
         image = _tensor_to_pil(_call_comfy_node("VAEDecode", vae=vae, samples=samples)[0])
+        _check_cancel(cancel_event)
+        _save_dataset(references, image, prompt)
         _stage(draw_id, cancel_event, "complete", 1, "CG image ready")
         return image, {"settings": settings, "prompt": prompt, "width": image.width, "height": image.height,
                        "seed": generation["seed"], "model": "qi2",
@@ -1444,6 +1508,13 @@ def parse_state(raw):
         value = state.get(key, "")
         if not isinstance(value, str) or (value and not _ID.fullmatch(value)):
             raise ValueError(f"CG Creator {key} is invalid")
+    if "characters" in state:
+        scenes = state["characters"]
+        if not isinstance(scenes, dict):
+            raise ValueError("Invalid CG character scenes")
+        for model_id, characters in scenes.items():
+            _id(model_id)
+            _characters(characters)
     if state.get("camera") is not None:
         _camera(state["camera"])
     if state.get("selected_variant") is not None:
@@ -1524,7 +1595,8 @@ API_BASE = "/vnccs/cg-creator"
 MAX_REQUEST_BYTES = 34 * 1024 * 1024
 _WORKER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="vnccs-cg")
 _JOBS = {}
-_JOBS_LOCK = threading.RLock()
+_JOBS_LOCK = background_storage.JOBS_LOCK
+background_storage.register_jobs("cg", lambda: _JOBS)
 
 
 def public_document(document):
@@ -1576,12 +1648,7 @@ def model_settings(value):
 
 
 def ensure_idle(background_id):
-    with _JOBS_LOCK:
-        if any(job["background_id"] == background_id and job["status"] in {"queued", "running"} for job in _JOBS.values()):
-            raise RuntimeError("This CG workspace is busy. Wait for the job or stop it first.")
-    owner = background_owner()
-    if owner is not None and callable(getattr(owner, "ensure_idle", None)):
-        owner.ensure_idle(background_id)
+    background.ensure_idle(background_id)
 
 
 @contextmanager
@@ -1633,10 +1700,11 @@ def start_job(background_id, payload, raw_image=None):
     source_variant = copy.deepcopy(_source_variant(payload.get("source_variant")))
     image_path(background_id, image_id, source_variant)
     values = {"image_id": image_id, "source_variant": source_variant,
+              "source_signature": background_storage.fingerprint(image_path(background_id, image_id, source_variant)),
               "model_settings": model_settings(payload.get("model_settings", {})),
               "settings": normalize_settings(payload.get("settings", {}))}
     if action == "cg":
-        values.update(name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
+        values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
         scene = model_scene(background_id, values["model_id"])
         if (scene["source_image_id"] != image_id
                 or _variant_key(scene.get("source_variant")) != _variant_key(source_variant)):
@@ -1645,6 +1713,13 @@ def start_job(background_id, payload, raw_image=None):
         if min(raw.size) < 64 or max(raw.size) > 4096 or raw.width % 16 or raw.height % 16 or raw.width * raw.height > 16_000_000:
             raise ValueError("CG frame must be 64–4096 pixels, aligned to 16 pixels, at most 16 MP")
         values["raw"] = raw
+        if values["characters"]:
+            source = values["characters"][0].get("source", {})
+            if not all(source.get(key) for key in ("character", "costume", "sprite")):
+                raise ValueError("Select a character, costume and sprite before generating CG")
+            with Image.open(character_sprite(source["character"], source["costume"], source["sprite"], source.get("emotion") or "Neutral")) as sprite:
+                _dimensions(*sprite.size)
+                values["character"] = sprite.copy()
     with _JOBS_LOCK:
         ensure_idle(background_id)
         document = load_background(background_id)
@@ -1673,13 +1748,17 @@ def _execute(job, values):
         with _inference_slot(job):
             if job["action"] == "cg":
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
-                    background = source.convert("RGB")
-                image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background)
+                    background_image = source.convert("RGB")
+                image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background_image,
+                                                 character=values.get("character"))
                 runtime._check_cancel(job)
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
-                    document = commit_cg(job["background_id"], values["name"], values["raw"], image, values["camera"],
-                        settings, values["model_id"], values["revision"])
+                    with background._LOCK:
+                        if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
+                            raise BackgroundConflictError("Background source changed while generating CG; the result was not published")
+                        document = commit_cg(job["background_id"], values["name"], values["raw"], image, values["camera"],
+                            settings, values["model_id"], None, characters=values.get("characters", []))
                     job["published"] = True
             else:
                 scene = factory.create_scene("CG Creator")
@@ -1693,8 +1772,11 @@ def _execute(job, values):
                 scene = factory.update_scene(scene["scene_id"], {"camera": scene["objects"][0]["source_camera"], "lighting": {"preset": "off", "background": "#000000"}})
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
-                    document = commit_model(job["background_id"], values["image_id"], factory.resolve_scene_dir(scene["scene_id"]),
-                        scene, values["model_settings"], values["revision"], source_variant=values["source_variant"])
+                    with background._LOCK:
+                        if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
+                            raise BackgroundConflictError("Background source changed while building its model; the result was not published")
+                        document = commit_model(job["background_id"], values["image_id"], factory.resolve_scene_dir(scene["scene_id"]),
+                            scene, values["model_settings"], None, source_variant=values["source_variant"])
                     job["published"] = True
         return {"document": public_document(document)}
     except GenerationCancelled as exc:
@@ -1800,6 +1882,19 @@ def register_routes(routes):
     @routes.get(base + "/config")
     async def config(request):
         return await perform(lambda: {**configuration(), "factory": frontend_configuration()})
+
+    @routes.get(base + "/characters")
+    async def characters(request):
+        return await perform(lambda: character_catalog())
+
+    @routes.get(base + "/characters/{character}")
+    async def character_options(request):
+        return await perform(lambda: character_catalog(request.match_info["character"], request.query.get("costume")))
+
+    @routes.get(base + "/characters/{character}/sprite")
+    async def sprite(request):
+        return await serve(request, lambda: character_sprite(request.match_info["character"],
+            request.query.get("costume", ""), request.query.get("sprite", ""), request.query.get("emotion", "Neutral")), immutable=False)
 
     @routes.get(base + "/backgrounds")
     async def backgrounds(request):
