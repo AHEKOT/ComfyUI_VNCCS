@@ -25,7 +25,7 @@ export const document = {
         variants: [{ id: "morning_light", name: "Morning light" }, { id: "rainy_evening", name: "Rainy evening" }, { id: "night", name: "Night" }],
         images: ["Original", "Morning light", "Rainy evening", "Night"].map((name, index) => ({ name, file: `Images/${String(index).padStart(2, "0")}_${name}.png`, width: 1600, height: 896, revision: 1, settings: { seed: 0 }, url: `${base}/backgrounds/${backgroundId}/sets/${setId}/${index}?v=1` })) }],
     models: [{ model_id: modelId, source_image_id: imageId, settings: { seed: 66011999 } }],
-    model_settings: { num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: 66011999 },
+    model_settings: { provider: "triposplat", pixal_profile: "standard", num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: 66011999 },
     cgs: [
         { cg_id: "e".repeat(32), name: "Room · Wide", camera, width: 1600, height: 896 },
         { cg_id: "f".repeat(32), name: "Desk · Evening", camera: { ...camera, position: [0.5, 1.7, 4.8], target: [1.2, 1.5, -1.6], fov: 48 }, width: 1344, height: 1008 },

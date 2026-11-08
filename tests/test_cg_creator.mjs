@@ -540,7 +540,7 @@ test("standalone CG entry registers its new node and exposes only the model work
 });
 
 test("TripoSplat settings use the copied VNCCS modal while QI2 controls stay inline", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready();
+    const h = harness(JSON.stringify(state({ model_settings: { ...MODEL_DEFAULTS, provider: "triposplat" } }))); await h.ready();
     const opening = h.control("[data-model-settings]").click(); await settle();
     const dialog = h.control("[role=dialog]"); assert.ok(dialog, h.widget.status.textContent);
     assert.equal(dialog.querySelector("select").type, "select-one");

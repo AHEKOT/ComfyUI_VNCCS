@@ -454,7 +454,7 @@ def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
 
 
 @pytest.mark.parametrize("use_variant", [False, True], ids=["original", "generated-variant"])
-@pytest.mark.parametrize(("generator", "profile"), [("triposplat", None), ("pixal3d", None), ("pixal3d", "fast")])
+@pytest.mark.parametrize(("generator", "profile"), [("triposplat", "standard"), ("pixal3d", "standard"), ("pixal3d", None)])
 def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_cleanup(workspace, monkeypatch, use_variant, generator, profile):
     document = with_generated_set(workspace) if use_variant else workspace.document
     selected = source_variant(document) if use_variant else None
@@ -465,6 +465,7 @@ def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_clea
     monkeypatch.setattr(factory, "create_scene", lambda _name: created)
     source = factory.resolve_scene_dir(created["scene_id"])
     mesh = generator == "pixal3d"
+    expected_profile = profile or "fast"
     kind, filename = ("model", "model.glb") if mesh else ("ply", "model.ply")
     asset = b"committed geometry fixture"
     source_camera = {**CAMERA, "position": [0, 0, 1.25]} if mesh else CAMERA
@@ -474,8 +475,8 @@ def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_clea
         assert settings["remove_background"] is False and settings["capture_source_camera"] is True
         if mesh:
             assert settings["refine_textures"] is False
-            assert settings.get("base_color_only", False) is (profile == "fast")
-            if profile == "fast":
+            assert settings.get("base_color_only", False) is (expected_profile == "fast")
+            if expected_profile == "fast":
                 assert settings["quality"] == "preview"
                 assert settings["target_resolution"] == settings["texture_resolution"] == 1024
             else:
@@ -493,8 +494,9 @@ def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_clea
                                 "files": {kind: f"objects/{object_id}/{filename}"}}]
         factory._save_scene(manifest)
     monkeypatch.setattr(runtime, "_generate_mesh_object" if mesh else "_generate_object", reconstruct)
-    payload = job_payload(document, "model", model_settings={"seed": 3, "provider": generator,
-                          "remove_background": "1", "refine_textures": "1", **({"pixal_profile": profile} if profile else {})}, source_variant=selected)
+    selected_settings = {"provider": generator, "pixal_profile": profile} if profile else {}
+    payload = job_payload(document, "model", model_settings={"seed": 3, **selected_settings,
+                          "remove_background": "1", "refine_textures": "1"}, source_variant=selected)
     service.start_job(document["background_id"], payload)
     payload["model_settings"]["seed"] = 99
     if use_variant:
@@ -504,7 +506,7 @@ def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_clea
     assert job["scene_id"] == "" and not source.exists()
     saved = library.load_background(document["background_id"])
     assert len(saved["models"]) == 1
-    assert saved["models"][0]["settings"]["pixal_profile"] == (profile or "standard")
+    assert saved["models"][0]["settings"]["pixal_profile"] == expected_profile
     if mesh:
         assert saved["models"][0]["settings"]["quality"] == "high"
     model = library.model_scene(document["background_id"], saved["models"][-1]["model_id"])
@@ -530,7 +532,7 @@ def test_failed_or_cancelled_reconstruction_removes_its_temporary_scene(workspac
     failure = runtime.JobCancelled("Cancelled") if cancelled else RuntimeError("Reconstruction failed")
     monkeypatch.setattr(runtime, "_generate_object", mock.Mock(side_effect=failure), raising=False)
     before = library.load_background(document["background_id"])
-    service.start_job(document["background_id"], job_payload(document, "model"))
+    service.start_job(document["background_id"], job_payload(document, "model", model_settings={"provider": "triposplat"}))
     job = workspace.run_pending()
     assert job["status"] == ("cancelled" if cancelled else "failed")
     assert job["scene_id"] == "" and not source.exists()

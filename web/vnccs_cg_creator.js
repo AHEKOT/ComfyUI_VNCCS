@@ -131,7 +131,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 }
 `;
 
-const MODEL_DEFAULTS = Object.freeze({ provider: "triposplat", num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: -1, pixal_profile: "standard" });
+const MODEL_DEFAULTS = Object.freeze({ provider: "pixal3d", num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: -1, pixal_profile: "fast" });
 const DEFAULT_SETTINGS = Object.freeze({
     prompt: "Change the camera angle from <image2> to <image1>.",
     aspect: "16:9", resolution_mp: 2,
@@ -867,8 +867,8 @@ class CGCreatorWidget {
                         <button class="bg-enlarge" data-enlarge aria-label="Open full-size background preview" hidden></button></div>
                     <div class="vnccs-common-creator-section-title">Variants</div>
                     <div class="bg-variation-strip"><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="-1" aria-label="Scroll variants left"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"/></svg></button><div class="bg-variation-cards" data-source-choices data-sakura-scroll="cg-source-variants" role="group" aria-label="Background variants"></div><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="1" aria-label="Scroll variants right"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button></div>
-                    <div class="bg-row bg-model-mode"><div class="vnccs-common-creator-section-title">Model generation</div><select class="vnccs-common-creator-select" data-model-provider aria-label="Model generator"><option value="triposplat">TripoSplat</option><option value="pixal3d">Pixal3D</option></select></div>
-                    <button class="vnccs-common-creator-model-card is-installed bg-model-card" data-model-settings aria-label="TripoSplat settings"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">TripoSplat</span><span class="vnccs-common-creator-model-card-status" data-model-status>Model not created</span></span><span class="vnccs-common-creator-model-card-desc">Single-image Gaussian splat</span></button>
+                    <div class="bg-row bg-model-mode"><div class="vnccs-common-creator-section-title">Model generation</div><select class="vnccs-common-creator-select" data-model-provider aria-label="Model generator"><option value="triposplat">TripoSplat</option><option value="pixal3d" selected>Pixal3D</option></select></div>
+                    <button class="vnccs-common-creator-model-card is-installed bg-model-card" data-model-settings aria-label="Pixal3D settings"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">Pixal3D</span><span class="vnccs-common-creator-model-card-status" data-model-status>Model not created</span></span><span class="vnccs-common-creator-model-card-desc">Textured GLB mesh</span></button>
                     <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary bg-wide" data-action="model">Create model</button>
                 </aside>
                 <section class="cg-middle">

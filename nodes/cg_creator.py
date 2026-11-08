@@ -1645,8 +1645,8 @@ def model_settings(value):
     if not isinstance(value, dict):
         raise ValueError("Background model settings must be an object")
     gaussian = factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
-    gaussian["pixal_profile"] = "fast" if value.get("pixal_profile") == "fast" else "standard"
-    if value.get("provider") == "pixal3d":
+    gaussian["pixal_profile"] = "fast" if value.get("pixal_profile", "fast") == "fast" else "standard"
+    if value.get("provider", "pixal3d") == "pixal3d":
         mesh = factory._generation_settings({**value, "remove_background": "0", "refine_textures": "0", "provider": "pixal3d"})
         return {**gaussian, **mesh, "provider": "pixal3d"}
     return gaussian
