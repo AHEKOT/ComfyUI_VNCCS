@@ -25,6 +25,9 @@ test("existing Factory modules load without a CG provider and preserve the rever
     const loaded = await load({ version: 1, module_url: "/extensions/Renamed%20Utils/factory3d/viewer.js" });
     assert.equal(loaded.Factory3DViewer, viewer.Factory3DViewer);
     assert.equal(loaded.FactoryCommandHistory, viewer.FactoryCommandHistory);
-    assert.deepEqual(requested, ["https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/viewer.js", "https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/editor_commands.mjs"]);
+    const viewerURL = new URL(requested[0]);
+    assert.ok(viewerURL.searchParams.get("v"), "The viewer request bypasses a cached version without model source cameras");
+    viewerURL.search = "";
+    assert.deepEqual([viewerURL.href, ...requested.slice(1)], ["https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/viewer.js", "https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/editor_commands.mjs"]);
     assert.equal(styles[0].href, "https://comfy.example/proxy/extensions/Renamed%20Utils/factory3d/styles.css");
 });

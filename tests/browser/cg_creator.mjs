@@ -723,6 +723,19 @@ try {
     await page.locator("[data-recenter]").click();
     assert.deepEqual(await currentCamera(), projectedCamera, "Recenter restores the source pose and FOV");
     await capture("after-pixal3d");
+    const legacyCamera = await page.evaluate(() => {
+        const entry = widget.viewer.objects.get(widget.scene.objects[0].object_id);
+        const source = entry.data.source_camera;
+        delete entry.data.source_camera;
+        widget.recenterCamera(widget.scene);
+        const camera = widget.viewer.getCameraState();
+        entry.data.source_camera = source;
+        widget.recenterCamera(widget.scene);
+        return camera;
+    });
+    assert.equal(legacyCamera.fov, 60);
+    assert.ok(Math.abs(legacyCamera.position[0] - legacyCamera.target[0]) < 1e-6, "The fallback faces the model head-on");
+    assert.ok(legacyCamera.position[2] - legacyCamera.target[2] < 2.9, "A model without camera metadata fills the frame without the bounding-sphere distance");
     await chooseSelect(page.locator("[data-aspect]"), "9:16");
     assert.ok(await page.evaluate(() => widget.viewer.getCaptureSettings().height > widget.viewer.getCaptureSettings().width), "Aspect selection immediately previews a portrait frame");
     await chooseSelect(page.locator("[data-aspect]"), "4:3");

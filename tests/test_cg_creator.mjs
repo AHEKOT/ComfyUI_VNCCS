@@ -291,6 +291,26 @@ test("a restored active model differing from the library remains dirty and is sa
     assert.equal(JSON.parse(h.data.serializeValue()).settings.generation.diffusion_model_name, model);
 });
 
+test("model generation settings stay with the node when switching backgrounds", async () => {
+    const h = harness(JSON.stringify(state()));
+    await h.ready();
+    const model = { ...MODEL_DEFAULTS, provider: "pixal3d", pixal_profile: "fast", seed: 731 };
+    h.widget.state.model_settings = model; h.widget.markEdited();
+    const nextDraft = h.widget.draftKey().replace(A, B);
+    h.drafts.set(nextDraft, JSON.stringify({ settings: settingsDefaults({ prompt: "Second background prompt" }), model_settings: MODEL_DEFAULTS }));
+
+    const select = h.control("[data-library]"); select.value = B;
+    const switching = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await switching;
+    assert.equal(h.widget.state.background_id, B);
+    assert.deepEqual(clone(h.widget.state.model_settings), model);
+    assert.deepEqual(JSON.parse(h.data.serializeValue()).model_settings, model);
+    assert.equal(h.widget.state.settings.prompt, "Second background prompt");
+    const reloaded = harness(h.data.serializeValue(), { drafts: h.drafts });
+    await reloaded.ready();
+    assert.deepEqual(clone(reloaded.widget.state.model_settings), model);
+    assert.equal(reloaded.widget.state.settings.prompt, "Second background prompt");
+});
+
 test("saved preview, collection and generation references are bounded without changing legacy workflows", () => {
     const preview = { kind: "cg", cg_id: CG, zoom: 2.4, center: [.4, .6] };
     assert.deepEqual(readState(JSON.stringify(state({ preview }))).preview, preview);

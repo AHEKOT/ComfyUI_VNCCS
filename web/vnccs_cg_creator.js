@@ -240,6 +240,7 @@ async function loadFactoryRuntime(descriptor) {
     }
     const root = new URL("../../", import.meta.url);
     const viewerURL = new URL(descriptor.module_url.slice(1), root);
+    viewerURL.searchParams.set("v", "20261108.1");
     const [viewer, history] = await Promise.all([import(viewerURL.href), import(new URL("./editor_commands.mjs", viewerURL).href)]);
     const runtime = { Factory3DViewer: viewer.Factory3DViewer, FactoryCommandHistory: history.FactoryCommandHistory,
         viewerURL, stylesURL: new URL("./styles.css", viewerURL).href };
@@ -1026,13 +1027,14 @@ class CGCreatorWidget {
         this.document = document; document.models ||= []; document.cgs ||= []; this.catalog = this.catalog.filter(item => item.background_id !== document.background_id);
         if (!document.archived) this.catalog.push(document);
         if (adopt || !this.state.job && (replacedSource || staleSource)) {
+            const firstBackground = !this.state.background_id;
             this.cgPreviewClose?.();
             this.state.background_id = document.background_id; this.state.selected_image_id = document.selected_image_id || document.images[0]?.image_id || "";
             this.state.selected_variant = null;
             this.state.model_id = latestModel(document, this.state)?.model_id || "";
             if (adopt) {
                 this.state.settings = settingsDefaults(document.cg_settings);
-                this.state.model_settings = { ...MODEL_DEFAULTS, ...document.model_settings };
+                if (firstBackground) this.state.model_settings = { ...MODEL_DEFAULTS, ...document.model_settings };
             }
             const savedCG = !adopt && !replacedSource && document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
             this.state.selected_cg_id = savedCG?.cg_id || (replacedSource ? "" : document.cgs.filter(cg => sameSource(cg, this.state)).at(-1)?.cg_id || "");
@@ -1119,7 +1121,7 @@ class CGCreatorWidget {
         if (source) this.viewer.setCameraState(source, { emit });
         else {
             this.viewer.setCameraState({ position: [0, 0, 1], target: [0, 0, 0], up: [0, 1, 0], fov: 60 });
-            this.viewer.fit(item.object_id, { emit });
+            this.viewer.fit(item.object_id, { emit, front: true });
         }
     }
 
@@ -1164,7 +1166,7 @@ class CGCreatorWidget {
         try {
             await this.acceptDocument(document, true, epoch);
             if (!current()) return;
-            this.restoreDraft(); this.render();
+            this.restoreDraft({ keepModelSettings: Boolean(previous.state.background_id) }); this.render();
             try { await imagesReady(); } catch (_) { throw new Error("Background assets could not be loaded. The previous background is still selected."); }
             if (!current()) return;
             playSakuraMotion(this.customSelects, snapshot, [{ opacity: 1 }, { opacity: 0 }], 240, () => {
@@ -1338,7 +1340,7 @@ class CGCreatorWidget {
             this.draftFailed = false; }
         catch (_) { this.draftFailed = true; this.message("Browser recovery is unavailable. Save this workflow until disk persistence succeeds.", true); }
     }
-    restoreDraft() {
+    restoreDraft({ keepModelSettings = false } = {}) {
         try { const raw = this.draftKey() && storage.getItem(this.draftKey()); if (!raw) return; const draft = JSON.parse(raw);
             if (!draft || !draft.settings || !draft.model_settings) throw new Error("Invalid recovery draft");
             readState(JSON.stringify({ schema_version: 1, settings: draft.settings, model_settings: draft.model_settings }));
@@ -1346,11 +1348,14 @@ class CGCreatorWidget {
             const resized = !this.state.job && (settings.aspect !== this.state.settings.aspect || settings.resolution_mp !== this.state.settings.resolution_mp
                 || this.state.frame && frameAspect(this.state.frame) !== settings.aspect);
             const frame = resized ? frameDimensions(settings.aspect, settings.resolution_mp) : this.state.frame;
-            this.state.settings = settings; this.state.model_settings = { ...MODEL_DEFAULTS, ...draft.model_settings }; this.unsaved = true;
+            this.state.settings = settings;
+            if (!keepModelSettings) this.state.model_settings = { ...MODEL_DEFAULTS, ...draft.model_settings };
+            this.unsaved = true;
             if (resized) {
                 this.state.frame = frame;
                 if (this.viewer && this.scene?.model_id === this.state.model_id) this.viewer.setCaptureSettings({ ...frame, show_camera_frame: true });
             }
+            if (keepModelSettings) this.retainDraft();
             this.sync();
         } catch (_) { this.message("A recovery draft could not be read. Its original bytes are preserved.", true); }
     }
