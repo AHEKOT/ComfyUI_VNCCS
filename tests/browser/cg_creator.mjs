@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { settingsDefaults, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH } from "../helpers/cg_frontend.mjs";
-import { base, backgroundId, imageId, modelId, setId, sourceVariant, variantModelId, baseModel, turboModel, turboLora, manualLora, controlCenter, camera, document as initial, scene, roomSplat } from "./fixtures/cg_creator.mjs";
+import { base, backgroundId, imageId, modelId, setId, sourceVariant, variantModelId, baseModel, turboModel, turboLora, manualLora, controlCenter, camera, document as initial, scene, roomSplat, roomMesh } from "./fixtures/cg_creator.mjs";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 const utilsWeb = resolve(process.argv[4]);
@@ -98,6 +98,7 @@ const server = createServer(async (request, response) => {
         else if (url.pathname === `${base}/backgrounds`) content = JSON.stringify({ backgrounds: [publicDocument()] });
         else if (url.pathname.startsWith(`${base}/backgrounds/${backgroundId}/models/`) && scenes.has(url.pathname.split("/").at(-1))) content = JSON.stringify(scenes.get(url.pathname.split("/").at(-1)));
         else if (url.pathname.endsWith(`/objects/${scene.objects[0].object_id}/splat`)) { content = splat; type = "application/octet-stream"; }
+        else if (url.pathname.endsWith(`/objects/${scene.objects[0].object_id}/model`)) { content = roomMesh(); type = "model/gltf-binary"; }
         else if (document.images.some(image => image.url.split("?")[0] === url.pathname) || document.generated_sets.some(group => group.images.some(image => image.url.split("?")[0] === url.pathname)) || document.cgs.some(cg => cg.url === url.pathname)) {
             const asset = assets.get(url.pathname);
             content = asset || (url.pathname.endsWith(`/sets/${setId}/1`) ? Buffer.from(room.toString().replaceAll("#f4b38e", "#c7dbf0"))
@@ -120,14 +121,19 @@ const server = createServer(async (request, response) => {
             assert.ok(["model", "cg"].includes(values.action)); assert.equal(values.image_id, imageId);
             assert.deepEqual(values.source_variant, sourceVariant); assert.equal(values.revision, document.revision);
             if (values.action === "cg") assert.equal(values.model_id, variantModelId);
-            job = { job_id: "8".repeat(32), status: "running", progress: 42, message: `${values.action === "cg" ? "Refining CG" : "Creating Gaussian model"} · fixture progress`, values, image };
+            job = { job_id: "8".repeat(32), status: "running", progress: 42, message: `${values.action === "cg" ? "Refining CG" : "Creating model"} · fixture progress`, values, image };
             mutations.push({ ...values }); content = JSON.stringify({ job_id: job.job_id });
         } else if (url.pathname === "/__fixture__/complete") {
             assert.ok(job);
             if (job.values.action === "model") {
                 const metadata = { model_id: variantModelId, source_image_id: imageId, source_variant: job.values.source_variant, settings: job.values.model_settings };
-                scenes.set(variantModelId, { ...structuredClone(scene), model_id: variantModelId, source_variant: job.values.source_variant,
-                    objects: scene.objects.map(object => ({ ...object, urls: { splat: `${base}/backgrounds/${backgroundId}/models/${variantModelId}/objects/${object.object_id}/splat` } })) });
+                const mesh = job.values.model_settings.provider === "pixal3d", kind = mesh ? "model" : "splat";
+                const objects = scene.objects.map(({ source_camera, ...object }) => ({
+                    ...object, ...(mesh ? { asset_kind: "mesh", source: { format: "glb" },
+                        source_camera: { position: [0, 0, 1.25], target: [0, 0, 0], up: [0, 1, 0], fov: 42 } } : { source_camera }),
+                    urls: { [kind]: `${base}/backgrounds/${backgroundId}/models/${variantModelId}/objects/${object.object_id}/${kind}` },
+                }));
+                scenes.set(variantModelId, { ...structuredClone(scene), model_id: variantModelId, source_variant: job.values.source_variant, objects });
                 document = { ...document, revision: document.revision + 1, models: [...document.models, metadata] };
             } else {
                 const cgId = "9".repeat(32), imageURL = `${base}/backgrounds/${backgroundId}/cg/${cgId}/image`; assets.set(imageURL, job.image);
@@ -282,7 +288,7 @@ try {
         assert.ok(bounds.dock.y >= bounds.viewport.y + bounds.viewport.height, "Generation settings are below the viewport");
         assert.ok(bounds.dock.y + bounds.dock.height <= bounds.gallery.y + bounds.gallery.height + 1, "The complete generation form fits above the workspace bottom");
         for (const name of ["source", "viewport", "dock", "modelSettings", "samplingSettings"]) assert.ok(bounds[name].verticalOverflow <= 1, `${name} hides controls below its visible area at ${width}px`);
-        const visibleControls = await page.locator("[data-qi2] input:not([hidden]):not([type=checkbox]),[data-qi2] button[role=combobox],.bg-camera-toolbar input,.bg-camera-toolbar button,[data-model-settings],[data-action=model],[data-source-choice]").evaluateAll(elements => elements.filter(element => !element.closest("[inert]")).map(element => {
+        const visibleControls = await page.locator("[data-qi2] input:not([hidden]):not([type=checkbox]),[data-qi2] button[role=combobox],.bg-camera-toolbar input,.bg-camera-toolbar button,.bg-model-mode button[role=combobox],[data-model-settings],[data-action=model],[data-source-choice]").evaluateAll(elements => elements.filter(element => !element.closest("[inert]")).map(element => {
             const r = element.getBoundingClientRect(), owner = element.closest(".bg-panel").getBoundingClientRect();
             return { label: element.getAttribute("aria-label") || element.dataset.qi2Setting || element.textContent, visible: r.width > 0 && r.height > 0 && r.left >= owner.left && r.right <= owner.right + 1 && r.top >= owner.top && r.bottom <= owner.bottom + 1 };
         }));
@@ -684,19 +690,46 @@ try {
     await page.mouse.down(); await page.mouse.move(previewBox.x + previewBox.width / 2 + 25, previewBox.y + previewBox.height / 2 + 12); await settle();
     assert.notEqual(await page.locator("[data-large-preview]").evaluate(image => image.style.transform), transform, "Source preview pans before release");
     await page.mouse.up(); await page.locator("[data-close-preview]").click();
+    await chooseSelect(page.locator("[data-model-provider]"), "Pixal3D");
+    assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).model_settings.provider), "pixal3d");
+    await page.getByRole("button", { name: "Pixal3D settings" }).click();
+    const meshSettings = page.getByRole("dialog", { name: "Pixal3D settings" });
+    const profile = meshSettings.locator('select[name="pixal_profile"]');
+    assert.equal(await profile.inputValue(), "standard");
+    await chooseSelect(profile, "Fast · 1024 · Base color only");
+    await capture("after-pixal3d-settings");
+    await meshSettings.getByRole("button", { name: "Save", exact: true }).click();
+    assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).model_settings.pixal_profile), "fast");
     await page.locator('[data-action="model"]').click(); await page.waitForFunction(() => Boolean(widget.jobId));
-    assert.equal(job.values.action, "model"); assert.deepEqual(job.values.source_variant, sourceVariant); assert.equal(job.values.model_settings.steps, 12);
+    assert.equal(job.values.action, "model"); assert.deepEqual(job.values.source_variant, sourceVariant);
+    assert.equal(job.values.model_settings.provider, "pixal3d"); assert.equal(job.values.model_settings.steps, 12);
+    assert.equal(job.values.model_settings.pixal_profile, "fast");
     assert.match(await page.locator("[data-model-status]").textContent(), /Creating model/);
     assert.equal(await page.locator(".bg-job-feedback,progress,[data-stop]").count(), 0);
     assert.equal(await page.locator(".bg-status,footer").count(), 0); await capture("after-model-generating");
     await page.evaluate(() => fetch("/__fixture__/complete", { method: "POST" })); await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.evaluate(() => widget.state.model_id), variantModelId);
+    assert.equal(await page.locator("[data-model-kind]").textContent(), "Textured mesh");
+    assert.ok(await page.evaluate(() => {
+        const [entry] = widget.viewer.objects.values();
+        return entry?.model && !entry.splat;
+    }));
+    const projectedCamera = { position: [-0.25, 0.25, 2.5], target: [-0.25, 0.25, 0], up: [0, 1, 0], fov: 42 };
+    const currentCamera = () => page.evaluate(() => JSON.parse(JSON.stringify(widget.viewer.getCameraState(), (_key, value) =>
+        typeof value === "number" ? Math.round(value * 1e6) / 1e6 : value)));
+    assert.deepEqual(await currentCamera(), projectedCamera, "The first view uses the GLB's normalized source camera");
+    await page.locator("[data-fov-number]").fill("55");
+    assert.equal((await currentCamera()).fov, 55);
+    await page.locator("[data-recenter]").click();
+    assert.deepEqual(await currentCamera(), projectedCamera, "Recenter restores the source pose and FOV");
+    await capture("after-pixal3d");
     await chooseSelect(page.locator("[data-aspect]"), "9:16");
     assert.ok(await page.evaluate(() => widget.viewer.getCaptureSettings().height > widget.viewer.getCaptureSettings().width), "Aspect selection immediately previews a portrait frame");
     await chooseSelect(page.locator("[data-aspect]"), "4:3");
     await page.locator("[data-add-character]").click();
     await page.waitForFunction(() => widget.characters?.entries.size === 1 && !widget.busy);
     const generatedCharacters = await page.evaluate(() => widget.characters.snapshot());
+    const savedCount = publicDocument().cgs.length;
     await page.locator("[data-save-view]").click();
     const nameDialog = page.getByRole("dialog"), sceneName = nameDialog.getByLabel("Scene name (required)");
     await nameDialog.getByRole("button", { name: "Generate", exact: true }).click();
@@ -718,7 +751,7 @@ try {
     assert.equal(await page.locator(".bg-status,footer").count(), 0);
     const pendingCard = page.locator("[data-pending-cg]");
     assert.equal(await pendingCard.isEnabled(), true);
-    assert.equal(await page.locator("[data-cg-count]").textContent(), "1");
+    assert.equal(await page.locator("[data-cg-count]").textContent(), String(savedCount + 1));
     assert.equal(await page.locator("[data-cg-empty]").isVisible(), false);
     const queuedCamera = await page.evaluate(() => widget.viewer.getCameraState());
     const queuedOutput = await page.evaluate(() => JSON.parse(widget.node.widgets[0].value));
@@ -741,27 +774,40 @@ try {
     assert.equal(job.values.settings.generation.prompt_enhance, false);
     await page.evaluate(() => fetch("/__fixture__/complete", { method: "POST" })); await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.locator("[data-pending-cg]").count(), 0);
-    assert.equal(await page.locator("[data-cgs] .bg-cg-card").count(), 1);
+    assert.equal(await page.locator("[data-cgs] .bg-cg-card").count(), savedCount + 1);
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).selected_cg_id), "9".repeat(32));
     assert.deepEqual(document.cgs.at(-1).characters, generatedCharacters, "The saved CG retains its character composition");
     assert.deepEqual(await page.evaluate(() => widget.characters.snapshot()), generatedCharacters);
-    await capture("after-completed"); scenarios.push({ name: "named-variant-model-and-cg", model: mutations.find(item => item.action === "model"), cg: job.values });
-    await page.route(`**${base}/backgrounds/${backgroundId}/models/${variantModelId}`, route => route.fulfill({ status: 404, json: { error: "Fixture model unavailable" } }), { times: 1 });
-    await page.locator("[data-cgs] .bg-cg-card").click();
+    await capture("after-completed"); scenarios.push({ name: "pixal3d-variant-model-and-cg", model: mutations.find(item => item.action === "model"), cg: job.values });
+    document.cgs.at(-1).model_id = "7".repeat(32);
+    await page.evaluate(async () => {
+        const updated = await widget.request(`/backgrounds/${widget.state.background_id}`);
+        await widget.acceptDocument(updated, false);
+    });
+    const finishedCard = page.locator(`[data-cg-id="${document.cgs.at(-1).cg_id}"]`);
+    const beforePreview = await page.evaluate(() => widget.viewer.getCameraState());
+    const viewportBeforePreview = await page.locator(".bg-viewport").boundingBox();
+    await finishedCard.click();
     assert.equal(await page.locator(".bg-camera-toolbar").isVisible(), false);
     await page.waitForFunction(() => document.querySelector('.bg-viewport [data-large-preview]')?.naturalWidth > 0 && !widget.busy);
     assert.equal(await page.locator('.bg-viewport [data-large-preview]').getAttribute("src"), document.cgs.at(-1).url);
     await page.locator('.bg-viewport [data-close-preview]').click();
     await page.locator('.bg-viewport .bg-image-preview').waitFor({ state: "detached" });
-    scenarios.push({ name: "saved-cg-preview-survives-missing-model" });
+    assert.equal(await page.locator("[data-viewer] canvas").isVisible(), true);
+    assert.equal(await page.locator("[data-save-view]").isEnabled(), true);
+    assert.equal(await page.evaluate(() => widget.state.model_id), variantModelId);
+    assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), beforePreview);
+    assertBounds(await page.locator(".bg-viewport").boundingBox(), viewportBeforePreview, "Closing an old CG returns to the same viewport");
+    await capture("after-retired-cg-preview");
+    scenarios.push({ name: "saved-cg-preview-returns-to-current-model" });
     const beforeDelete = await page.evaluate(() => widget.viewer.getCameraState());
     const deleteCount = mutations.filter(item => item.delete_cg).length;
-    await page.locator("[data-delete-cg]").click();
+    await finishedCard.locator("..").locator("[data-delete-cg]").click();
     assert.equal(mutations.filter(item => item.delete_cg).length, deleteCount);
     await page.getByRole("dialog", { name: "Delete CG", exact: true }).getByRole("button", { name: "Delete", exact: true }).click();
     await page.waitForFunction(() => !widget.busy);
-    assert.equal(await page.locator("[data-cgs] .bg-cg-card").count(), 0);
-    assert.equal(await page.locator("[data-cg-count]").textContent(), "0");
+    assert.equal(await page.locator("[data-cgs] .bg-cg-card").count(), savedCount);
+    assert.equal(await page.locator("[data-cg-count]").textContent(), String(savedCount));
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).selected_cg_id), "");
     assert.deepEqual(await page.evaluate(() => widget.viewer.getCameraState()), beforeDelete);
     scenarios.push({ name: "delete-cg-without-changing-camera-or-background" });
@@ -797,7 +843,7 @@ try {
     assert.match(await page.locator(".bg-hint[role=status]").textContent(), /read-only/);
     assert.equal(await page.locator('.bg-hint[role="status"]').isVisible(), true); scenarios.push({ name: "empty-and-recovered" });
     assert.deepEqual(unexpected, []); assert.deepEqual(errors, []);
-    await writeFile(join(output, "report.json"), JSON.stringify({ fixture: "Deterministic room; production widget and Gaussian renderer; inference mocked", scenarios, mutations: mutations.length, errors, unexpected, warnings }, null, 2));
+    await writeFile(join(output, "report.json"), JSON.stringify({ fixture: "Deterministic room; production widget, Gaussian and mesh rendering; inference mocked", scenarios, mutations: mutations.length, errors, unexpected, warnings }, null, 2));
     console.log(JSON.stringify({ output, scenarios: scenarios.length, errors, unexpected, warnings }));
 } catch (error) {
     await page.screenshot({ path: join(output, "after-failure.png"), fullPage: true });

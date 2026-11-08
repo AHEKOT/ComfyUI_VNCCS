@@ -175,6 +175,10 @@ def cg_config_path(directory, record):
     return image.parent / f"{image.parent.name}_config.json"
 
 
+def model_geometry_key(item):
+    return "model" if item.get("asset_kind") == "mesh" else "ply"
+
+
 def hydrate(directory, document, *, allow_unsigned=False):
     """Discover actual assets; loading never migrates or renames their files."""
     value = copy.deepcopy(document)
@@ -221,10 +225,10 @@ def hydrate(directory, document, *, allow_unsigned=False):
                 continue
             objects = scene.get("objects")
             if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
-                raise ValueError("Background model must contain Gaussian objects")
+                raise ValueError("Background model must contain scene objects")
             for item in objects:
-                files = item.get("files", {})
-                if not files.get("ply") or not contained(path.parent, files["ply"]).is_file():
+                geometry = item.get("files", {}).get(model_geometry_key(item))
+                if not geometry or not contained(path.parent, geometry).is_file():
                     raise FileNotFoundError("Model geometry is missing")
             model = copy.deepcopy(record) if record else {
                 "model_id": identity, "source_image_id": scene["source_image_id"], "scene_id": scene.get("scene_id", ""),

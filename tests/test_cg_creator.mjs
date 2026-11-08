@@ -401,6 +401,29 @@ test("a retired model restores the active model for the same background variant"
     assert.equal(h.calls.some(call => call.path.endsWith(`/models/${MODEL}`)), false);
 });
 
+test("an old CG keeps the active model and recovers an empty saved viewport", async () => {
+    const document = background(), retired = "9".repeat(32), activeCamera = { ...camera, fov: 61 };
+    document.cgs[0].model_id = retired;
+    const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: activeCamera })));
+    h.documents.set(A, document);
+    await h.ready();
+    await h.control("[data-cg-id]").click();
+    assert.equal(h.control("[data-large-preview]").src, document.cgs[0].url);
+    h.widget.cgPreviewClose();
+    assert.equal(h.widget.canEditCamera(), true);
+    assert.equal(h.widget.state.model_id, MODEL);
+    assert.deepEqual(h.widget.viewer.getCameraState(), activeCamera);
+    assert.equal(JSON.parse(h.data.value).selected_cg_id, CG);
+
+    const reloaded = harness(JSON.stringify(state({ model_id: "", frame: { width: 1600, height: 896 } })));
+    reloaded.documents.set(A, document);
+    await reloaded.ready();
+    assert.equal(reloaded.widget.canEditCamera(), true);
+    assert.equal(reloaded.widget.state.model_id, MODEL);
+    assert.deepEqual(reloaded.widget.viewer.getCameraState(), sourceCameraView(camera));
+    assert.equal(JSON.parse(reloaded.data.value).selected_cg_id, CG);
+});
+
 test("a missing 3D model does not prevent restoring a finished CG preview or its workflow output", async () => {
     const preview = { kind: "cg", cg_id: CG, zoom: 2, center: [.4, .6] }, h = harness(JSON.stringify(state({ preview })));
     h.api.handle = path => path.includes("/models/") ? response({ error: "Model file unavailable" }, 404) : undefined;

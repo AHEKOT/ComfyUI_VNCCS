@@ -54,6 +54,8 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator [data-qi2].vnccs-common-creator-container { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr); gap:12px; padding:0; overflow:visible; zoom:1; pointer-events:auto; }
 .vnccs-cg-creator [data-qi2]>.bg-qi2-contents { display:contents; }
 .vnccs-cg-creator .bg-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); align-items:start; gap:10px; }
+.vnccs-cg-creator .bg-model-mode { align-items:center; }
+.vnccs-cg-creator .bg-model-mode .vnccs-common-creator-section-title { margin:0; }
 .vnccs-cg-creator .bg-wide { width:100%; flex:none; min-height:40px; }
 /* Source preview rules copied from VNCCS Background Creator; root selector adapted. */
 .vnccs-cg-creator .bg-panel>.bg-preview { flex:0 0 auto; width:100%; height:auto; aspect-ratio:16/9; min-height:100px; }
@@ -129,7 +131,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 }
 `;
 
-const MODEL_DEFAULTS = Object.freeze({ num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: -1 });
+const MODEL_DEFAULTS = Object.freeze({ provider: "triposplat", num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: -1, pixal_profile: "standard" });
 const DEFAULT_SETTINGS = Object.freeze({
     prompt: "Change the camera angle from <image2> to <image1>.",
     aspect: "16:9", resolution_mp: 2,
@@ -158,7 +160,7 @@ function readState(raw) {
     if (value.frame != null && (![value.frame.width, value.frame.height].every(n => Number.isInteger(n) && n >= 64 && n <= 4096 && n % 16 === 0) || value.frame.width * value.frame.height > 16e6)) throw new Error("Invalid saved CG frame.");
     if (value.settings != null && (typeof value.settings !== "object" || Array.isArray(value.settings))) throw new Error("Invalid CG settings.");
     if (value.settings && Object.hasOwn(value.settings, "generation") && (!value.settings.generation || typeof value.settings.generation !== "object" || Array.isArray(value.settings.generation))) throw new Error("Invalid CG generation settings.");
-    if (value.model_settings != null && (typeof value.model_settings !== "object" || Array.isArray(value.model_settings))) throw new Error("Invalid TripoSplat settings.");
+    if (value.model_settings != null && (typeof value.model_settings !== "object" || Array.isArray(value.model_settings))) throw new Error("Invalid background model settings.");
     if (value.preview != null && (!["source", "cg", "pending"].includes(value.preview.kind)
         || value.preview.kind === "cg" && !/^[a-f0-9]{32}$/.test(value.preview.cg_id)
         || !Number.isFinite(value.preview.zoom) || value.preview.zoom < 1 || value.preview.zoom > 8
@@ -839,6 +841,7 @@ class CGQi2Controls {
 
 
 const BASE = "/vnccs/cg-creator";
+const MODEL_NAMES = { triposplat: "TripoSplat", pixal3d: "Pixal3D" };
 const CAMERA_HINT = "Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo";
 const ASPECTS = ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "3:2", "2:3"];
 const latestModel = (doc, state) => (doc.models || []).filter(model => sameSource(model, state)).at(-1);
@@ -863,12 +866,12 @@ class CGCreatorWidget {
                         <button class="bg-enlarge" data-enlarge aria-label="Open full-size background preview" hidden></button></div>
                     <div class="vnccs-common-creator-section-title">Variants</div>
                     <div class="bg-variation-strip"><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="-1" aria-label="Scroll variants left"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"/></svg></button><div class="bg-variation-cards" data-source-choices data-sakura-scroll="cg-source-variants" role="group" aria-label="Background variants"></div><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="1" aria-label="Scroll variants right"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button></div>
-                    <div class="vnccs-common-creator-section-title">Model generation</div>
+                    <div class="bg-row bg-model-mode"><div class="vnccs-common-creator-section-title">Model generation</div><select class="vnccs-common-creator-select" data-model-provider aria-label="Model generator"><option value="triposplat">TripoSplat</option><option value="pixal3d">Pixal3D</option></select></div>
                     <button class="vnccs-common-creator-model-card is-installed bg-model-card" data-model-settings aria-label="TripoSplat settings"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">TripoSplat</span><span class="vnccs-common-creator-model-card-status" data-model-status>Model not created</span></span><span class="vnccs-common-creator-model-card-desc">Single-image Gaussian splat</span></button>
                     <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary bg-wide" data-action="model">Create model</button>
                 </aside>
                 <section class="cg-middle">
-                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge">Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
+                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge" data-model-kind>Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
                     <div class="bg-generation-dock" data-qi2><div class="bg-frame-settings" data-frame-settings>
                     <label class="bg-field vnccs-common-creator-field"><span class="vnccs-common-creator-label">Aspect ratio</span><select class="vnccs-common-creator-select" data-aspect aria-label="Aspect ratio">${ASPECTS.map(value => `<option>${value}</option>`).join("")}</select></label>
                     </div></div>
@@ -932,6 +935,7 @@ class CGCreatorWidget {
         this.characterPanel?.refresh();
         this.container.querySelector("[data-save-view]").disabled = !this.canEditCamera() || Boolean(this.document?._recovery || this.document?.archived);
         this.container.querySelector('[data-action="model"]').disabled ||= !this.state?.selected_image_id;
+        this.container.querySelector("[data-model-provider]").disabled ||= !this.document;
         this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(this.state?.job || this.document?._recovery || this.document?.archived));
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
@@ -1035,11 +1039,15 @@ class CGCreatorWidget {
             const selected = document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
             if (selected && sameSource(selected, this.state) && document.models.some(model => model.model_id === selected.model_id)) this.state.model_id = selected.model_id;
             this.state.camera = null; this.state.frame = null;
-        } else if (this.state.model_id && !document.models.some(model => model.model_id === this.state.model_id)) {
+        } else if ((this.state.model_id || !this.state.job && this.state.selected_cg_id)
+            && !document.models.some(model => model.model_id === this.state.model_id)) {
             const previous = this.state.model_id;
             const selected = document.cgs.find(cg => cg.cg_id === this.state.selected_cg_id);
-            this.state.model_id = selected ? document.models.find(model => model.model_id === selected.model_id)?.model_id || ""
-                : latestModel(document, this.state)?.model_id || "";
+            const linked = document.models.find(model => model.model_id === selected?.model_id);
+            this.state.model_id = (linked || latestModel(document, this.state))?.model_id || "";
+            if (this.state.model_id && selected && !linked) {
+                this.state.camera = null; this.state.frame = null;
+            }
             if (this.state.model_id && this.state.characters?.[previous]) {
                 this.state.characters[this.state.model_id] ??= clone(this.state.characters[previous]);
             }
@@ -1085,16 +1093,34 @@ class CGCreatorWidget {
             if (characters.length) await this.ensureCharacters();
             if (this.disposed || epoch !== this.epoch || modelId !== this.state.model_id) return;
             this.characters?.restore(characters);
-            const camera = this.state.camera || selected?.camera || sourceCameraView(scene.objects[0].source_camera || scene.camera);
             const source = selectedSource(this.document, this.state)?.image || this.document.images.find(image => image.image_id === scene.source_image_id);
             const size = this.state.frame || (selected ? { width: selected.width, height: selected.height } : frameDimensions(this.state.settings.aspect, this.state.settings.resolution_mp || source.width * source.height / 1e6));
             this.state.settings.aspect = frameAspect(size);
-            this.state.camera = clone(camera); this.state.frame = clone(size); this.viewer.setLighting({ preset: "off", background: "#000000" });
-            this.viewer.setCaptureSettings({ ...size, show_camera_frame: true }); this.viewer.setCameraState(camera); this.viewer.select("", { emit: false }); this.syncFov(camera);
+            this.state.frame = clone(size); this.viewer.setLighting({ preset: "off", background: "#000000" });
+            this.viewer.setCaptureSettings({ ...size, show_camera_frame: true });
+            const camera = this.state.camera || selected?.camera;
+            if (camera) this.viewer.setCameraState(camera);
+            else this.recenterCamera(scene);
+            this.state.camera = clone(camera || this.viewer.getCameraState());
+            this.viewer.select("", { emit: false }); this.syncFov(this.state.camera);
             if (this.unsaved && !this.restoring) this.retainDraft();
             this.modelError = "";
         } finally { finish(); if (this.modelLoad === load) this.loadingModel = false; }
         this.resize();
+    }
+
+    recenterCamera(scene, emit = false) {
+        const item = scene.objects[0];
+        if (item.asset_kind !== "mesh") {
+            this.viewer.setCameraState(sourceCameraView(item.source_camera || scene.camera), { emit });
+            return;
+        }
+        const source = this.viewer.getModelSourceCamera?.(item.object_id);
+        if (source) this.viewer.setCameraState(source, { emit });
+        else {
+            this.viewer.setCameraState({ position: [0, 0, 1], target: [0, 0, 0], up: [0, 1, 0], fov: 60 });
+            this.viewer.fit(item.object_id, { emit });
+        }
     }
 
     clearSourceLoad() {
@@ -1215,8 +1241,16 @@ class CGCreatorWidget {
                 incoming.src = sourceURL;
             } else { image.hidden = true; placeholder.hidden = false; image.removeAttribute("src"); }
         }
-        this.container.querySelector("[data-model-status]").textContent = this.modelError ? "Model unavailable" : this.state.model_id ? "Model ready" : "Model not created";
+        const provider = this.state.model_settings.provider === "pixal3d" ? "pixal3d" : "triposplat";
+        this.container.querySelector("[data-model-provider]").value = provider;
+        const card = this.container.querySelector("[data-model-settings]");
+        card.setAttribute("aria-label", `${MODEL_NAMES[provider]} settings`);
+        card.querySelector(".vnccs-common-creator-model-card-name").textContent = MODEL_NAMES[provider];
+        card.querySelector(".vnccs-common-creator-model-card-desc").textContent = provider === "pixal3d" ? "Textured GLB mesh" : "Single-image Gaussian splat";
         const visible = Boolean(this.state.model_id && this.scene?.model_id === this.state.model_id); this.host.hidden = !visible; this.container.querySelector("[data-viewer-empty]").hidden = visible;
+        const kind = this.container.querySelector("[data-model-kind]");
+        kind.hidden = !visible;
+        kind.textContent = this.scene?.objects[0]?.asset_kind === "mesh" ? "Textured mesh" : "Raw splat";
         this.container.querySelector("[data-viewer-empty]").textContent = this.modelError || "Select a saved background and create its model.";
         const gallery = this.container.querySelector("[data-cgs]");
         const cgs = imageCGs(this.document, this.state).reverse();
@@ -1347,7 +1381,12 @@ class CGCreatorWidget {
                 for (const field of fields) {
                     const label = document.createElement("label"), text = document.createElement("span"); text.textContent = field.label; label.className = "bg-field";
                     const control = document.createElement(field.multiline ? "textarea" : field.options ? "select" : "input");
-                    if (field.options) for (const value of field.options) { const option = document.createElement("option"); option.textContent = value; control.appendChild(option); }
+                    if (field.options) for (const choice of field.options) {
+                        const option = document.createElement("option");
+                        option.value = choice.value ?? choice;
+                        option.textContent = choice.label ?? choice;
+                        control.appendChild(option);
+                    }
                     control.value = field.value ?? ""; control.name = field.key;
                     if (!field.options && !field.multiline) control.type = field.type || "text";
                     if (field.required) control.required = true; if (field.multiline) control.rows = 5;
@@ -1409,8 +1448,12 @@ class CGCreatorWidget {
                 const cg = this.document.cgs.find(cg => cg.cg_id === button.dataset.cgId); if (!cg) return;
                 this.openPreview(cg);
                 if (this.busy || this.state.job || this.document?._recovery || this.document?.archived) return;
-                navigating = this.busy = true; this.updateControls();
                 const model = this.document.models.find(model => model.model_id === cg.model_id);
+                if (!model && this.state.model_id) {
+                    this.state.selected_cg_id = cg.cg_id;
+                    this.sync(); this.render(); return;
+                }
+                navigating = this.busy = true; this.updateControls();
                 Object.assign(this.state, { selected_cg_id: cg.cg_id, model_id: model?.model_id || "", camera: clone(cg.camera), frame: { width: cg.width, height: cg.height } });
                 if (cg.characters?.length || this.state.characters?.[cg.model_id]) {
                     this.state.characters ??= {}; this.state.characters[cg.model_id] = clone(cg.characters || []);
@@ -1429,15 +1472,26 @@ class CGCreatorWidget {
                 this.busy = false; editor.add(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""));
                 this.commitGesture(); this.updateControls(); await this.characterPanel?.show(); return;
             }
-            if (button.hasAttribute("data-recenter")) { this.beginGesture(); this.viewer.setCameraState(sourceCameraView(this.scene.objects[0].source_camera || this.scene.camera), { emit: true }); this.commitGesture(); return; }
+            if (button.hasAttribute("data-recenter")) { this.beginGesture(); this.recenterCamera(this.scene, true); this.commitGesture(); return; }
             if (button.hasAttribute("data-enlarge")) { this.openPreview(); return; }
             if (button.hasAttribute("data-model-settings")) {
-                const values = await this.dialog("TripoSplat settings", [
+                const mesh = this.state.model_settings.provider === "pixal3d";
+                const fields = mesh ? [
+                    { key: "pixal_profile", label: "Profile", value: this.state.model_settings.pixal_profile, options: [
+                        { value: "standard", label: "Standard" },
+                        { value: "fast", label: "Fast · 1024 · Base color only" },
+                    ] },
+                ] : [
                     { key: "num_gaussians", label: "Gaussians", value: this.state.model_settings.num_gaussians, options: [32768, 65536, 131072, 262144, 524288, 1048576] },
                     { key: "steps", label: "Steps", value: this.state.model_settings.steps, type: "number", min: 1, max: 100, step: 1, required: true },
                     { key: "guidance_scale", label: "Guidance", value: this.state.model_settings.guidance_scale, type: "number", min: 1, max: 20, step: 0.1, required: true },
-                    { key: "seed", label: "Seed", value: this.state.model_settings.seed, type: "number", min: -1, max: 2147483647, step: 1, required: true }]);
-                if (values && epoch === this.epoch && !this.disposed) { for (const [key, value] of Object.entries(values)) this.state.model_settings[key] = Number(value); this.markEdited(); }
+                ];
+                fields.push({ key: "seed", label: "Seed", value: this.state.model_settings.seed, type: "number", min: -1, max: 2147483647, step: 1, required: true });
+                const values = await this.dialog(`${MODEL_NAMES[mesh ? "pixal3d" : "triposplat"]} settings`, fields);
+                if (values && epoch === this.epoch && !this.disposed) {
+                    for (const [key, value] of Object.entries(values)) this.state.model_settings[key] = key === "pixal_profile" ? value : Number(value);
+                    this.markEdited();
+                }
                 return;
             }
             if (button.hasAttribute("data-save-view")) {
@@ -1471,6 +1525,9 @@ class CGCreatorWidget {
         try {
             if (control.hasAttribute("data-library")) { const id = control.value; if (!id || id === this.state.background_id) { control.value = this.state.background_id; return; } navigating = this.busy = true; this.updateControls(); await this.persist(); if (epoch !== this.epoch || this.disposed) return; epoch = ++this.epoch;
                 await this.switchBackground(await this.request(`/backgrounds/${id}`), epoch);
+            } else if (control.hasAttribute("data-model-provider")) {
+                if (control.disabled || !Object.hasOwn(MODEL_NAMES, control.value)) return;
+                this.state.model_settings.provider = control.value; this.markEdited(); this.render();
             } else if (control.hasAttribute("data-aspect")) { this.state.settings.aspect = control.value; this.updateFrame(); this.markEdited();
             }
         } catch (error) { if (epoch === this.epoch && !this.disposed) this.message(error.message, true); }

@@ -454,28 +454,47 @@ def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
 
 
 @pytest.mark.parametrize("use_variant", [False, True], ids=["original", "generated-variant"])
-def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_cleanup(workspace, monkeypatch, use_variant):
+@pytest.mark.parametrize(("generator", "profile"), [("triposplat", None), ("pixal3d", None), ("pixal3d", "fast")])
+def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_cleanup(workspace, monkeypatch, use_variant, generator, profile):
     document = with_generated_set(workspace) if use_variant else workspace.document
     selected = source_variant(document) if use_variant else None
     expected_variant = copy.deepcopy(selected)
     created = factory.create_scene("Temporary CG reconstruction")
+    created["camera"] = CAMERA
+    factory._save_scene(created)
     monkeypatch.setattr(factory, "create_scene", lambda _name: created)
     source = factory.resolve_scene_dir(created["scene_id"])
+    mesh = generator == "pixal3d"
+    kind, filename = ("model", "model.glb") if mesh else ("ply", "model.ply")
+    asset = b"committed geometry fixture"
+    source_camera = {**CAMERA, "position": [0, 0, 1.25]} if mesh else CAMERA
+
     def reconstruct(job, encoded, object_id, name, settings):
-        assert name == "Background" and settings["provider"] == "triposplat"
+        assert name == "Background" and settings["provider"] == generator
         assert settings["remove_background"] is False and settings["capture_source_camera"] is True
+        if mesh:
+            assert settings["refine_textures"] is False
+            assert settings.get("base_color_only", False) is (profile == "fast")
+            if profile == "fast":
+                assert settings["quality"] == "preview"
+                assert settings["target_resolution"] == settings["texture_resolution"] == 1024
+            else:
+                assert settings["quality"] == "high"
         assert settings["seed"] == 3
-        with Image.open(io.BytesIO(encoded)) as image:
-            assert image.getpixel((0, 0)) == ((255, 255, 0) if use_variant else (255, 0, 0))
+        selected_image = library.image_path(document["background_id"], document["selected_image_id"], expected_variant)
+        with Image.open(io.BytesIO(encoded)) as image, Image.open(selected_image) as original:
+            assert image.size == original.size and image.tobytes() == original.convert("RGB").tobytes()
         manifest = factory.load_scene(job["scene_id"])
-        path = source / "objects" / object_id / "model.ply"
+        path = source / "objects" / object_id / filename
         path.parent.mkdir(parents=True)
-        path.write_bytes(b"committed Gaussian fixture")
-        manifest["objects"] = [{"object_id": object_id, "source_camera": CAMERA,
-            "files": {"ply": f"objects/{object_id}/model.ply"}}]
+        path.write_bytes(asset)
+        item = {"asset_kind": "mesh", "source": {"format": "glb"}} if mesh else {}
+        manifest["objects"] = [{"object_id": object_id, **item, "source_camera": source_camera,
+                                "files": {kind: f"objects/{object_id}/{filename}"}}]
         factory._save_scene(manifest)
-    monkeypatch.setattr(runtime, "_generate_object", mock.Mock(side_effect=reconstruct))
-    payload = job_payload(document, "model", model_settings={"seed": 3}, source_variant=selected)
+    monkeypatch.setattr(runtime, "_generate_mesh_object" if mesh else "_generate_object", reconstruct)
+    payload = job_payload(document, "model", model_settings={"seed": 3, "provider": generator,
+                          "remove_background": "1", "refine_textures": "1", **({"pixal_profile": profile} if profile else {})}, source_variant=selected)
     service.start_job(document["background_id"], payload)
     payload["model_settings"]["seed"] = 99
     if use_variant:
@@ -485,12 +504,19 @@ def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_clea
     assert job["scene_id"] == "" and not source.exists()
     saved = library.load_background(document["background_id"])
     assert len(saved["models"]) == 1
+    assert saved["models"][0]["settings"]["pixal_profile"] == (profile or "standard")
+    if mesh:
+        assert saved["models"][0]["settings"]["quality"] == "high"
     model = library.model_scene(document["background_id"], saved["models"][-1]["model_id"])
     assert model["camera"] == CAMERA and model["lighting"]["preset"] == "off"
     assert model["source_image_id"] == document["images"][0]["image_id"]
     assert model.get("source_variant") == saved["models"][-1].get("source_variant") == expected_variant
     object_id = model["objects"][0]["object_id"]
-    assert library.model_asset_path(document["background_id"], model["model_id"], object_id, "ply").read_bytes() == b"committed Gaussian fixture"
+    assert library.model_asset_path(document["background_id"], model["model_id"], object_id, kind).read_bytes() == asset
+    public = service.public_model(document["background_id"], model["model_id"])["objects"][0]
+    url_kind = "model" if mesh else "splat"
+    assert public["source_camera"] == source_camera
+    assert list(public["urls"]) == [url_kind] and public["urls"][url_kind].endswith(f"/{object_id}/{url_kind}")
     assert_main_fields_preserved(document, saved)
     workspace.generated.assert_not_called()
 

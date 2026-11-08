@@ -45,7 +45,7 @@ MAX_MODEL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CGS = 512
 MAX_MODELS = 512
 _ID = re.compile(r"^[a-f0-9]{32}$")
-_ASSET_KINDS = {"ply", "splat", "reference", "prepared"}
+_ASSET_SUFFIXES = {"ply": ".ply", "splat": ".splat", "model": ".glb", "reference": ".png", "prepared": ".png"}
 
 
 
@@ -512,7 +512,7 @@ def _replace_model_records(document, model):
 def _copy_model(source, scene, target):
     objects = scene.get("objects")
     if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
-        raise ValueError("Background model must contain Gaussian objects")
+        raise ValueError("Background model must contain scene objects")
     copies, total, object_ids = [], 0, set()
     for index, item in enumerate(objects, 1):
         if not isinstance(item, dict) or _id(item.get("object_id")) in object_ids:
@@ -520,10 +520,10 @@ def _copy_model(source, scene, target):
         object_id = item["object_id"]
         object_ids.add(object_id)
         files = item.get("files")
-        if not isinstance(files, dict) or not files.get("ply"):
-            raise ValueError("Background model PLY is missing")
+        if not isinstance(files, dict) or not files.get(background_storage.model_geometry_key(item)):
+            raise ValueError("Background model geometry is missing")
         retained = {}
-        for kind in _ASSET_KINDS:
+        for kind, suffix in _ASSET_SUFFIXES.items():
             relative = files.get(kind)
             if not relative:
                 continue
@@ -535,7 +535,6 @@ def _copy_model(source, scene, target):
             total += source_file.stat().st_size
             if total > MAX_MODEL_BYTES:
                 raise ValueError("Background model assets are too large")
-            suffix = {"ply": ".ply", "splat": ".splat", "reference": ".png", "prepared": ".png"}[kind]
             target_relative = f"objects/Object {index}/{kind}{suffix}"
             retained[kind] = target_relative
             copies.append((source_file, target_relative))
@@ -620,7 +619,7 @@ def model_scene(background_id, model_id):
 
 def model_asset_path(background_id, model_id, object_id, kind):
     _id(object_id)
-    if kind not in _ASSET_KINDS:
+    if kind not in _ASSET_SUFFIXES:
         raise ValueError("Unsupported background model asset kind")
     with background._LOCK:
         scene = model_scene(background_id, model_id)
@@ -1528,7 +1527,7 @@ class VNCCS_CGCreator:
     FUNCTION = "create_cg"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
-    DESCRIPTION = "Select a saved background, build its TripoSplat model and compose CG camera views. Workflow execution returns the selected finished CG."
+    DESCRIPTION = "Select a saved background, build a TripoSplat or Pixal3D model and compose CG camera views. Workflow execution returns the selected finished CG."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1634,7 +1633,8 @@ def public_document(document):
 def public_model(background_id, model_id):
     scene = model_scene(background_id, model_id)
     for item in scene.get("objects", []):
-        item["urls"] = {"splat": f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/splat"}
+        kind = "model" if background_storage.model_geometry_key(item) == "model" else "splat"
+        item["urls"] = {kind: f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/{kind}"}
         item["locked"] = True
         item.pop("files", None)
     return scene
@@ -1643,8 +1643,13 @@ def public_model(background_id, model_id):
 def model_settings(value):
     factory = provider()["storage"]
     if not isinstance(value, dict):
-        raise ValueError("TripoSplat settings must be an object")
-    return factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
+        raise ValueError("Background model settings must be an object")
+    gaussian = factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
+    gaussian["pixal_profile"] = "fast" if value.get("pixal_profile") == "fast" else "standard"
+    if value.get("provider") == "pixal3d":
+        mesh = factory._generation_settings({**value, "remove_background": "0", "refine_textures": "0", "provider": "pixal3d"})
+        return {**gaussian, **mesh, "provider": "pixal3d"}
+    return gaussian
 
 
 def ensure_idle(background_id):
@@ -1703,6 +1708,8 @@ def start_job(background_id, payload, raw_image=None):
               "source_signature": background_storage.fingerprint(image_path(background_id, image_id, source_variant)),
               "model_settings": model_settings(payload.get("model_settings", {})),
               "settings": normalize_settings(payload.get("settings", {}))}
+    if action == "model" and values["model_settings"]["provider"] == "pixal3d" and not callable(getattr(runtime, "_generate_mesh_object", None)):
+        raise RuntimeError("Pixal3D requires a 3D Factory version with mesh generation")
     if action == "cg":
         values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
         scene = model_scene(background_id, values["model_id"])
@@ -1766,10 +1773,17 @@ def _execute(job, values):
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                     encoded = io.BytesIO()
                     source.convert("RGB").save(encoded, format="PNG")
-                runtime._generate_object(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**values["model_settings"], "capture_source_camera": True})
+                settings = values["model_settings"]
+                mesh = settings["provider"] == "pixal3d"
+                if mesh and settings["pixal_profile"] == "fast":
+                    preview = factory._generation_settings({**settings, "quality": "preview"})
+                    settings = {**settings, **preview, "base_color_only": True}
+                generate = runtime._generate_mesh_object if mesh else runtime._generate_object
+                generate(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**settings, "capture_source_camera": True})
                 runtime._check_cancel(job)
                 scene = factory.load_scene(scene["scene_id"])
-                scene = factory.update_scene(scene["scene_id"], {"camera": scene["objects"][0]["source_camera"], "lighting": {"preset": "off", "background": "#000000"}})
+                camera = scene["camera"] if mesh else scene["objects"][0]["source_camera"]
+                scene = factory.update_scene(scene["scene_id"], {"camera": camera, "lighting": {"preset": "off", "background": "#000000"}})
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
                     with background._LOCK:
