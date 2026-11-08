@@ -696,7 +696,9 @@ try {
     const meshSettings = page.getByRole("dialog", { name: "Pixal3D settings" });
     const profile = meshSettings.locator('select[name="pixal_profile"]');
     assert.equal(await profile.inputValue(), "standard");
-    await chooseSelect(profile, "Fast · 1024 · Base color only");
+    await chooseSelect(profile, "Fast · Base color only");
+    await chooseSelect(meshSettings.locator('select[name="pixal_mesh_resolution"]'), "2048");
+    await chooseSelect(meshSettings.locator('select[name="pixal_texture_resolution"]'), "512");
     await capture("after-pixal3d-settings");
     await meshSettings.getByRole("button", { name: "Save", exact: true }).click();
     assert.equal(await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).model_settings.pixal_profile), "fast");
@@ -704,6 +706,8 @@ try {
     assert.equal(job.values.action, "model"); assert.deepEqual(job.values.source_variant, sourceVariant);
     assert.equal(job.values.model_settings.provider, "pixal3d"); assert.equal(job.values.model_settings.steps, 12);
     assert.equal(job.values.model_settings.pixal_profile, "fast");
+    assert.equal(job.values.model_settings.pixal_mesh_resolution, 2048);
+    assert.equal(job.values.model_settings.pixal_texture_resolution, 512);
     assert.match(await page.locator("[data-model-status]").textContent(), /Creating model/);
     assert.equal(await page.locator(".bg-job-feedback,progress,[data-stop]").count(), 0);
     assert.equal(await page.locator(".bg-status,footer").count(), 0); await capture("after-model-generating");

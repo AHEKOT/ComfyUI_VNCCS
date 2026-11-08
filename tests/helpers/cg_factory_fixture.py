@@ -46,6 +46,8 @@ def factory_fixture():
             return {"seed": value.get("seed", -1), "provider": "pixal3d",
                     "quality": quality, "target_resolution": 1024 if quality == "preview" else 1536,
                     "texture_resolution": 1024 if quality == "preview" else 2048,
+                    "normal_resolution": 1024 if quality == "preview" else 2048,
+                    "ao_resolution": 512 if quality == "preview" else 1024,
                     "remove_background": value.get("remove_background", "1") == "1",
                     "refine_textures": value.get("refine_textures", "0") == "1"}
         return {"num_gaussians": 131072, "steps": 20, "guidance_scale": 3.0, "seed": -1,

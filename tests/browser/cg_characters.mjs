@@ -192,10 +192,15 @@ export async function verifyCharacters(page, { shot, settle, geometry, scenarios
     await page.locator(".vnccs-ps-library-item").click();
     await page.waitForFunction(() => !widget.characterPanel.library);
     assert.ok(await page.evaluate(() => Math.abs(widget.characters.active.getPose().bones.upperarm_l[2] - 35) < .001));
+    const prompt = "Keep the red scarf.\nHave her look toward the window.";
+    const promptField = page.getByRole("textbox", { name: "Character prompt", exact: true });
+    await promptField.fill(prompt);
     const settings = await page.evaluate(() => ({ raw: widget.sync(), snapshot: widget.characters.snapshot() }));
+    assert.equal(settings.snapshot[0].prompt, prompt);
     await page.evaluate(raw => setup({ raw }), settings.raw); await settle();
     assert.deepEqual(rounded(await page.evaluate(() => widget.characters.snapshot())), rounded(settings.snapshot));
     await page.locator("[data-add-character]").click(); await page.waitForFunction(() => !widget.characterPanel.loading);
+    assert.equal(await promptField.inputValue(), prompt);
     await page.locator("[data-character-back]").click();
     assert.ok(await page.locator(".bg-model-source").isVisible());
     await page.locator("[data-add-character]").click(); await page.waitForFunction(() => !widget.characterPanel.loading);

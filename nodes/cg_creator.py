@@ -44,6 +44,7 @@ MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_MODEL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CGS = 512
 MAX_MODELS = 512
+CHARACTER_PROMPT_LIMIT = 8000
 _ID = re.compile(r"^[a-f0-9]{32}$")
 _ASSET_SUFFIXES = {"ply": ".ply", "splat": ".splat", "model": ".glb", "reference": ".png", "prepared": ".png"}
 
@@ -743,6 +744,8 @@ def _characters(value):
                     or not isinstance(text, str) or len(text) > 255 or re.search(r"[\\/\x00-\x1f]", text)
                     or text in {".", ".."} for key, text in source.items())):
                 raise ValueError("Invalid CG character source")
+        if "prompt" in item:
+            _text(item["prompt"], "CG character prompt", CHARACTER_PROMPT_LIMIT)
         if ("origin" in item and not vector(item["origin"]) or "baseScale" in item and
                 (type(item["baseScale"]) not in (int, float) or not .001 <= item["baseScale"] <= 1000)):
             raise ValueError("Invalid CG character placement")
@@ -1404,7 +1407,7 @@ def _save_dataset(references, image, prompt):
 
 
 @logged_operation("CGCreator", "refine")
-def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None):
+def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None, *, character_prompt=""):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
@@ -1423,6 +1426,9 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
     prompt = ANYANGLE_PROMPT
     if character is not None:
         prompt += " White dummy is character from image3"
+        extra_prompt = _text(character_prompt, "CG character prompt", CHARACTER_PROMPT_LIMIT)
+        if extra_prompt:
+            prompt += "\n" + extra_prompt
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
         _stage(draw_id, cancel_event, "loading", 0.01, "Installing AnyAngle LoRA if needed")
@@ -1646,6 +1652,14 @@ def model_settings(value):
         raise ValueError("Background model settings must be an object")
     gaussian = factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
     gaussian["pixal_profile"] = "fast" if value.get("pixal_profile", "fast") == "fast" else "standard"
+    for key, options in (
+        ("pixal_mesh_resolution", (0, 1024, 1536, 2048)),
+        ("pixal_texture_resolution", (0, 256, 512, 1024, 2048, 4096)),
+    ):
+        resolution = value.get(key, 0)
+        if type(resolution) is not int or resolution not in options:
+            raise ValueError(f"Invalid {key.replace('_', ' ')}")
+        gaussian[key] = resolution
     if value.get("provider", "pixal3d") == "pixal3d":
         mesh = factory._generation_settings({**value, "remove_background": "0", "refine_textures": "0", "provider": "pixal3d"})
         return {**gaussian, **mesh, "provider": "pixal3d"}
@@ -1756,8 +1770,9 @@ def _execute(job, values):
             if job["action"] == "cg":
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                     background_image = source.convert("RGB")
+                characters = values.get("characters", [])
                 image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background_image,
-                                                 character=values.get("character"))
+                    character=values.get("character"), character_prompt=characters[0].get("prompt", "") if characters else "")
                 runtime._check_cancel(job)
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
@@ -1765,7 +1780,7 @@ def _execute(job, values):
                         if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
                             raise BackgroundConflictError("Background source changed while generating CG; the result was not published")
                         document = commit_cg(job["background_id"], values["name"], values["raw"], image, values["camera"],
-                            settings, values["model_id"], None, characters=values.get("characters", []))
+                            settings, values["model_id"], None, characters=characters)
                     job["published"] = True
             else:
                 scene = factory.create_scene("CG Creator")
@@ -1775,9 +1790,19 @@ def _execute(job, values):
                     source.convert("RGB").save(encoded, format="PNG")
                 settings = values["model_settings"]
                 mesh = settings["provider"] == "pixal3d"
-                if mesh and settings["pixal_profile"] == "fast":
-                    preview = factory._generation_settings({**settings, "quality": "preview"})
-                    settings = {**settings, **preview, "base_color_only": True}
+                if mesh:
+                    settings = settings.copy()
+                    if settings["pixal_profile"] == "fast":
+                        preview = factory._generation_settings({**settings, "quality": "preview"})
+                        settings.update(preview, base_color_only=True)
+                    mesh_resolution = settings["pixal_mesh_resolution"]
+                    texture_resolution = settings["pixal_texture_resolution"]
+                    if mesh_resolution:
+                        settings["target_resolution"] = mesh_resolution
+                    if texture_resolution:
+                        settings["texture_resolution"] = texture_resolution
+                        settings["normal_resolution"] = min(settings["normal_resolution"], texture_resolution)
+                        settings["ao_resolution"] = min(settings["ao_resolution"], texture_resolution)
                 generate = runtime._generate_mesh_object if mesh else runtime._generate_object
                 generate(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**settings, "capture_source_camera": True})
                 runtime._check_cancel(job)

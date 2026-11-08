@@ -176,15 +176,21 @@ def test_generation_appends_matching_dataset_controls_result_and_actual_prompt(r
     previous = set()
     for index in range(2):
         runtime.size[:] = [128 + 16 * index, 64]
+        extra_prompt = "Keep the red scarf.\nHave her look toward the window." if with_character and index else ""
         image, metadata = generation.generate_image({"prompt": "Unused editor prompt"}, "dataset", threading.Event(),
-                                                    runtime.reference, runtime.background, character)
+                                                    runtime.reference, runtime.background, character, character_prompt=extra_prompt)
         encode = dict(runtime.calls)["TextEncodeQwenImage21"]
         results = set((runtime.dataset / "img").glob("*.png"))
         assert len(results) == index + 1
         assert previous <= results
         result, = results - previous
         assert {path.name for path in runtime.dataset.iterdir()} == {"img", "control1", "control2"} | ({"control3"} if with_character else set())
-        assert result.with_suffix(".txt").read_text(encoding="utf-8") == encode["prompt"] == metadata["prompt"]
+        expected_prompt = generation.ANYANGLE_PROMPT
+        if with_character:
+            expected_prompt += " White dummy is character from image3"
+        if extra_prompt:
+            expected_prompt += "\n" + extra_prompt
+        assert result.with_suffix(".txt").read_text(encoding="utf-8") == encode["prompt"] == metadata["prompt"] == expected_prompt
         for slot, (_kind, size, mode, pixel) in encode["images"].items():
             directory = runtime.dataset / f"control{slot.removeprefix('image_')}"
             assert {path.name for path in directory.iterdir()} == {path.name for path in results}
