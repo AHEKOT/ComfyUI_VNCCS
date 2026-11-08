@@ -1,4 +1,4 @@
-import { CHARACTER_PROMPT_LIMIT, validateCharacters } from "./cg_characters.mjs?v=cg-creator-2";
+import { CHARACTER_PROMPT_LIMIT, validateCharacters } from "./cg_characters.mjs?v=cg-creator-3";
 
 export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-panel { gap:12px; overflow:visible; padding:16px; }
@@ -32,7 +32,7 @@ export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-light :is(.vnccs-ps-light-pos-label,.vnccs-ps-light-value,.vnccs-ps-light-h-val,.vnccs-ps-light-h-label) { font-size:14px; }
 .vnccs-cg-creator .cg-character-light .vnccs-ps-light-slider::-webkit-slider-thumb { width:18px; height:18px; }
 .vnccs-cg-creator .cg-character-light input[type=color] { width:100%; height:36px; }
-.vnccs-cg-creator .cg-character-position-controls>.cg-character-slider { grid-template-columns:64px minmax(0,1fr) 64px; }
+.vnccs-cg-creator .cg-character-position-controls>.cg-character-slider { grid-template-columns:64px minmax(0,1fr) 84px; }
 .vnccs-cg-creator .cg-character-radars { grid-row:3 / 5; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
 .vnccs-cg-creator .cg-character-radars>div { display:grid; grid-template-rows:300px 24px; justify-items:center; align-items:center; gap:10px; }
 .vnccs-cg-creator .cg-character-radars [data-character-radar-host] { min-width:0; }

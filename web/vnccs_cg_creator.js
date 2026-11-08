@@ -1,5 +1,5 @@
-import { CGCharacterPanel, CG_CHARACTER_PANEL_CSS } from "./cg_character_panel.mjs?v=cg-creator-2";
-import { CGCharacterEditor, loadCharacterRuntime, validateCharacters } from "./cg_characters.mjs?v=cg-creator-2";
+import { CGCharacterPanel, CG_CHARACTER_PANEL_CSS } from "./cg_character_panel.mjs?v=cg-creator-3";
+import { CGCharacterEditor, loadCharacterRuntime, validateCharacters } from "./cg_characters.mjs?v=cg-creator-3";
 import { STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-9";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, storage, sessionStore, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
@@ -902,7 +902,10 @@ class CGCreatorWidget {
         this.on(this.container, "keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z" && !event.target.closest("input,textarea")) { event.preventDefault(); if (this.canEditCamera()) this.history[event.shiftKey ? "redo" : "undo"](); } });
         this.on(this.container.querySelector("[data-source-choices]"), "scroll", () => { this.updateSourceScroll(); if (!this.restoring) this.sync(); }, { passive: true });
         this.on(this.container.querySelector("[data-cgs]"), "scroll", () => { if (!this.restoring) this.sync(); }, { passive: true });
-        this.on(window, "beforeunload", event => { if (this.unsaved && this.draftFailed) { event.preventDefault(); event.returnValue = ""; } });
+        this.on(window, "beforeunload", event => {
+            this.commitGesture();
+            if (this.unsaved && this.draftFailed) { event.preventDefault(); event.returnValue = ""; }
+        });
         watchConnection(node, () => this.refreshLibrary(), registerCleanup);
         this.observer = new ResizeObserver(() => this.resize()); this.observer.observe(this.frame); this.updateControls();
     }
@@ -919,7 +922,9 @@ class CGCreatorWidget {
     canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.state?.job && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.selectedScene()); }
     editorSnapshot() { return { camera: this.viewer.getCameraState(), characters: this.characters?.snapshot() || [] }; }
     beginGesture() { if (this.canEditCamera()) this.history.begin("Scene", this.editorSnapshot()); }
-    commitGesture() { if (this.canEditCamera()) { this.sync(); this.history.commit(this.editorSnapshot()); } }
+    commitGesture() {
+        if (this.canEditCamera()) this.sync({ sceneChanged: this.history.commit(this.editorSnapshot()) });
+    }
     async ensureCharacters() {
         if (this.characters) return this.characters;
         this.characterRuntime ||= loadCharacterRuntime(this.factoryRuntime.viewerURL).catch(error => { this.characterRuntime = null; throw error; });
@@ -988,7 +993,7 @@ class CGCreatorWidget {
                     await this.acceptDocument(document, false, epoch);
                 }
                 if (this.disposed || epoch !== this.epoch) return;
-                if (!this.restoreDraft() && state.background_id) this.restoreQwenChoice();
+                const recovered = this.restoreDraft() || (state.background_id && this.restoreQwenChoice());
                 if (this.document && !this.document._recovery && !this.document.archived) {
                     this.unsaved ||= JSON.stringify(this.state.settings) !== JSON.stringify(settingsDefaults(this.document.cg_settings))
                         || JSON.stringify(this.state.model_settings) !== JSON.stringify({ ...MODEL_DEFAULTS, ...this.document.model_settings });
@@ -997,7 +1002,7 @@ class CGCreatorWidget {
                 const scroll = this.state.scroll;
                 this.container.querySelector("[data-source-choices]").scrollLeft = scroll?.sources || 0;
                 this.container.querySelector("[data-cgs]").scrollTop = scroll?.cgs || 0;
-                this.restoring = false; this.sync();
+                this.restoring = false; this.sync({ trackChange: Boolean(recovered) });
                 this.message(this.document?._recovery ? "Recovered backup is read-only. The original data is preserved." : this.catalog.length ? "Set the camera and press Generate CG." : "Create a background in VNCCS Background Creator.", Boolean(this.document?._recovery));
                 this.restorePreview();
                 if (this.state.job && !this.document?._recovery && !this.document?.archived) this.jobOperation = this.runJob(this.state.job.action).catch(error => { if (!this.disposed && epoch === this.epoch) this.message(error.message, true); });
@@ -1331,7 +1336,7 @@ class CGCreatorWidget {
     }
 
     syncFov(camera) { this.fov.value = String(camera.fov); this.fovNumber.value = String(Math.round(camera.fov * 10) / 10); }
-    sync() {
+    sync({ trackChange = true, sceneChanged = false } = {}) {
         if (this.disposed || this.restoring || this.backgroundTransition || !this.state) return;
         const sceneReady = this.selectedScene() && !this.busy && !this.loadingModel;
         if (this.viewer && sceneReady) this.state.camera = this.viewer.getCameraState();
@@ -1341,7 +1346,21 @@ class CGCreatorWidget {
         const sources = this.container.querySelector("[data-source-choices]").scrollLeft, cgs = this.container.querySelector("[data-cgs]").scrollTop;
         if (sources || cgs || this.state.scroll) this.state.scroll = { sources, cgs };
         const raw = JSON.stringify(this.state), widget = this.node.widgets.find(item => item.name === "cg_data");
-        if (widget && widget.value !== raw) { widget.value = raw; this.node.properties ??= {}; this.node.properties.cgCreator = raw; this.node.graph?.setDirtyCanvas?.(true, true); } return raw;
+        const changed = widget && widget.value !== raw;
+        if (changed || sceneChanged) {
+            const canvas = trackChange && !this.history?.pending ? app.canvas : null;
+            canvas?.emitEvent?.({ subType: "before-change" });
+            try {
+                if (changed) {
+                    widget.value = raw;
+                    this.node.properties ??= {}; this.node.properties.cgCreator = raw;
+                    this.node.graph?.setDirtyCanvas?.(true, true);
+                }
+            } finally {
+                canvas?.emitEvent?.({ subType: "after-change" });
+            }
+        }
+        return raw;
     }
     draftKey() {
         this.draftId ??= cacheIdentity();
@@ -1388,6 +1407,7 @@ class CGCreatorWidget {
         if (!choice?.previous.includes(generation.diffusion_model_name)) return;
         const saved = this.document?.cg_settings?.generation;
         Object.assign(generation, saved?.diffusion_model_name === choice.preset.diffusion_model_name ? qwenModelPreset(saved) : choice.preset);
+        return true;
     }
 
     retainDraft() {
@@ -1870,12 +1890,12 @@ app.registerExtension({
                     beforeQueued?.apply(state, args);
                     if (this.cgCreator.restoring) throw new Error("CG Creator is still restoring its scene.");
                     if (this.cgCreator.busy || this.cgCreator.state?.job) throw new Error("Wait for CG Creator to finish its current operation.");
-                    this.cgCreator.sync();
+                    this.cgCreator.sync({ trackChange: false });
                 };
                 const serializeValue = state.serializeValue;
                 state.serializeValue = (...args) => {
                     const result = serializeValue?.apply(state, args);
-                    return this.cgCreator.sync() ?? result ?? state.value;
+                    return this.cgCreator.sync({ trackChange: false }) ?? result ?? state.value;
                 };
             }
             this.setSize?.([LAYOUT_WIDTH, CREATOR_MIN_HEIGHT]); fit(this);
@@ -1891,7 +1911,7 @@ app.registerExtension({
         };
         nodeType.prototype.onResize = function () { const result = resized?.apply(this, arguments); fit(this); return result; };
         nodeType.prototype.onSerialize = function (info) {
-            const result = serialized?.apply(this, arguments), raw = this.cgCreator?.sync();
+            const result = serialized?.apply(this, arguments), raw = this.cgCreator?.sync({ trackChange: false });
             const index = this.widgets?.findIndex(item => item.name === "cg_data");
             if (raw && info && index >= 0 && Array.isArray(info.widgets_values)) info.widgets_values[index] = raw;
             return result;

@@ -313,6 +313,42 @@ test("a manually selected Qwen model survives reload after its draft was acknowl
     assert.equal(separateSelection.widget.state.settings.generation.diffusion_model_name, authored);
 });
 
+test("CG Creator publishes the complete edited state to ComfyUI before the library save", async () => {
+    const h = harness(JSON.stringify(state()));
+    const notifications = [];
+    let autosaved;
+    h.context.app.canvas = { emitEvent({ subType }) {
+        notifications.push(subType);
+        if (subType !== "after-change") return;
+        const info = { widgets_values: ["stale"] };
+        h.node.onSerialize(info);
+        autosaved = info.widgets_values[0];
+    } };
+    await h.ready();
+    assert.deepEqual(notifications, []);
+    Object.assign(h.widget.state.settings.generation, { cache_device: "cpu", cache_dtype: "int4",
+        steps: 19, cfg: 0, sampler: "dpmpp_2m", scheduler: "normal", seed: 429, seed_mode: "randomize" });
+    Object.assign(h.widget.state.model_settings, { pixal_mesh_resolution: 2048, pixal_texture_resolution: 512, seed: 735 });
+    h.widget.qi2.options.onChange();
+    assert.deepEqual(notifications, ["before-change", "after-change"]);
+    assert.equal(autosaved, h.data.value);
+    const configured = JSON.parse(autosaved);
+    assert.deepEqual(configured.settings, clone(h.widget.state.settings));
+    assert.deepEqual(configured.model_settings, clone(h.widget.state.model_settings));
+    assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
+    await h.widget.persist();
+    h.widget.beginGesture();
+    h.widget.viewer.setCameraState({ ...camera, fov: 67 }, { emit: true });
+    assert.deepEqual(notifications, ["before-change", "after-change"]);
+    await h.window.fire("beforeunload");
+    assert.deepEqual(notifications, ["before-change", "after-change", "before-change", "after-change"]);
+    const reloaded = harness(autosaved, { drafts: h.drafts });
+    reloaded.documents.set(A, h.documents.get(A)); await reloaded.ready();
+    assert.deepEqual(clone(reloaded.widget.state.settings), configured.settings);
+    assert.deepEqual(clone(reloaded.widget.state.model_settings), configured.model_settings);
+    assert.equal(reloaded.widget.state.camera.fov, 67);
+});
+
 test("model generation settings stay with the node when switching backgrounds", async () => {
     const h = harness(JSON.stringify(state()));
     await h.ready();
