@@ -824,6 +824,7 @@ ASSETS = {
 }
 TURBO_LORA = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
 TURBO_MODEL = "qwen_image_2.1_turbo_int8_convrot.safetensors"
+CG_LORA_NAME = "VNCCS Lucid Dreams QI2"
 ANYANGLE_REPO = "lilylilith/QI_2.1_AnyAngle"
 ANYANGLE_REVISION = "35b746e4121e1e9fc6a3e334fd8036ba1a9560d0"
 ANYANGLE_FILENAME = "QI2.1_AnyAngle.safetensors"
@@ -1049,14 +1050,12 @@ def _asset_name(category: str, name: str) -> str:
     return matches[0]
 
 
-@lru_cache(maxsize=1)
-def resolve_pose_lora() -> str:
+def resolve_cg_lora() -> str:
     from . import vnccs_control_center as center
-    with open(center._get_packaged_cc_path(), encoding="utf-8") as handle:
-        config = json.load(handle)
-    entry = center._find_entry(config.get("lora", []), "VNCCS Pose Studio QI2")
+    config = center._get_cc_config("MIUProject/VNCCS_v3.0")
+    entry = center._find_entry(config.get("lora", []), CG_LORA_NAME)
     if entry is None:
-        raise ValueError("QI2 Pose Studio LoRA is not configured in Control Center")
+        raise ValueError(f"{CG_LORA_NAME} is not configured in Control Center")
     return _asset_name("loras", center._rel_within_folder(entry["local_path"]))
 
 
@@ -1431,17 +1430,16 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
             prompt += "\n" + extra_prompt
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
-        _stage(draw_id, cancel_event, "loading", 0.01, "Installing AnyAngle LoRA if needed")
-        anyangle_lora = resolve_anyangle_lora(cancel_event)
-        pose_lora = resolve_pose_lora() if character is not None else None
+        _stage(draw_id, cancel_event, "loading", 0.01, "Locating CG LoRA")
+        cg_lora = resolve_cg_lora()
         _stage(draw_id, cancel_event, "loading", 0.03, "Loading Qwen Image 2.1")
         model, clip, vae = _load_assets(generation["diffusion_model_name"])
         _stage(draw_id, cancel_event, "loading", 0.12, "Applying CG model settings")
-        model, _ = apply_generation_lora(model, None, anyangle_lora, 1.0, clip_strength=0)
-        if pose_lora:
-            model, _ = apply_generation_lora(model, None, pose_lora, 1.0, clip_strength=0)
+        model, _ = apply_generation_lora(model, None, cg_lora, 1.0, clip_strength=0)
+        cg_filename = cg_lora.replace("\\", "/").rsplit("/", 1)[-1].casefold()
         for item in generation["lora_stack"]:
-            if item["name"].replace("\\", "/").rsplit("/", 1)[-1].casefold() == ANYANGLE_FILENAME.casefold():
+            filename = item["name"].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+            if filename in (ANYANGLE_FILENAME.casefold(), cg_filename):
                 continue
             model, clip = apply_generation_lora(model, clip, item["name"], item["strength"])
             _check_cancel(cancel_event)
@@ -1493,7 +1491,7 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         _stage(draw_id, cancel_event, "complete", 1, "CG image ready")
         return image, {"settings": settings, "prompt": prompt, "width": image.width, "height": image.height,
                        "seed": generation["seed"], "model": "qi2",
-                       "anyangle_lora": {"name": anyangle_lora, "strength": 1.0, "revision": ANYANGLE_REVISION}}
+                       "cg_lora": {"name": cg_lora, "strength": 1.0}}
 
 # Workflow node, workspace jobs and ComfyUI HTTP registration.
 

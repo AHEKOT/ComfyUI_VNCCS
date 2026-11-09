@@ -23,6 +23,8 @@ load = service_package("vnccs_cg_generation_test")
 generation = load("nodes.cg_creator")
 runtime_cleanup = load("nodes.runtime_cleanup")
 
+TEST_CG_LORA = "QI2.1/VNCCS/lucid-dreams.safetensors"
+
 
 
 def test_defaults_are_isolated_and_do_not_add_other_generation_features():
@@ -124,7 +126,7 @@ def runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(generation, "_asset_name", lambda category, name: name)
     monkeypatch.setattr(generation, "_get_lora_full_path", lambda name: "/models/loras/" + name)
     monkeypatch.setattr(generation, "_load_lora_file", lambda path: ({"lora": path}, {}))
-    monkeypatch.setattr(generation, "resolve_anyangle_lora", lambda _cancel: generation.ANYANGLE_LORA)
+    monkeypatch.setattr(generation, "resolve_cg_lora", lambda: TEST_CG_LORA)
     def apply_lora(model, clip, state, strength, clip_strength):
         calls.append(("ApplyLoRA", {"state": state, "strength": strength, "clip_strength": clip_strength}))
         model.patches[state["lora"]] = [(strength, clip_strength)]
@@ -170,9 +172,8 @@ def runtime(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("with_character", [False, True])
-def test_generation_appends_matching_dataset_controls_result_and_actual_prompt(runtime, monkeypatch, with_character):
+def test_generation_appends_matching_dataset_controls_result_and_actual_prompt(runtime, with_character):
     character = Image.new("RGBA", (128, 256), (0, 0, 255, 128)) if with_character else None
-    monkeypatch.setattr(generation, "resolve_pose_lora", lambda: "pose.safetensors")
     previous = set()
     for index in range(2):
         runtime.size[:] = [128 + 16 * index, 64]
@@ -242,7 +243,7 @@ def test_selected_qwen_cache_settings_reach_the_runtime_and_saved_metadata(runti
     assert (conditioning["cache_device"], conditioning["cache_dtype"]) == (expected_device, dtype)
 
 
-def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_frame(runtime, caplog):
+def test_cg_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_frame(runtime, caplog):
     image, metadata = generation.generate_image({}, "cg-frame", threading.Event(), runtime.reference, runtime.background)
     names = [name for name, _ in runtime.calls]
     assert names == ["UNETLoader", "CLIPLoader", "VAELoader", "ApplyLoRA", "QwenImage21Cache",
@@ -255,7 +256,7 @@ def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_fra
     assert calls["VAELoader"]["vae_name"] == generation.ASSETS["vae"]
     assert calls["QwenImage21Cache"]["device"] == "auto"
     assert calls["QwenImage21Cache"]["dtype"] == "default"
-    assert calls["ApplyLoRA"] == {"state": {"lora": "/models/loras/" + generation.ANYANGLE_LORA},
+    assert calls["ApplyLoRA"] == {"state": {"lora": "/models/loras/" + TEST_CG_LORA},
                                  "strength": 1.0, "clip_strength": 0.0}
     encode = calls["TextEncodeQwenImage21"]
     assert encode["images"] == {"image_1": ("image", (1200, 672), "RGB", (0, 128, 0)),
@@ -273,12 +274,11 @@ def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_fra
     assert calls["KSampler"]["steps"] == 25 and calls["KSampler"]["cfg"] == 1
     assert calls["KSampler"]["scheduler"] == "simple" and calls["KSampler"]["denoise"] == 1
     assert metadata["settings"] == generation.DEFAULT_SETTINGS and metadata["model"] == "qi2"
-    assert metadata["anyangle_lora"] == {"name": generation.ANYANGLE_LORA, "strength": 1.0,
-                                         "revision": generation.ANYANGLE_REVISION}
+    assert metadata["cg_lora"] == {"name": TEST_CG_LORA, "strength": 1.0}
     runtime.base.clone.assert_called_once()
     events = [record.vnccs for record in caplog.records if hasattr(record, "vnccs")]
     lora = next(event for event in events if event["event"] == "lora_applied")
-    assert lora["path"] == "/models/loras/" + generation.ANYANGLE_LORA
+    assert lora["path"] == "/models/loras/" + TEST_CG_LORA
     assert lora["strength_model"] == 1 and lora["model_patch_keys"] == 1
     for slot, source, reference in (("image_1", "original background", runtime.background),
                                     ("image_2", "captured camera frame", runtime.reference)):
@@ -296,35 +296,18 @@ def test_anyangle_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_fra
 
 
 @pytest.mark.parametrize("alpha,color", [(0, (255, 255, 255)), (128, (127, 127, 255)), (255, (0, 0, 255))])
-def test_character_inference_keeps_anyangle_and_caches_control_center_pose_lora(runtime, monkeypatch, tmp_path, alpha, color):
-    center = load("nodes.vnccs_control_center")
-    catalog = tmp_path / "control_center.json"
-    pose_name = "QI2.1/VNCCS/updated_pose.safetensors"
-    catalog.write_text(json.dumps({"lora": [{"name": "VNCCS Pose Studio QI2", "local_path": "models/loras/" + pose_name}]}))
-    config_path = mock.Mock(return_value=str(catalog))
-    monkeypatch.setattr(center, "_get_packaged_cc_path", config_path)
-    apply = mock.Mock(wraps=generation.apply_generation_lora)
-    monkeypatch.setattr(generation, "apply_generation_lora", apply)
+def test_character_inference_applies_only_the_cg_lora(runtime, alpha, color):
     character = Image.new("RGBA", (128, 256), (0, 0, 255, alpha))
-    generation.resolve_pose_lora.cache_clear()
-    try:
-        for index in range(2):
-            _, metadata = generation.generate_image({}, str(index), threading.Event(), runtime.reference, runtime.background, character)
-            if index == 0:
-                catalog.unlink()
-            encode = dict(runtime.calls)["TextEncodeQwenImage21"]
-            assert list(encode["images"]) == ["image_1", "image_2", "image_3"]
-            assert encode["images"] == {"image_1": ("image", runtime.background.size, "RGB", (0, 128, 0)),
-                                        "image_2": ("image", runtime.reference.size, "RGB", (255, 0, 0)),
-                                        "image_3": ("image", character.size, "RGB", color)}
-            assert encode["prompt"] == metadata["prompt"] == generation.ANYANGLE_PROMPT + " White dummy is character from image3"
-            anyangle, pose = [call for call in apply.call_args_list if call.args[2]][-2:]
-            assert anyangle.args[2:] == (generation.ANYANGLE_LORA, 1.0)
-            assert pose.args[1:] == (None, pose_name, 1.0) and pose.kwargs == {"clip_strength": 0}
-        config_path.assert_called_once()
-        assert [name for name, _ in runtime.calls].count("UNETLoader") == 1
-    finally:
-        generation.resolve_pose_lora.cache_clear()
+    _, metadata = generation.generate_image({}, "character", threading.Event(), runtime.reference, runtime.background, character)
+    encode = dict(runtime.calls)["TextEncodeQwenImage21"]
+    assert list(encode["images"]) == ["image_1", "image_2", "image_3"]
+    assert encode["images"] == {"image_1": ("image", runtime.background.size, "RGB", (0, 128, 0)),
+                                "image_2": ("image", runtime.reference.size, "RGB", (255, 0, 0)),
+                                "image_3": ("image", character.size, "RGB", color)}
+    assert encode["prompt"] == metadata["prompt"] == generation.ANYANGLE_PROMPT + " White dummy is character from image3"
+    applied = [values for name, values in runtime.calls if name == "ApplyLoRA"]
+    assert applied == [{"state": {"lora": "/models/loras/" + TEST_CG_LORA},
+                        "strength": 1.0, "clip_strength": 0.0}]
 
 
 def test_fixed_prompt_never_runs_enhancement_and_preserves_the_legacy_profile(runtime):
@@ -349,7 +332,7 @@ def test_fresh_clip_per_request_and_no_automatic_character_loras(runtime):
     assert names.count("CLIPLoader") == 2 and runtime.clips[0] is not runtime.clips[1]
     applied = [call for name, call in runtime.calls if name == "ApplyLoRA"]
     assert len(applied) == 4
-    assert applied[0] == applied[2] == {"state": {"lora": "/models/loras/" + generation.ANYANGLE_LORA}, "strength": 1, "clip_strength": 0}
+    assert applied[0] == applied[2] == {"state": {"lora": "/models/loras/" + TEST_CG_LORA}, "strength": 1, "clip_strength": 0}
     assert applied[1] == applied[3] == {"state": {"lora": "/models/loras/scenery.safetensors"}, "strength": 0.7, "clip_strength": 0.7}
     assert runtime.base.clone.call_count == 2
 
@@ -554,11 +537,35 @@ def test_original_background_is_required_before_loading_models(runtime, backgrou
     assert runtime.calls == []
 
 
-def test_anyangle_is_always_applied_once_at_full_model_strength_without_clip_patches(runtime):
-    settings = {"generation": {"lora_stack": [{"name": generation.ANYANGLE_LORA, "strength": 0.2}]}}
+def test_cg_resolves_latest_catalog_lora_version(monkeypatch, tmp_path):
+    center = load("nodes.vnccs_control_center")
+    catalog = tmp_path / "control_center.json"
+    latest, older = "QI2.1/VNCCS/lucid-v10.safetensors", "QI2.1/VNCCS/lucid-v2.safetensors"
+    catalog.write_text(json.dumps({"lora": [
+        {"name": "VNCCS Lucid Dreams QI2", "version": version, "local_path": "models/loras/" + name}
+        for version, name in (("10.0", latest), ("2.0", older))
+    ]}), encoding="utf-8")
+    monkeypatch.setattr(center, "_get_packaged_cc_path", lambda: str(catalog))
+    monkeypatch.setattr(center, "_CC_CONFIG_CACHE", {})
+    monkeypatch.setattr(center, "_CC_CONFIG_REQUESTS", {})
+    monkeypatch.setattr(center, "_load_custom_loras", lambda: [])
+    installed = [older, latest]
+    monkeypatch.setattr(generation, "_installed", lambda category: installed)
+
+    assert generation.resolve_cg_lora() == latest
+    installed.remove(latest)
+    with pytest.raises(FileNotFoundError, match="lucid-v10"):
+        generation.resolve_cg_lora()
+
+
+def test_cg_lora_is_applied_once_even_with_duplicate_and_legacy_anyangle_slots(runtime):
+    settings = {"generation": {"lora_stack": [
+        {"name": TEST_CG_LORA, "strength": 0.2},
+        {"name": generation.ANYANGLE_LORA, "strength": 0.2},
+    ]}}
     generation.generate_image(settings, "mandatory-adapter", threading.Event(), runtime.reference, runtime.background)
     applied = [values for name, values in runtime.calls if name == "ApplyLoRA"]
-    assert applied == [{"state": {"lora": "/models/loras/" + generation.ANYANGLE_LORA},
+    assert applied == [{"state": {"lora": "/models/loras/" + TEST_CG_LORA},
                         "strength": 1.0, "clip_strength": 0.0}]
 
 

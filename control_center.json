@@ -252,6 +252,16 @@
       "kind": "QI2"
     },
     {
+      "name": "VNCCS Lucid Dreams QI2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_LucidDreamsV1.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_LucidDreamsV1.safetensors",
+      "version": "1.0",
+      "description": "QI2 LoRA for creating CG images.",
+      "type": "Helper",
+      "kind": "QI2"
+    },
+    {
       "name": "VNCCS Overhaul QI2",
       "type": "Helper",
       "hf_repo": "MIUProject/VNCCS_v3.0",
