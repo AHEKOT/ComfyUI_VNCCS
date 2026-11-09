@@ -424,28 +424,31 @@ def image_path(background_id, image_id, source_variant=None):
 
 
 def _asset_file(record, kind):
+    if kind == "cgs":
+        relative = background_storage.cg_image_file(record)
+        parts = Path(relative).parts
+        _name(Path(parts[1]).stem if len(parts) == 2 else parts[1])
+        return relative
     relative = record.get("file")
-    branch, filename = ("model", "scene.json") if kind == "models" else ("CG", "image.png")
-    if (not isinstance(relative, str) or "\\" in relative or relative != Path(relative).as_posix() or len(Path(relative).parts) not in ({3, 4} if kind == "cgs" else {3})
-            or Path(relative).parts[0] != branch or Path(relative).name != filename):
+    if (not isinstance(relative, str) or "\\" in relative or relative != Path(relative).as_posix() or len(Path(relative).parts) != 3
+            or Path(relative).parts[0] not in background_storage.MODEL_BRANCHES or Path(relative).name != "scene.json"):
         raise ValueError("Invalid CG Creator saved asset path")
     _name(Path(relative).parts[1])
-    if kind == "cgs" and "raw_file" in record and record["raw_file"] != str(Path(relative).with_name("raw.png")).replace("\\", "/"):
-        raise ValueError("Invalid CG Creator raw image path")
     return relative
 
 
-def _next_asset_directory(directory, branch, name, *, flatten=None):
+def _next_asset_path(directory, branch, name, *, extension="", reserved=()):
     base = _contained(directory, branch)
     name = _name(name)
     occupied = {path.name.casefold() for path in base.iterdir()} if base.exists() else set()
+    occupied.update(Path(path).name.casefold() for path in reserved)
     index = 1
     while True:
         suffix = f" ({index})" if index > 1 else ""
         candidate = _name(name[:96 - len(suffix)] + suffix)
-        target = _contained(base, candidate)
-        if candidate.casefold() not in occupied or target == flatten and not any((target / name).exists() for name in ("image.png", "raw.png")):
-            return target
+        filename = candidate + extension
+        if filename.casefold() not in occupied:
+            return _contained(base, filename)
         index += 1
 
 
@@ -460,20 +463,15 @@ def _recover_assets(directory):
 
 
 @contextmanager
-def _asset_publication(directory, previous, kind, record, moves, *, manifest=None):
+def _asset_publication(directory, previous, kind, record, moves):
     pending = _contained(directory, ".cg-assets.pending")
     pending.mkdir(exist_ok=False)
     try:
         saved = json.loads(previous)
         before = background_storage.hydrate(directory, background_storage.unpack(saved), allow_unsigned=saved.get("schema_version") == 2)
+        before.pop("cgs", None)
         _atomic(pending / "before.json", _json_bytes(before))
-        backup = _contained(directory, f"{directory.name}_config.json.backup")
-        if backup.exists():
-            _atomic(pending / "before.backup", backup.read_bytes())
-        if manifest is not None:
-            _atomic(pending / "scene.before.json", manifest)
         plan = {"kind": kind, "id": record[kind[:-1] + "_id"], "record": record,
-                "had_backup": backup.exists(), "manifest": manifest is not None,
                 "moves": [[old.relative_to(directory).as_posix(), new.relative_to(directory).as_posix()] for old, new in moves]}
         _atomic(pending / "plan.json", _json_bytes(plan))
     except BaseException:
@@ -524,7 +522,7 @@ def _copy_model(source, scene, target):
         if not isinstance(files, dict) or not files.get(background_storage.model_geometry_key(item)):
             raise ValueError("Background model geometry is missing")
         retained = {}
-        for kind, suffix in _ASSET_SUFFIXES.items():
+        for kind in ("ply", "splat", "model"):
             relative = files.get(kind)
             if not relative:
                 continue
@@ -536,7 +534,8 @@ def _copy_model(source, scene, target):
             total += source_file.stat().st_size
             if total > MAX_MODEL_BYTES:
                 raise ValueError("Background model assets are too large")
-            target_relative = f"objects/Object {index}/{kind}{suffix}"
+            suffix = _ASSET_SUFFIXES[kind]
+            target_relative = f"{kind}{suffix}" if index == 1 else f"{kind}-{index}{suffix}"
             retained[kind] = target_relative
             copies.append((source_file, target_relative))
         item["files"] = retained
@@ -567,8 +566,9 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
         if not old_models and len(document.get("models", [])) >= MAX_MODELS:
             raise ValueError("Background model limit reached")
         model_id = uuid.uuid4().hex
+        branch = background_storage.model_branch(directory)
         target = (_model_directory(directory, old_models[-1]["model_id"], document) if old_models
-                  else _contained(directory, "model", _source_label(document, image_id, variant)))
+                  else _contained(directory, branch, _source_label(document, image_id, variant)))
         retired_moves = _retired_model_moves(directory, document, old_models)
         if target.exists() and not retired_moves:
             retired, _ = _read_json(_contained(target, "scene.json"))
@@ -576,7 +576,7 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
                 raise BackgroundStorageError("Existing model belongs to another background; files are preserved")
             if (any(model["model_id"] == retired.get("model_id") for model in document["models"])
                     and _model_source(retired) != (image_id, _variant_key(variant))):
-                target = _next_asset_directory(directory, "model", _source_label(document, image_id, variant))
+                target = _next_asset_path(directory, branch, _source_label(document, image_id, variant))
             else:
                 retired_moves.append((target, _contained(directory, ".cg-assets.pending", "retired", _id(retired["model_id"]))))
         scene.update(background_id=background_id, model_id=model_id, source_image_id=image_id,
@@ -763,18 +763,19 @@ def commit_cg(background_id, name, raw, finished, camera, settings, model_id, ex
         if len(document.get("cgs", [])) >= MAX_CGS:
             raise ValueError("Background CG limit reached")
         cg_id = uuid.uuid4().hex
-        target = _next_asset_directory(directory, "CG", name)
+        reserved = [cg[key] for cg in document.get("cgs", []) for key in ("file", "raw_file") if key in cg]
+        target = _next_asset_path(directory, "CG", name, extension=".png", reserved=reserved)
         metadata = {"cg_id": cg_id, "name": name, "background_id": background_id,
                     "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera, "settings": settings,
                     "width": finished.width, "height": finished.height, "characters": characters,
-                    "file": (target / "image.png").relative_to(directory).as_posix()}
+                    "file": target.relative_to(directory).as_posix()}
         variant = _source_variant(model.get("source_variant"))
         if variant:
             metadata["source_variant"] = variant
         _json_bytes(metadata)
         stage = _contained(directory, ".cg-assets.pending", "data")
         with _asset_publication(directory, previous, "cgs", metadata, [(stage, target)]):
-            _atomic(_contained(stage, "image.png"), finished_bytes)
+            _atomic(stage, finished_bytes)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, target)
             document.setdefault("cgs", []).append(metadata)

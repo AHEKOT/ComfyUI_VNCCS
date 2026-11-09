@@ -54,7 +54,7 @@ def test_disk_configuration_contains_current_state_without_asset_history(library
     assert not {"images", "selected_image_id", "generated_sets", "models", "cgs"} & disk.keys()
     assert disk["source"]["file"] == "source.png"
     assert disk["variant_outputs"] is None
-    assert (directory / "Room_config.json.backup").read_bytes() == (directory / "Room_config.json").read_bytes()
+    assert not (directory / "Room_config.json.backup").exists()
     assert sorted(path.name for path in directory.glob("*.png")) == ["source.png"]
     assert not (directory / "Sources").exists()
 
@@ -66,7 +66,7 @@ def test_replacing_source_invalidates_models_and_variants_but_keeps_saved_cg(lib
     image = Image.new("RGB", (128, 64), "blue")
     document = cg.commit_cg(document["background_id"], "View", image, image, CAMERA, {}, model["model_id"], None)
     saved = copy.deepcopy(document["cgs"][0])
-    config = directory / "CG" / "View" / "View_config.json"
+    config = directory / "CG" / "index.json"
     original = config.read_bytes()
     document = background.add_image(document["background_id"], Image.new("RGB", (128, 64), "green"), {})
     loaded = cg.load_background(document["background_id"])
@@ -76,7 +76,7 @@ def test_replacing_source_invalidates_models_and_variants_but_keeps_saved_cg(lib
     assert cg.cg_image_path(document["background_id"], saved["cg_id"]).is_file()
     rebuilt = build_model(document, tmp_path, b"replacement")
     assert len(rebuilt["models"]) == 1
-    assert rebuilt["models"][0]["file"] == model["file"] == "model/Original/scene.json"
+    assert rebuilt["models"][0]["file"] == model["file"] == "Model/Original/scene.json"
     assert rebuilt["models"][0]["model_id"] != model["model_id"]
     assert cg.load_background(document["background_id"])["cgs"][0]["model_id"] == model["model_id"]
     assert config.read_bytes() == original
@@ -88,12 +88,12 @@ def test_ready_cg_is_readable_after_its_model_directory_is_lost(library):
     image = Image.new("RGB", (128, 64))
     document = cg.commit_cg(document["background_id"], "Keep", image, image, CAMERA, {}, document["models"][0]["model_id"], None)
     identity = document["cgs"][0]["cg_id"]
-    shutil.rmtree(directory / "model")
+    shutil.rmtree(directory / "Model")
     assert cg.load_background(document["background_id"])["models"] == []
     assert cg.cg_image_path(document["background_id"], identity).read_bytes()
 
 
-@pytest.mark.parametrize("failure", ["source.png", "Room_config.json", "Room_config.json.backup"])
+@pytest.mark.parametrize("failure", ["source.png", "Room_config.json"])
 def test_source_publication_failure_rolls_back_pixels_and_all_metadata(library, monkeypatch, failure):
     document, directory, _ = library
     before = snapshot(directory)
@@ -213,13 +213,17 @@ def test_duplicate_variant_labels_keep_separate_model_folders(library):
     group = document["generated_sets"][0]
     variant = {"set_id": group["set_id"], "index": 1, "variant_id": cards[0]["id"], "name": "Original"}
     scene = json.loads((directory / original["file"]).read_bytes())
-    built = cg.commit_model(document["background_id"], document["selected_image_id"], directory / "model/Original", scene, {}, None, source_variant=variant)
-    assert {model["file"] for model in built["models"]} == {"model/Original/scene.json", "model/Original (2)/scene.json"}
+    built = cg.commit_model(document["background_id"], document["selected_image_id"], directory / "Model/Original", scene, {}, None, source_variant=variant)
+    assert {model["file"] for model in built["models"]} == {"Model/Original/scene.json", "Model/Original (2)/scene.json"}
     assert len(cg.load_background(document["background_id"])["models"]) == 2
 
 
 def test_interrupted_migration_rollback_can_resume(library, monkeypatch):
     document, directory, tmp_path = library
+    source = directory / "Sources/V2.png"
+    source.parent.mkdir()
+    Image.new("RGB", (128, 64), "blue").save(source)
+    document["images"][0]["file"] = "Sources/V2.png"
     (directory / "Room_config.json").write_bytes(storage.json_bytes(document))
     (directory / "Room_config.json.backup").write_bytes(storage.json_bytes(document))
     before = snapshot(directory)

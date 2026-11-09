@@ -34,7 +34,6 @@ def write_document(document):
     path.parent.mkdir(parents=True, exist_ok=True)
     encoded = json.dumps(document, ensure_ascii=False, indent=2).encode() + b"\n"
     path.write_bytes(encoded)
-    path.with_suffix(".json.backup").write_bytes(encoded)
     return path
 
 
@@ -114,7 +113,7 @@ def test_save_only_cg_owned_settings_and_preserve_all_main_fields(scene):
     updated = storage._save_settings(scene["background_id"], model_settings, cg_settings, scene["revision"])
     assert updated == {**scene, "revision": scene["revision"] + 1,
                        "model_settings": model_settings, "cg_settings": cg_settings}
-    assert path_for(scene).with_suffix(".json.backup").read_bytes() == path_for(scene).read_bytes()
+    assert not path_for(scene).with_suffix(".json.backup").exists()
     model_settings["seed"] = 999
     cg_settings["camera"]["position"][0] = 999
     assert storage.load_background(scene["background_id"])["model_settings"]["seed"] == 14
@@ -144,7 +143,7 @@ def test_cg_deletion_preserves_other_data_assets_and_saved_workflow_references(s
     updated = storage._archive_cg(scene["background_id"], target["cg_id"], document["revision"])
     assert updated == {**document, "revision": document["revision"] + 1,
                        "cgs": [{**target, "archived": True}, document["cgs"][1]]}
-    assert path_for(updated).with_suffix(".json.backup").read_bytes() == path_for(updated).read_bytes()
+    assert not path_for(updated).with_suffix(".json.backup").exists()
     for path, data in before.items():
         if not path.endswith((".json", ".json.backup")):
             assert (storage.root() / path).read_bytes() == data
@@ -214,13 +213,14 @@ def test_model_regeneration_replaces_only_its_variant_and_preserves_cgs(source_v
     assert first_model_path.read_bytes() == b"regenerated model"
     assert storage.model_asset_path(document["background_id"], second_model["model_id"], "d" * 32, "ply").read_bytes() == first_bytes
     assert rebuilt_model["file"] == first_model["file"]
-    assert len(list((path_for(document).parent / "model").iterdir())) == 2
+    assert len(list((path_for(document).parent / "Model").iterdir())) == 2
     assert storage.cg_image_path(document["background_id"], first_cg["cg_id"]).read_bytes() == cg_bytes
     with pytest.raises(FileNotFoundError):
         storage.model_scene(document["background_id"], first_model["model_id"])
-    cg_root = storage.root() / scene["name"] / "CG" / "Window"
-    assert set(path.name for path in cg_root.iterdir()) == {"image.png", "Window_config.json"}
-    assert cg_root / "image.png" == storage.cg_image_path(document["background_id"], first_cg["cg_id"])
+    cg_root = storage.root() / scene["name"] / "CG"
+    assert set(path.name for path in cg_root.iterdir()) == {"Window.png", "index.json"}
+    assert json.loads((cg_root / "index.json").read_bytes()) == [first_cg]
+    assert cg_root / "Window.png" == storage.cg_image_path(document["background_id"], first_cg["cg_id"])
     for key in ("editor", "images", "selected_image_id", "generated_sets", "generator_settings", "future_owner_data"):
         assert document[key] == original_fields[key]
 
@@ -259,6 +259,7 @@ def test_archived_scene_assets_still_read_but_mutations_are_blocked(scene, tmp_p
 
 def test_valid_backup_is_read_only_and_damaged_primary_is_preserved(scene):
     path = path_for(scene)
+    path.with_suffix(".json.backup").write_bytes(path.read_bytes())
     path.write_bytes(b"{damaged")
     before = files(storage.root())
     recovered = storage.load_background(scene["background_id"])
@@ -566,7 +567,7 @@ def test_models_cgs_and_config_use_the_current_background_layout(current_scene, 
     current = current_scene
     document = add_model(current.document, tmp_path / "new")
     model = document["models"][-1]
-    assert storage.model_asset_path(document["background_id"], model["model_id"], "d" * 32, "ply").is_relative_to(current.directory / "model")
+    assert storage.model_asset_path(document["background_id"], model["model_id"], "d" * 32, "ply").is_relative_to(current.directory / "Model")
     raw = Image.new("RGB", (64, 32))
     document = storage.commit_cg(document["background_id"], "Window", raw, raw, CAMERA, {}, model["model_id"], document["revision"])
     assert storage.cg_image_path(document["background_id"], document["cgs"][0]["cg_id"]).is_relative_to(current.directory / "CG")
@@ -628,24 +629,28 @@ def legacy_assets(document, tmp_path):
     directory = path_for(document).parent
     model, cg = document["models"][0], document["cgs"][0]
     model_path = directory / Path(model.pop("file")).parent
+    model_path.parent.rename(directory / "legacy-model")
+    (directory / "legacy-model").rename(directory / "model")
+    model_path = directory / "model" / model_path.name
     legacy_model = directory / "model" / model["model_id"]
     model_path.rename(legacy_model)
     manifest_path = legacy_model / "scene.json"
     manifest = json.loads(manifest_path.read_bytes())
-    for index, item in enumerate(manifest["objects"], 1):
-        old, new = f"objects/Object {index}", f"objects/{item['object_id']}"
-        (legacy_model / old).rename(legacy_model / new)
-        item["files"] = {key: relative.replace(old + "/", new + "/", 1) for key, relative in item["files"].items()}
+    for item in manifest["objects"]:
+        object_dir = legacy_model / "objects" / item["object_id"]
+        object_dir.mkdir(parents=True)
+        for key, relative in item["files"].items():
+            (legacy_model / relative).rename(object_dir / relative)
+            item["files"][key] = (object_dir / relative).relative_to(legacy_model).as_posix()
     manifest.pop("source_signature", None)
     manifest_path.write_text(json.dumps(manifest))
     (legacy_model / "user-note.txt").write_text("Preserve unknown files")
-    cg_path = directory / Path(cg.pop("file")).parent
-    (cg_path / f"{cg_path.name}_config.json").unlink()
-    raw.save(cg_path / "raw.png")
-    legacy_cg = cg_path / cg["cg_id"]
-    legacy_cg.mkdir()
-    for name in ("raw.png", "image.png"):
-        (cg_path / name).rename(legacy_cg / name)
+    image_path = directory / cg.pop("file")
+    (image_path.parent / "index.json").unlink()
+    legacy_cg = image_path.parent / cg["name"] / cg["cg_id"]
+    legacy_cg.mkdir(parents=True)
+    image_path.rename(legacy_cg / "image.png")
+    raw.save(legacy_cg / "raw.png")
     (legacy_cg / "user-note.txt").write_text("Preserve unknown files")
     write_document(document)
     return document
@@ -655,16 +660,20 @@ def test_models_reuse_readable_paths_and_cgs_keep_collision_suffixes(scene, tmp_
     document = add_model(scene, tmp_path)
     first = document["models"][0]
     first_path = storage.model_asset_path(document["background_id"], first["model_id"], "d" * 32, "ply")
-    assert first["file"] == "model/Original/scene.json"
-    assert first_path.relative_to(path_for(document).parent).as_posix() == "model/Original/objects/Object 1/ply.ply"
+    assert first["file"] == "Model/Original/scene.json"
+    assert first_path.relative_to(path_for(document).parent).as_posix() == "Model/Original/ply.ply"
+    assert {path.name for path in first_path.parent.iterdir()} == {"ply.ply", "scene.json"}
+    saved_scene = storage.model_scene(document["background_id"], first["model_id"])
+    assert saved_scene["camera"] == CAMERA
+    assert saved_scene["objects"][0]["files"] == {"ply": "ply.ply"}
     document = add_model(document, tmp_path)
     assert len(document["models"]) == 1
-    assert document["models"][0]["file"] == "model/Original/scene.json"
+    assert document["models"][0]["file"] == "Model/Original/scene.json"
     first = document["models"][0]
     raw = Image.new("RGB", (64, 32))
     for name, expected in (("View 1", "View 1"), ("view 1", "view 1 (2)"), ("View 1", "View 1 (3)")):
         document = storage.commit_cg(document["background_id"], name, raw, raw, CAMERA, {}, first["model_id"], None)
-        assert document["cgs"][-1]["file"] == f"CG/{expected}/image.png"
+        assert document["cgs"][-1]["file"] == f"CG/{expected}.png"
         assert "raw_file" not in document["cgs"][-1]
     assert first_path.read_bytes() == b"immutable Gaussian fixture"
     assert all(not storage._ID.fullmatch(path.name) for path in path_for(document).parent.rglob("*") if path.is_dir())
@@ -698,17 +707,17 @@ def test_legacy_assets_are_read_only_until_explicit_migration(scene, tmp_path):
     assert files(directory) == before
 
 
-@pytest.mark.parametrize("failure", ["manifest", "cg-config", "backup", "primary"])
+@pytest.mark.parametrize("failure", ["manifest", "cg-index", "primary"])
 def test_failed_explicit_migration_restores_every_original_byte(scene, tmp_path, monkeypatch, failure):
     legacy = legacy_assets(scene, tmp_path)
     directory = path_for(legacy).parent
     before = files(directory)
     owner = storage.background_storage
     atomic, fired = owner.atomic, False
-    model_id, cg_id = legacy["models"][0]["model_id"], legacy["cgs"][0]["cg_id"]
+    model_id = legacy["models"][0]["model_id"]
     targets = {"manifest": directory / f"model/{model_id}/scene.json",
-               "cg-config": directory / f"CG/View 1/{cg_id}/{cg_id}_config.json",
-               "backup": path_for(legacy).with_suffix(".json.backup"), "primary": path_for(legacy)}
+               "cg-index": directory / "CG/index.json",
+               "primary": path_for(legacy)}
     def fail_once(path, payload):
         nonlocal fired
         if Path(path) == targets[failure] and not fired:
