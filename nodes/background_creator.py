@@ -379,7 +379,7 @@ def _recover_set_publication(directory):
     marker = _contained(transaction, "transaction.json")
     if marker.exists():
         record, _ = _read_json(marker)
-        if (not isinstance(record, dict) or type(record.get("had_backup")) is not bool
+        if (not isinstance(record, dict) or type(record.get("had_backup", False)) is not bool
                 or any(not isinstance(record.get(key), str) or not re.fullmatch(r"[a-f0-9]{64}", record[key])
                        for key in ("before", "after"))):
             raise BackgroundStorageError("Background publication journal is damaged; original files are preserved")
@@ -402,7 +402,7 @@ def _recover_set_publication(directory):
         digest = hashlib.sha256(payload).hexdigest()
         if digest == record["before"]:
             saved_backup = None
-            if record["had_backup"]:
+            if record.get("had_backup"):
                 old, saved_backup = _read_json(_contained(transaction, "backup.json"))
                 _validate(old, directory.name)
             target = _contained(directory, "Images")
@@ -414,11 +414,12 @@ def _recover_set_publication(directory):
                 os.replace(rollback, target)
             elif rollback is None and not stage.exists() and target.exists():
                 shutil.rmtree(target)
-            backup = primary.with_name(primary.name + ".backup")
-            if saved_backup is not None:
-                _atomic(backup, saved_backup)
-            else:
-                backup.unlink(missing_ok=True)
+            if "had_backup" in record:
+                backup = primary.with_name(primary.name + ".backup")
+                if saved_backup is not None:
+                    _atomic(backup, saved_backup)
+                else:
+                    backup.unlink(missing_ok=True)
         elif digest != record["after"]:
             raise BackgroundStorageError("Background metadata does not match its publication journal; files are preserved")
         for path in paths:
@@ -470,16 +471,12 @@ def publish_background_set(background_id, source_image_id, cards, images, settin
         def prepare_publication(stage, rollback):
             transaction = _contained(directory, ".vnccs-background-publication")
             transaction.mkdir()
-            backup = _contained(directory, f"{directory.name}_config.json.backup")
-            if backup.exists():
-                _old, payload = _read_json(backup)
-                _atomic(_contained(transaction, "backup.json"), payload)
             published = {**document, "revision": document["revision"] + 1}
             _validate(published, directory.name)
             _atomic(_contained(transaction, "transaction.json"), _json_bytes({
                 "stage": Path(stage).name, "rollback": Path(rollback).name if rollback else None,
                 "before": hashlib.sha256(previous).hexdigest(),
-                "after": hashlib.sha256(_json_bytes(background_storage.pack(published))).hexdigest(), "had_backup": backup.exists(),
+                "after": hashlib.sha256(_json_bytes(background_storage.pack(published))).hexdigest(),
             }))
 
         try:

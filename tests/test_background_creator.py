@@ -94,17 +94,17 @@ def with_image(name="Sunset room"):
                              {"seed": 7}, document["revision"])
 
 
-def test_empty_library_and_named_document_backup(library):
+def test_empty_library_and_named_document(library):
     assert storage.list_backgrounds() == []
     document = storage.create_background("Evening Café", {"prompt": "Sunset"})
     assert len(document["background_id"]) == 32
     assert document["schema_version"] == 2 and document["revision"] == 1
     assert document["models"] == document["cgs"] == []
-    assert sorted(item.name for item in document_path(document).parent.iterdir()) == ["Evening Café_config.json", "Evening Café_config.json.backup"]
+    assert sorted(item.name for item in document_path(document).parent.iterdir()) == ["Evening Café_config.json"]
     path = document_path(document)
     assert path.is_file()
     assert json.loads(path.read_bytes()) == storage.background_storage.pack(document)
-    assert path.with_suffix(".json.backup").read_bytes() == path.read_bytes()
+    assert not path.with_suffix(".json.backup").exists()
     assert storage.load_background(document["background_id"]) == document
     with pytest.raises(storage.BackgroundConflictError):
         storage.create_background("evening café")
@@ -121,7 +121,7 @@ def test_delete_background_removes_the_complete_saved_directory(library):
         storage.load_background(document["background_id"])
 
 
-def test_editor_revisions_selection_and_current_json_backup(library):
+def test_editor_revisions_selection_and_current_json(library):
     document = with_image()
     path = document_path(document)
     previous = path.read_bytes()
@@ -131,7 +131,7 @@ def test_editor_revisions_selection_and_current_json_backup(library):
     assert updated["revision"] == document["revision"] + 1
     assert updated["editor"] == {key: value for key, value in state.items() if key != "selected_image_id"}
     assert updated["selected_image_id"] == state["selected_image_id"]
-    assert path.with_suffix(".json.backup").read_bytes() == path.read_bytes()
+    assert not path.with_suffix(".json.backup").exists()
     assert path.read_bytes() != previous
     state["prompt"] = "Mutated caller object"
     assert storage.load_background(document["background_id"])["editor"]["prompt"] == "Changed"
@@ -170,16 +170,15 @@ def test_repeated_preview_generation_replaces_one_image_and_refreshes_its_url(li
         url = storage.public_document(document)["images"][0]["url"]
         assert url != old_url and url.endswith(f"?v={document['images'][0]['preview_revision']}")
         old_url = url
-    backup = storage.background_storage.unpack(json.loads(document_path(document).with_suffix(".json.backup").read_bytes()))
-    referenced = {entry["file"] for item in (document, backup) for entry in item["images"]}
+    referenced = {entry["file"] for entry in document["images"]}
     directory = library / document["name"]
     assert {path.relative_to(directory).as_posix() for path in directory.rglob("*.png")} == referenced
     assert referenced == {"source.png"}
 
 
 @pytest.mark.parametrize("existing", [False, True])
-@pytest.mark.parametrize("phase", ["png", "backup", "primary"])
-def test_process_crash_preserves_matching_source_pixels_metadata_and_backup(library, existing, phase):
+@pytest.mark.parametrize("phase", ["png", "primary"])
+def test_process_crash_preserves_matching_source_pixels_and_metadata(library, existing, phase):
     document = with_image() if existing else storage.create_background("Crash-safe preview", {})
     primary = document_path(document)
     previous = primary.read_bytes()
@@ -199,7 +198,6 @@ phase = sys.argv[4]
 def write(path, payload):
     atomic(path, payload)
     if ((phase == 'png' and path.suffix == '.png')
-            or (phase == 'backup' and path.name.endswith('.json.backup'))
             or (phase == 'primary' and path.suffix == '.json')):
         os._exit(77)
 storage._atomic = write
@@ -210,28 +208,26 @@ storage.add_image(sys.argv[3], Image.new('RGB', (8, 8), 'blue'), {'cache_key': '
     assert child.returncode == 77, child.stderr
     saved = storage.load_background(document["background_id"])
     assert "_recovery" not in saved
-    if phase == "backup":
+    if phase == "primary":
         assert saved["images"][-1]["settings"] == {"cache_key": "blue"}
         with Image.open(storage.image_path(saved["background_id"], saved["selected_image_id"])) as image:
             assert image.getpixel((0, 0)) == (0, 0, 255)
     else:
         assert primary.read_bytes() == previous
-    if old_image and phase != "backup":
+    if old_image and phase != "primary":
         assert old_image.read_bytes() == old_pixels
-    backup = storage.background_storage.unpack(json.loads(primary.with_suffix(".json.backup").read_bytes()))
-    for item in (saved, backup):
-        storage._validate(item, document["name"])
-        for entry in item["images"]:
-            with Image.open(primary.parent / entry["file"]) as image:
-                image.verify()
+    storage._validate(saved, document["name"])
+    for entry in saved["images"]:
+        with Image.open(primary.parent / entry["file"]) as image:
+            image.verify()
     retried = storage.add_image(saved["background_id"], Image.new("RGB", (8, 8), "green"), {"cache_key": "green"})
     assert retried["images"][-1]["settings"] == {"cache_key": "green"}
 
 
 @pytest.mark.parametrize("mode,phase", [(mode, phase) for mode in ("first", "next", "regenerate")
-                                      for phase in ("retire", "images", "backup", "primary")
+                                      for phase in ("retire", "images", "primary")
                                       if mode != "first" or phase != "retire"])
-def test_process_crash_recovers_background_set_pixels_and_both_metadata_files(library, mode, phase):
+def test_process_crash_recovers_background_set_pixels_and_metadata(library, mode, phase):
     document = with_image("Crash-safe set")
     cards = generation.normalize_editor({})["variants"]
     images = [Image.new("RGB", (16, 8), "red") for _ in range(len(cards) + 1)]
@@ -258,7 +254,6 @@ def publish(source, target):
     replace(source, target)
     if ((phase == 'images' and Path(target) == directory / 'Images')
             or (phase == 'retire' and Path(source) == directory / 'Images')
-            or (phase == 'backup' and Path(target) == primary.with_name(primary.name + '.backup'))
             or (phase == 'primary' and Path(target) == primary)):
         os._exit(77)
 storage.os.replace = publish
@@ -271,7 +266,7 @@ storage.publish_background_set(document['background_id'], document['selected_ima
                             document["background_id"], phase, mode], capture_output=True, text=True, timeout=30)
     assert child.returncode == 77, child.stderr
     saved = storage.load_background(document["background_id"])
-    if phase != "backup":
+    if phase != "primary":
         assert saved == document
         assert files(library) == before
     else:
@@ -279,13 +274,11 @@ storage.publish_background_set(document['background_id'], document['selected_ima
         group = saved["generated_sets"][-1]
         with Image.open(storage.background_set_image_path(saved["background_id"], group["set_id"], 1)) as image:
             assert image.getpixel((0, 0)) == (0, 0, 255)
-    backup = storage.background_storage.unpack(json.loads(document_path(saved).with_suffix(".json.backup").read_bytes()))
-    for item in (saved, backup):
-        storage._validate(item, saved["name"])
-        for group in item.get("generated_sets", []):
-            for entry in group["images"]:
-                with Image.open(document_path(saved).parent / entry["file"]) as image:
-                    assert image.getpixel((0, 0)) == ((0, 0, 255) if entry["settings"].get("seed") == 2 else (255, 0, 0))
+    storage._validate(saved, saved["name"])
+    for group in saved.get("generated_sets", []):
+        for entry in group["images"]:
+            with Image.open(document_path(saved).parent / entry["file"]) as image:
+                assert image.getpixel((0, 0)) == ((0, 0, 255) if entry["settings"].get("seed") == 2 else (255, 0, 0))
     assert not list(library.rglob(".vnccs-*"))
     storage.publish_background_set(saved["background_id"], saved["selected_image_id"], cards,
                                    images, {"seed": 3}, saved["revision"])
@@ -307,7 +300,7 @@ def test_invalid_publication_recovery_preserves_every_file(library, damaged):
     assert files(library) == before
 
 
-def test_source_replacement_uses_one_file_and_matching_current_backup(library):
+def test_source_replacement_uses_one_file_and_current_metadata(library):
     document = with_image()
     old_path = storage.image_path(document["background_id"], document["selected_image_id"])
     updated = storage.add_image(document["background_id"], Image.new("RGB", (8, 8), "blue"), {})
@@ -319,7 +312,7 @@ def test_source_replacement_uses_one_file_and_matching_current_backup(library):
     storage.save_background(updated["background_id"], {"description": "A saved edit"})
     assert current_path.is_file()
     primary = document_path(updated)
-    assert primary.with_suffix(".json.backup").read_bytes() == primary.read_bytes()
+    assert not primary.with_suffix(".json.backup").exists()
 
 
 def test_source_replacement_preserves_unrelated_legacy_files(library):
@@ -350,11 +343,7 @@ def test_preview_write_failure_retains_image_metadata_and_cleans_temporary_files
     monkeypatch.setattr(storage, "_atomic", write)
     with pytest.raises(OSError, match="Disk full"):
         storage.add_image(document["background_id"], Image.new("RGB", (20, 10), "blue"), {}, document["revision"])
-    after = files(library)
-    backup_name = f"{document['name']}/{document['name']}_config.json.backup"
-    assert after.pop(backup_name) in (before[backup_name], before[f"{document['name']}/{document['name']}_config.json"])
-    before.pop(backup_name)
-    assert after == before
+    assert files(library) == before
     assert storage.load_background(document["background_id"]) == document
 
 
@@ -392,6 +381,7 @@ def test_concurrent_editor_revisions_allow_only_one_writer(library):
 def test_damaged_primary_recovers_backup_read_only_without_replacing_bytes(library):
     document = storage.create_background("Damaged", {"prompt": "Keep this"})
     path = document_path(document)
+    path.with_suffix(".json.backup").write_bytes(path.read_bytes())
     damaged = b'{"unfinished":'
     path.write_bytes(damaged)
     before = files(library)
@@ -1322,9 +1312,9 @@ def test_changed_generation_inputs_invalidate_run_cache_and_replace_current_prev
     assert len(updated["images"]) == 1 and updated["selected_image_id"] == original_id
     assert updated["images"][0]["preview_revision"] > original_revision
     assert storage.image_path(document["background_id"], original_id) == original_image
-    backup = storage.background_storage.unpack(json.loads(document_path(updated).with_suffix(".json.backup").read_bytes()))
-    assert backup["images"] == updated["images"]
-    assert document_path(updated).parent / backup["images"][0]["file"] == original_image
+    saved = storage.background_storage.unpack(json.loads(document_path(updated).read_bytes()))
+    assert saved["images"] == updated["images"]
+    assert document_path(updated).parent / saved["images"][0]["file"] == original_image
 
 
 def test_inactive_profiles_do_not_invalidate_background_cache(workspace):
@@ -2229,7 +2219,7 @@ def test_every_full_background_run_uses_next_readable_version(library):
     assert storage.image_path(document["background_id"], document["selected_image_id"]).name == "source.png"
 
 
-def test_backup_tracks_current_source_and_outputs_without_archived_records(library):
+def test_config_tracks_current_source_and_outputs_without_archived_records(library):
     document = with_image("Recoverable outputs")
     cards = generation.normalize_editor({})["variants"]
     images = [Image.new("RGB", (16, 8), "red") for _ in range(4)]
@@ -2238,15 +2228,15 @@ def test_backup_tracks_current_source_and_outputs_without_archived_records(libra
                                        images, {}, document["revision"])
         document = storage.load_background(document["background_id"])
     path = document_path(document)
-    backup = storage.background_storage.unpack(json.loads(path.with_suffix(".json.backup").read_bytes()))
-    assert [group["version"] for group in backup["generated_sets"]] == [""]
-    assert all("/V1/" not in entry["file"] for entry in backup["generated_sets"][0]["images"])
-    assert path.with_suffix(".json.backup").read_bytes() == path.read_bytes()
+    saved = storage.background_storage.unpack(json.loads(path.read_bytes()))
+    assert [group["version"] for group in saved["generated_sets"]] == [""]
+    assert all("/V1/" not in entry["file"] for entry in saved["generated_sets"][0]["images"])
+    assert not path.with_suffix(".json.backup").exists()
     old_id = document["selected_image_id"]
     document = storage.add_image(document["background_id"], Image.new("RGB", (16, 8), "blue"), {}, document["revision"])
-    backup = storage.background_storage.unpack(json.loads(path.with_suffix(".json.backup").read_bytes()))
-    assert backup["generated_sets"] == []
-    retained = next(entry for entry in backup["images"] if entry["image_id"] == old_id)
+    saved = storage.background_storage.unpack(json.loads(path.read_bytes()))
+    assert saved["generated_sets"] == []
+    retained = next(entry for entry in saved["images"] if entry["image_id"] == old_id)
     assert retained["file"] == "source.png"
     with Image.open(path.parent / retained["file"]) as image:
         assert image.getpixel((0, 0)) == (0, 0, 255)

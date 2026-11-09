@@ -1,4 +1,4 @@
-import { validateCharacters } from "./cg_characters.mjs";
+import { CHARACTER_PROMPT_LIMIT, validateCharacters } from "./cg_characters.mjs?v=cg-creator-3";
 
 export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-panel { gap:12px; overflow:visible; padding:16px; }
@@ -14,6 +14,7 @@ export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-field { display:grid; grid-template-columns:110px minmax(0,1fr); align-items:center; gap:12px; font-size:16px; }
 .vnccs-cg-creator .cg-character-panel :is(input,select,button) { font-size:16px; }
 .vnccs-cg-creator .cg-character-panel select { width:100%; min-height:42px; }
+.vnccs-cg-creator [data-character-prompt] { font-size:16px; resize:none; }
 .vnccs-cg-creator .cg-character-slider { grid-template-columns:110px minmax(0,1fr) 84px; }
 .vnccs-cg-creator .cg-character-slider input { min-width:0; width:100%; box-sizing:border-box; }
 .vnccs-cg-creator .cg-sprite-grid { display:flex; flex-wrap:wrap; align-content:flex-start; gap:10px; max-height:214px; overflow:auto; padding:3px; overscroll-behavior:contain; }
@@ -31,7 +32,7 @@ export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-light :is(.vnccs-ps-light-pos-label,.vnccs-ps-light-value,.vnccs-ps-light-h-val,.vnccs-ps-light-h-label) { font-size:14px; }
 .vnccs-cg-creator .cg-character-light .vnccs-ps-light-slider::-webkit-slider-thumb { width:18px; height:18px; }
 .vnccs-cg-creator .cg-character-light input[type=color] { width:100%; height:36px; }
-.vnccs-cg-creator .cg-character-position-controls>.cg-character-slider { grid-template-columns:64px minmax(0,1fr) 64px; }
+.vnccs-cg-creator .cg-character-position-controls>.cg-character-slider { grid-template-columns:64px minmax(0,1fr) 84px; }
 .vnccs-cg-creator .cg-character-radars { grid-row:3 / 5; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px; }
 .vnccs-cg-creator .cg-character-radars>div { display:grid; grid-template-rows:300px 24px; justify-items:center; align-items:center; gap:10px; }
 .vnccs-cg-creator .cg-character-radars [data-character-radar-host] { min-width:0; }
@@ -66,6 +67,8 @@ export class CGCharacterPanel {
                 ${select("Costume", "costume")}
                 <div class="cg-character-field"><span>Sprite</span><div class="cg-sprite-grid" data-character-sprites data-vnccs-own-navigation></div></div>
                 ${select("Emotion", "emotion")}</section>
+            <section class="cg-character-block">${title("Character prompt")}
+                <textarea class="vnccs-common-creator-textarea" rows="3" maxlength="${CHARACTER_PROMPT_LIMIT}" aria-label="Character prompt" data-character-prompt></textarea></section>
             <div class="cg-character-spatial">
                 <section class="cg-character-block">${title("Lighting")}<div class="vnccs-pose-studio cg-character-light" data-character-radar-host="light"></div></section>
                 <section class="cg-character-block">${title("Position")}<div class="cg-character-position-controls">${slider("Scale", "scale", .01, 5, .01)}
@@ -76,6 +79,7 @@ export class CGCharacterPanel {
             <div class="cg-character-actions"><button type="button" class="${buttonClass}" data-character-reset>↺ Reset</button><button type="button" class="${buttonClass}" data-character-undo>↶ Undo</button><button type="button" class="${buttonClass}" data-character-redo>↷ Redo</button></div>
             <button type="button" class="${primaryClass}" data-character-library>Open Pose Library</button>
             <p class="cg-character-error" role="status" hidden></p>`;
+        this.prompt = this.element.querySelector("[data-character-prompt]");
         widget.container.querySelector(".bg-model-source").after(this.element);
         const on = (target, type, fn) => target.addEventListener(type, fn, { signal: this.events.signal });
         on(this.element, "click", event => { event.stopPropagation(); void this.click(event).catch(error => this.error(error)); });
@@ -176,7 +180,8 @@ export class CGCharacterPanel {
         const source = core.source || {};
         if (!this.element.hidden && !this.loading && this.catalogKey && this.catalogKey !== JSON.stringify([source.character, source.costume])) void this.loadCatalog();
         const disabled = !this.editable();
-        for (const control of this.element.querySelectorAll("button,input,select")) control.disabled = disabled;
+        for (const control of this.element.querySelectorAll("button,input,select,textarea")) control.disabled = disabled;
+        if (this.prompt.value !== (core.prompt || "")) this.prompt.value = core.prompt || "";
         this.element.querySelector("[data-character-back]").disabled = false;
         this.element.querySelector("[data-character-undo]").disabled = disabled || !this.widget.history?.canUndo;
         this.element.querySelector("[data-character-redo]").disabled = disabled || !this.widget.history?.canRedo;
@@ -215,6 +220,14 @@ export class CGCharacterPanel {
         this.widget.customSelects.syncSelects();
     }
     input(event) {
+        if (event.target === this.prompt) {
+            const core = this.core;
+            if (!core || !this.editable()) return;
+            this.widget.beginGesture();
+            core.prompt = this.prompt.value;
+            this.widget.sync();
+            return;
+        }
         const key = event.target.dataset.characterValue;
         if (key !== "scale" || !this.editable() || !event.target.checkValidity()) return;
         const value = event.target.valueAsNumber;
@@ -248,17 +261,25 @@ export class CGCharacterPanel {
         this.radars = ["x", "y"].map(kind => {
             const radar = Object.assign(Object.create(PoseStudioWidget.prototype), {
                 exportParams: { view_width: 1024, view_height: 1024 },
+                exportWidgets: {},
                 viewer: {
                     getCharacterFrameCenter: () => { const [x, y] = this.radarValue(kind); return { x, y: -y }; },
                     characterTranslationForFramePoint: (x, y) => ({ x, y, z: 0 }),
                 },
-                getActiveCharacter: () => ({ transform: {} }), persistActivePoseCameraParams() {}, syncToNode,
+                getActiveCharacter: () => ({ transform: {} }), isAnimationMode: () => false, persistActivePoseCameraParams() {}, syncToNode,
+                applyCharacterPosition: ({ x, y }, { beforeMove } = {}) => {
+                    beforeMove?.();
+                    Object.assign(radar.exportParams, { cam_offset_x: x, cam_offset_y: y });
+                    return true;
+                },
                 applyCameraToViewer: () => this.setRadar(kind, radar.exportParams.cam_offset_x, -radar.exportParams.cam_offset_y),
             });
             const content = this.element.querySelector(`[data-character-radar-host="${kind}"]`);
             radar.createCameraRadar({ content });
+            const canvas = content.querySelector("canvas");
+            canvas.closest(".vnccs-ps-radar-axes")?.replaceWith(canvas);
             content.querySelectorAll("button").forEach(button => button.remove());
-            content.querySelector("canvas").dataset.characterRadar = kind;
+            canvas.dataset.characterRadar = kind;
             return radar;
         });
         this.refreshRadars();

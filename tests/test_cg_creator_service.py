@@ -284,18 +284,23 @@ def test_character_job_captures_selected_costume_sprite_and_emotion(workspace, m
     selected = folder / "Happy" / "sprite_Happy_0001.png"
     Image.new("RGBA", (64, 128), (0, 0, 255, 128)).save(selected)
     document = with_model(workspace)
+    prompt = "Keep the red scarf.\nHave her look toward the window."
     character = {"id": "1" * 32, "position": [0, 0, 0], "scale": 1,
         "pose": {"bones": {}, "bonePositions": {}, "modelRotation": [0, 0, 0]},
-        "source": {"character": "Maya", "costume": "Casual", "sprite": "sprite_pose_1.png", "emotion": "Happy"}}
+        "source": {"character": "Maya", "costume": "Casual", "sprite": "sprite_pose_1.png", "emotion": "Happy"},
+        "prompt": prompt}
     service.start_job(document["background_id"], job_payload(document, characters=[character]), png())
     character["source"]["emotion"] = "Neutral"
+    character["prompt"] = "Later edit"
     selected.unlink()
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
     sprite = workspace.generated.call_args.kwargs["character"]
     assert sprite.size == (64, 128) and sprite.getpixel((0, 0)) == (0, 0, 255, 128)
+    assert workspace.generated.call_args.kwargs["character_prompt"] == prompt
     saved = library.load_background(document["background_id"])
     assert saved["cgs"][-1]["characters"][0]["source"]["emotion"] == "Happy"
+    assert saved["cgs"][-1]["characters"][0]["prompt"] == prompt
 
 
 def test_cg_rejects_model_from_another_source_variant(workspace):
@@ -417,7 +422,7 @@ def test_sampling_cancellation_is_translated_to_factory_job_cancellation(workspa
 
 def test_stop_after_sampling_prevents_committing_a_finished_frame(workspace):
     document = with_model(workspace)
-    def generate(_settings, _job_id, event, _reference, _background, character=None):
+    def generate(_settings, _job_id, event, _reference, _background, character=None, *, character_prompt=""):
         event.set()
         return Image.new("RGB", (128, 64)), {}
     workspace.generated.side_effect = generate
@@ -454,28 +459,57 @@ def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
 
 
 @pytest.mark.parametrize("use_variant", [False, True], ids=["original", "generated-variant"])
-def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_cleanup(workspace, monkeypatch, use_variant):
+@pytest.mark.parametrize(("generator", "profile", "requested", "effective"), [
+    ("triposplat", "standard", (), None),
+    ("pixal3d", "standard", (), (1536, 2048)),
+    ("pixal3d", None, (), (1024, 1024)),
+    ("pixal3d", "standard", (2048, 512), (2048, 512)),
+    ("pixal3d", "fast", (2048, 256), (2048, 256)),
+    ("pixal3d", "fast", (2048, 4096), (2048, 4096)),
+])
+def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_cleanup(
+    workspace, monkeypatch, use_variant, generator, profile, requested, effective,
+):
     document = with_generated_set(workspace) if use_variant else workspace.document
     selected = source_variant(document) if use_variant else None
     expected_variant = copy.deepcopy(selected)
     created = factory.create_scene("Temporary CG reconstruction")
+    created["camera"] = CAMERA
+    factory._save_scene(created)
     monkeypatch.setattr(factory, "create_scene", lambda _name: created)
     source = factory.resolve_scene_dir(created["scene_id"])
+    mesh = generator == "pixal3d"
+    expected_profile = profile or "fast"
+    kind, filename = ("model", "model.glb") if mesh else ("ply", "model.ply")
+    asset = b"committed geometry fixture"
+    source_camera = {**CAMERA, "position": [0, 0, 1.25]} if mesh else CAMERA
+
     def reconstruct(job, encoded, object_id, name, settings):
-        assert name == "Background" and settings["provider"] == "triposplat"
+        assert name == "Background" and settings["provider"] == generator
         assert settings["remove_background"] is False and settings["capture_source_camera"] is True
+        if mesh:
+            assert settings["refine_textures"] is False
+            assert settings.get("base_color_only", False) is (expected_profile == "fast")
+            assert settings["quality"] == ("preview" if expected_profile == "fast" else "high")
+            assert (settings["target_resolution"], settings["texture_resolution"]) == effective
+            assert max(settings["normal_resolution"], settings["ao_resolution"]) <= settings["texture_resolution"]
         assert settings["seed"] == 3
-        with Image.open(io.BytesIO(encoded)) as image:
-            assert image.getpixel((0, 0)) == ((255, 255, 0) if use_variant else (255, 0, 0))
+        selected_image = library.image_path(document["background_id"], document["selected_image_id"], expected_variant)
+        with Image.open(io.BytesIO(encoded)) as image, Image.open(selected_image) as original:
+            assert image.size == original.size and image.tobytes() == original.convert("RGB").tobytes()
         manifest = factory.load_scene(job["scene_id"])
-        path = source / "objects" / object_id / "model.ply"
+        path = source / "objects" / object_id / filename
         path.parent.mkdir(parents=True)
-        path.write_bytes(b"committed Gaussian fixture")
-        manifest["objects"] = [{"object_id": object_id, "source_camera": CAMERA,
-            "files": {"ply": f"objects/{object_id}/model.ply"}}]
+        path.write_bytes(asset)
+        item = {"asset_kind": "mesh", "source": {"format": "glb"}} if mesh else {}
+        manifest["objects"] = [{"object_id": object_id, **item, "source_camera": source_camera,
+                                "files": {kind: f"objects/{object_id}/{filename}"}}]
         factory._save_scene(manifest)
-    monkeypatch.setattr(runtime, "_generate_object", mock.Mock(side_effect=reconstruct))
-    payload = job_payload(document, "model", model_settings={"seed": 3}, source_variant=selected)
+    monkeypatch.setattr(runtime, "_generate_mesh_object" if mesh else "_generate_object", reconstruct)
+    selected_settings = {"provider": generator, "pixal_profile": profile} if profile else {}
+    resolutions = dict(zip(("pixal_mesh_resolution", "pixal_texture_resolution"), requested))
+    payload = job_payload(document, "model", model_settings={"seed": 3, **selected_settings,
+                          **resolutions, "remove_background": "1", "refine_textures": "1"}, source_variant=selected)
     service.start_job(document["background_id"], payload)
     payload["model_settings"]["seed"] = 99
     if use_variant:
@@ -485,12 +519,20 @@ def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_clea
     assert job["scene_id"] == "" and not source.exists()
     saved = library.load_background(document["background_id"])
     assert len(saved["models"]) == 1
+    assert saved["models"][0]["settings"]["pixal_profile"] == expected_profile
+    assert all(saved["models"][0]["settings"][key] == value for key, value in resolutions.items())
+    if mesh:
+        assert saved["models"][0]["settings"]["quality"] == "high"
     model = library.model_scene(document["background_id"], saved["models"][-1]["model_id"])
     assert model["camera"] == CAMERA and model["lighting"]["preset"] == "off"
     assert model["source_image_id"] == document["images"][0]["image_id"]
     assert model.get("source_variant") == saved["models"][-1].get("source_variant") == expected_variant
     object_id = model["objects"][0]["object_id"]
-    assert library.model_asset_path(document["background_id"], model["model_id"], object_id, "ply").read_bytes() == b"committed Gaussian fixture"
+    assert library.model_asset_path(document["background_id"], model["model_id"], object_id, kind).read_bytes() == asset
+    public = service.public_model(document["background_id"], model["model_id"])["objects"][0]
+    url_kind = "model" if mesh else "splat"
+    assert public["source_camera"] == source_camera
+    assert list(public["urls"]) == [url_kind] and public["urls"][url_kind].endswith(f"/{object_id}/{url_kind}")
     assert_main_fields_preserved(document, saved)
     workspace.generated.assert_not_called()
 
@@ -504,7 +546,7 @@ def test_failed_or_cancelled_reconstruction_removes_its_temporary_scene(workspac
     failure = runtime.JobCancelled("Cancelled") if cancelled else RuntimeError("Reconstruction failed")
     monkeypatch.setattr(runtime, "_generate_object", mock.Mock(side_effect=failure), raising=False)
     before = library.load_background(document["background_id"])
-    service.start_job(document["background_id"], job_payload(document, "model"))
+    service.start_job(document["background_id"], job_payload(document, "model", model_settings={"provider": "triposplat"}))
     job = workspace.run_pending()
     assert job["status"] == ("cancelled" if cancelled else "failed")
     assert job["scene_id"] == "" and not source.exists()

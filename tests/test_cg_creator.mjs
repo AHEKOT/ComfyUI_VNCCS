@@ -13,7 +13,7 @@ const state = (overrides = {}) => ({ schema_version: 1, background_id: A, select
 const background = (id = A, overrides = {}) => ({ schema_version: 2, background_id: id, name: "Evening room", revision: 3,
     cg_settings: settingsDefaults(), model_settings: clone(MODEL_DEFAULTS), selected_image_id: IMAGE,
     images: [{ image_id: IMAGE, width: 1600, height: 900, url: `${BASE}/backgrounds/${id}/images/${IMAGE}` }],
-    models: [{ model_id: MODEL, source_image_id: IMAGE }], model: { model_id: MODEL, source_image_id: IMAGE },
+    models: [{ model_id: MODEL, source_image_id: IMAGE, settings: { provider: "pixal3d" } }], model: { model_id: MODEL, source_image_id: IMAGE },
     cgs: [{ cg_id: CG, name: "Window view", model_id: MODEL, source_image_id: IMAGE,
         width: 1600, height: 896, camera: clone(camera), url: `${BASE}/backgrounds/${id}/cg/${CG}/image` }], ...overrides });
 const scene = (id = A, overrides = {}) => ({ scene_id: "f".repeat(32), model_id: MODEL, background_id: id, camera: clone(camera),
@@ -156,7 +156,7 @@ class Element {
     reportValidity() { return (!this.required || this.value !== "") && (!this.pattern || new RegExp("^(?:" + this.pattern + ")$", "u").test(this.value)); }
 }
 
-function harness(raw = JSON.stringify(state({ background_id: "", selected_image_id: "", model_id: "", selected_cg_id: "", camera: null })), { nodeId = 7, drafts = new Map(), scope = "tab:workflow" } = {}) {
+function harness(raw = JSON.stringify(state({ background_id: "", selected_image_id: "", model_id: "", selected_cg_id: "", camera: null })), { nodeId = 7, drafts = new Map(), session = new Map(), scope = "tab:workflow" } = {}) {
     const calls = [], events = new Map(), timers = new Map(), queued = [];
     let extension, timerId = 0;
     const window = new Element("window"), documents = new Map([[A, background()], [B, background(B)]]);
@@ -201,7 +201,8 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
     const localStorage = { getItem: key => drafts.get(key) ?? null, setItem: (key, value) => (drafts.set(key, value), true), removeItem: key => drafts.delete(key) };
     const context = vm.createContext({
         document: Object.assign(new Element("document"), { getElementById: () => true, createElement: tag => new Element(tag), head: new Element("head"), activeElement: null }),
-        window, storage: localStorage, STYLE: "", injectStyles() {}, generateRandomSeed: () => 424242, workflowScope: node => scope + ":" + node.id, cacheIdentity: () => Math.random().toString(36).slice(2), crypto: { randomUUID: () => "01234567-89ab-cdef-0123-456789abcdef" },
+        window, storage: localStorage, sessionStore: { getItem: key => session.get(key), setItem: (key, value) => session.set(key, value) },
+        STYLE: "", injectStyles() {}, generateRandomSeed: () => 424242, workflowScope: node => scope + ":" + node.id, cacheIdentity: () => Math.random().toString(36).slice(2), crypto: { randomUUID: () => "01234567-89ab-cdef-0123-456789abcdef" },
         URL, AbortController, FormData, Blob, createImageBitmap: async () => ({ close() { this.closed = true; } }), console, api, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, syncDOMWidgetWidth, syncDOMWidgetWidthSoon() {}, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT,
         ResizeObserver: class { constructor(callback) { this.callback = callback; } observe(target) { this.target = target; } disconnect() { this.disconnected = true; } },
         createSakuraInteractions: () => ({ syncSelects() {}, captureView() { return {}; }, restoreView() {}, dispose() { this.disconnected = true; } }),
@@ -291,6 +292,141 @@ test("a restored active model differing from the library remains dirty and is sa
     assert.equal(JSON.parse(h.data.serializeValue()).settings.generation.diffusion_model_name, model);
 });
 
+test("a manually selected Qwen model survives reload after its draft was acknowledged", async () => {
+    const raw = JSON.stringify(state()), drafts = new Map(), session = new Map();
+    const h = harness(raw, { drafts, session }); await h.ready();
+    const generation = h.widget.state.settings.generation;
+    const previous = generation.diffusion_model_name, turbo = "qwen_image_2.1_turbo_int8_convrot.safetensors";
+    Object.assign(generation, { diffusion_model_name: turbo, steps: 8 });
+    h.widget.qi2.options.onChange(previous);
+    await h.widget.persist();
+    assert.equal(drafts.has(h.widget.draftKey()), false);
+
+    const reloaded = harness(raw, { drafts, session });
+    reloaded.documents.set(A, h.documents.get(A)); await reloaded.ready();
+    assert.equal(reloaded.widget.state.settings.generation.diffusion_model_name, turbo);
+    assert.equal(reloaded.widget.state.settings.generation.steps, 8);
+
+    const authored = "User models/another_checkpoint.safetensors";
+    const separateSelection = harness(JSON.stringify(state({ settings: settingsDefaults({ generation: { diffusion_model_name: authored } }) })), { session });
+    separateSelection.documents.set(A, h.documents.get(A)); await separateSelection.ready();
+    assert.equal(separateSelection.widget.state.settings.generation.diffusion_model_name, authored);
+});
+
+test("CG Creator publishes the complete edited state to ComfyUI before the library save", async () => {
+    const h = harness(JSON.stringify(state()));
+    const notifications = [];
+    let autosaved;
+    h.context.app.canvas = { emitEvent({ subType }) {
+        notifications.push(subType);
+        if (subType !== "after-change") return;
+        const info = { widgets_values: ["stale"] };
+        h.node.onSerialize(info);
+        autosaved = info.widgets_values[0];
+    } };
+    await h.ready();
+    assert.deepEqual(notifications, []);
+    Object.assign(h.widget.state.settings.generation, { cache_device: "cpu", cache_dtype: "int4",
+        steps: 19, cfg: 0, sampler: "dpmpp_2m", scheduler: "normal", seed: 429, seed_mode: "randomize" });
+    Object.assign(h.widget.state.model_settings, { pixal_mesh_resolution: 2048, pixal_texture_resolution: 512, seed: 735 });
+    h.widget.qi2.options.onChange();
+    assert.deepEqual(notifications, ["before-change", "after-change"]);
+    assert.equal(autosaved, h.data.value);
+    const configured = JSON.parse(autosaved);
+    assert.deepEqual(configured.settings, clone(h.widget.state.settings));
+    assert.deepEqual(configured.model_settings, clone(h.widget.state.model_settings));
+    assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
+    await h.widget.persist();
+    h.widget.beginGesture();
+    h.widget.viewer.setCameraState({ ...camera, fov: 67 }, { emit: true });
+    assert.deepEqual(notifications, ["before-change", "after-change"]);
+    await h.window.fire("beforeunload");
+    assert.deepEqual(notifications, ["before-change", "after-change", "before-change", "after-change"]);
+    const reloaded = harness(autosaved, { drafts: h.drafts });
+    reloaded.documents.set(A, h.documents.get(A)); await reloaded.ready();
+    assert.deepEqual(clone(reloaded.widget.state.settings), configured.settings);
+    assert.deepEqual(clone(reloaded.widget.state.model_settings), configured.model_settings);
+    assert.equal(reloaded.widget.state.camera.fov, 67);
+});
+
+test("model generation settings stay with the node when switching backgrounds", async () => {
+    const h = harness(JSON.stringify(state()));
+    await h.ready();
+    const model = { ...MODEL_DEFAULTS, provider: "pixal3d", pixal_profile: "fast", seed: 731 };
+    h.widget.state.model_settings = model; h.widget.markEdited();
+    const nextDraft = h.widget.draftKey().replace(A, B);
+    h.drafts.set(nextDraft, JSON.stringify({ settings: settingsDefaults({ prompt: "Second background prompt" }), model_settings: MODEL_DEFAULTS }));
+
+    const select = h.control("[data-library]"); select.value = B;
+    const switching = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await switching;
+    assert.equal(h.widget.state.background_id, B);
+    assert.deepEqual(clone(h.widget.state.model_settings), model);
+    assert.deepEqual(JSON.parse(h.data.serializeValue()).model_settings, model);
+    assert.equal(h.widget.state.settings.prompt, "Second background prompt");
+    const reloaded = harness(h.data.serializeValue(), { drafts: h.drafts });
+    await reloaded.ready();
+    assert.deepEqual(clone(reloaded.widget.state.model_settings), model);
+    assert.equal(reloaded.widget.state.settings.prompt, "Second background prompt");
+});
+
+test("only manual generator and profile selections override the workflow choice on reload", async () => {
+    const raw = JSON.stringify(state({ model_settings: undefined }));
+    const drafts = new Map(), session = new Map();
+    const h = harness(raw, { drafts, session });
+    const saved = { ...MODEL_DEFAULTS, provider: "triposplat", pixal_profile: "standard" };
+    h.documents.set(A, background(A, { model_settings: saved }));
+    await h.ready();
+    const check = (node, provider, pixal_profile) => {
+        const model = JSON.parse(node.data.serializeValue()).model_settings;
+        assert.deepEqual([model.provider, model.pixal_profile], [provider, pixal_profile]);
+    };
+    check(h, "pixal3d", "fast");
+    drafts.set(h.widget.draftKey(), JSON.stringify({ settings: settingsDefaults(), model_settings: saved }));
+    h.node.onConfigure(); await h.ready();
+    check(h, "pixal3d", "fast");
+
+    const settings = h.control("[data-model-settings]").click(), dialog = h.control('[role="dialog"]');
+    dialog.querySelector("select").value = "standard";
+    dialog.querySelectorAll("button").at(-1).onclick(); await settings;
+    const provider = h.control("[data-model-provider]"); provider.value = "triposplat"; await provider.fire("change");
+    await h.widget.persist();
+    assert.equal(drafts.has(h.widget.draftKey()), false);
+    const reloaded = harness(raw, { drafts, session }); await reloaded.ready();
+    check(reloaded, "triposplat", "standard");
+    const other = harness(raw, { drafts, session, nodeId: 8 }); await other.ready();
+    check(other, "pixal3d", "fast");
+});
+
+test("selecting a background with a TripoSplat model keeps Pixal3D selected", async () => {
+    for (const firstBackground of [false, true]) {
+        const h = firstBackground ? harness() : harness(JSON.stringify(state()));
+        const triposplat = background(B, {
+            model_settings: { ...MODEL_DEFAULTS, provider: "triposplat", pixal_profile: "standard" },
+            models: [{ model_id: MODEL, source_image_id: IMAGE, settings: firstBackground ? {} : { provider: "triposplat" } }],
+        });
+        h.documents.set(B, triposplat);
+        await h.ready();
+        const select = h.control("[data-library]"); select.value = B;
+        const switching = h.widget.change({ target: select }); await settle();
+        await h.widget.sourceLoad.onload(); await switching; await settle();
+        assert.equal(h.widget.state.model_settings.provider, "pixal3d");
+        assert.equal(h.widget.state.model_settings.pixal_profile, "fast");
+        assert.equal(h.widget.state.model_id, "");
+        const selectedCG = firstBackground ? CG : "";
+        assert.equal(h.widget.state.selected_cg_id, selectedCG);
+        assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), false);
+
+        const reloaded = harness(h.data.serializeValue());
+        reloaded.documents.set(B, triposplat);
+        await reloaded.ready();
+        assert.equal(reloaded.widget.state.model_id, "");
+        assert.equal(reloaded.widget.state.selected_cg_id, selectedCG);
+        await reloaded.control("[data-cg-id]").click();
+        assert.equal(reloaded.control("[data-large-preview]").src, triposplat.cgs[0].url);
+        assert.equal(reloaded.widget.state.model_id, MODEL);
+    }
+});
+
 test("saved preview, collection and generation references are bounded without changing legacy workflows", () => {
     const preview = { kind: "cg", cg_id: CG, zoom: 2.4, center: [.4, .6] };
     assert.deepEqual(readState(JSON.stringify(state({ preview }))).preview, preview);
@@ -320,9 +456,23 @@ test("serialized preview mode and scroll survive a fresh widget and configure ca
     assert.equal(closed.control("[data-large-preview]"), null); assert.equal(closed.widget.canEditCamera(), true);
 });
 
-test("preview and camera updates retain decoded gallery cards and their reserved dimensions", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready();
+test("gallery thumbnails load on intersection and retain their dimensions through updates", async () => {
+    const h = harness(JSON.stringify(state()));
+    h.context.IntersectionObserver = class {
+        constructor(callback) { this.callback = callback; this.targets = new Set(); }
+        observe(target) { this.targets.add(target); }
+        unobserve(target) { this.targets.delete(target); }
+        disconnect() { this.targets.clear(); }
+    };
+    await h.ready();
     const gallery = h.control("[data-cgs]"), card = h.control("[data-cg-id]"), image = card.querySelector("img");
+    const observer = h.widget.galleryObserver;
+    assert.equal(observer.targets.has(image), true);
+    observer.callback([{ target: image, isIntersecting: false }], observer);
+    assert.equal(image.src, undefined);
+    observer.callback([{ target: image, isIntersecting: true }], observer);
+    assert.equal(image.src, h.widget.document.cgs[0].url);
+    assert.equal(observer.targets.has(image), false);
     assert.equal(image.style.aspectRatio, "1600 / 896"); gallery.scrollTop = 130;
     await h.control("[data-enlarge]").click(); h.widget.render();
     assert.equal(h.control("[data-cg-id]"), card); assert.equal(card.querySelector("img"), image); assert.equal(gallery.scrollTop, 130);
@@ -399,6 +549,29 @@ test("a retired model restores the active model for the same background variant"
     assert.equal(h.widget.state.selected_cg_id, CG);
     assert.deepEqual(clone(h.widget.state.camera), camera);
     assert.equal(h.calls.some(call => call.path.endsWith(`/models/${MODEL}`)), false);
+});
+
+test("an old CG keeps the active model and recovers an empty saved viewport", async () => {
+    const document = background(), retired = "9".repeat(32), activeCamera = { ...camera, fov: 61 };
+    document.cgs[0].model_id = retired;
+    const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: activeCamera })));
+    h.documents.set(A, document);
+    await h.ready();
+    await h.control("[data-cg-id]").click();
+    assert.equal(h.control("[data-large-preview]").src, document.cgs[0].url);
+    h.widget.cgPreviewClose();
+    assert.equal(h.widget.canEditCamera(), true);
+    assert.equal(h.widget.state.model_id, MODEL);
+    assert.deepEqual(h.widget.viewer.getCameraState(), activeCamera);
+    assert.equal(JSON.parse(h.data.value).selected_cg_id, CG);
+
+    const reloaded = harness(JSON.stringify(state({ model_id: "", frame: { width: 1600, height: 896 } })));
+    reloaded.documents.set(A, document);
+    await reloaded.ready();
+    assert.equal(reloaded.widget.canEditCamera(), true);
+    assert.equal(reloaded.widget.state.model_id, MODEL);
+    assert.deepEqual(reloaded.widget.viewer.getCameraState(), sourceCameraView(camera));
+    assert.equal(JSON.parse(reloaded.data.value).selected_cg_id, CG);
 });
 
 test("a missing 3D model does not prevent restoring a finished CG preview or its workflow output", async () => {
@@ -497,7 +670,7 @@ test("standalone CG entry registers its new node and exposes only the model work
 });
 
 test("TripoSplat settings use the copied VNCCS modal while QI2 controls stay inline", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready();
+    const h = harness(JSON.stringify(state({ model_settings: { ...MODEL_DEFAULTS, provider: "triposplat" } }))); await h.ready();
     const opening = h.control("[data-model-settings]").click(); await settle();
     const dialog = h.control("[role=dialog]"); assert.ok(dialog, h.widget.status.textContent);
     assert.equal(dialog.querySelector("select").type, "select-one");
@@ -558,7 +731,7 @@ test("late restoration cannot replace a newer configured scene or camera", async
     assert.deepEqual(h.widget.viewer.camera, savedCamera); assert.equal(JSON.parse(h.data.value).background_id, B);
 });
 
-test("library navigation locks generation before saving and until the new model finishes loading", async () => {
+test("library navigation publishes the new image before the model finishes loading", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     h.widget.state.settings.prompt = "Save before navigation"; h.widget.markEdited();
     const save = deferred(), load = deferred(), model = deferred();
@@ -580,18 +753,49 @@ test("library navigation locks generation before saving and until the new model 
     save.resolve(response(background(A, { revision: 4, cg_settings: h.widget.state.settings }))); await settle();
     assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}`), true); await assertLocked();
     load.resolve(response(background(B))); await settle();
-    assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), true); await assertLocked();
-    model.resolve(response(scene(B, { source_image_id: IMAGE }))); await settle(); await assertLocked();
-    assert.ok(h.widget.backgroundTransition); assert.equal(h.widget.backgroundTransition.snapshot.inert, true);
-    assert.match(h.widget.backgroundTransition.snapshot.querySelector("[data-model-source]").src, new RegExp(A));
-    assert.equal(h.widget.backgroundTransition.snapshot.querySelector("canvas").bitmap.closed, true);
+    await assertLocked();
+    assert.match(h.control("[data-model-source]").src, new RegExp(A));
+    assert.equal(h.widget.viewer.captureOptions, undefined);
+    assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), false);
     await h.widget.sourceLoad.onload(); await navigation;
+    assert.match(h.control("[data-model-source]").src, new RegExp(B));
     assert.equal(h.widget.busy, false); assert.equal(h.widget.document.background_id, B);
-    assert.equal(h.widget.backgroundTransition, null);
-    assert.equal(h.control('[data-action="model"]').disabled, false);
+    assert.equal(h.control("[data-library]").disabled, false);
+    assert.equal(h.control("[data-save-view]").disabled, true);
+    assert.equal(h.widget.host.hidden, true);
+    assert.equal(h.widget.loadingModel, true);
+    assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), true);
+    model.resolve(response(scene(B))); await settle();
+    assert.equal(h.widget.scene.background_id, B);
+    assert.equal(h.widget.host.hidden, false);
+    assert.equal(h.control("[data-save-view]").disabled, false);
 });
 
-test("failed background assets restore the previous document, camera and saved workflow", async () => {
+test("a rapid switch back cannot publish the scene that was loading", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const opening = deferred(), viewer = h.widget.viewer, setScene = viewer.setScene;
+    viewer.setScene = async value => {
+        const result = await setScene.call(viewer, value);
+        if (value.background_id === B) await opening.promise;
+        return result;
+    };
+    const library = h.control("[data-library]");
+    const select = async id => {
+        library.value = id;
+        const navigation = h.widget.change({ target: library }); await settle();
+        await h.widget.sourceLoad.onload(); await navigation; await settle();
+    };
+    await select(B);
+    assert.equal(viewer.scene.background_id, B);
+    await select(A);
+    assert.match(h.control("[data-model-source]").src, new RegExp(A));
+    assert.equal(h.widget.host.hidden, true);
+    opening.resolve(); await settle();
+    assert.equal(viewer.scene.background_id, A);
+    assert.equal(h.widget.host.hidden, false);
+});
+
+test("a failed background image restores the previous document, camera and saved state", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     const original = h.data.value, create = h.context.document.createElement;
     h.context.document.createElement = tag => {
@@ -601,12 +805,11 @@ test("failed background assets restore the previous document, camera and saved w
     };
     const library = h.control("[data-library]"); library.value = B;
     const navigation = h.widget.change({ target: library }); await settle(); await settle();
-    await h.widget.sourceLoad?.onload?.(); await settle(); await settle();
-    await h.widget.sourceLoad?.onload?.(); await navigation;
+    await h.widget.sourceLoad.onload(); await navigation;
     assert.equal(h.widget.document.background_id, A); assert.equal(h.widget.scene.background_id, A);
     assert.deepEqual(h.widget.viewer.camera, camera); assert.equal(h.data.value, original);
-    assert.equal(h.control("[data-library]").value, A); assert.equal(h.widget.backgroundTransition, null);
-    assert.equal(h.widget.busy, false); assert.match(h.widget.status.textContent, /assets could not be loaded/);
+    assert.equal(h.control("[data-library]").value, A);
+    assert.equal(h.widget.busy, false); assert.match(h.widget.status.textContent, /image could not be loaded/);
 });
 
 test("reconfiguration and removal cancel background transitions without publishing late assets", async () => {
@@ -614,11 +817,11 @@ test("reconfiguration and removal cancel background transitions without publishi
         const h = harness(JSON.stringify(state())); await h.ready();
         const library = h.control("[data-library]"); library.value = B;
         const navigation = h.widget.change({ target: library }); await settle(); await settle();
-        const snapshot = h.widget.backgroundTransition.snapshot, late = h.widget.sourceLoad.onload;
+        const incoming = h.widget.sourceLoad, late = incoming.onload;
         if (remove) h.node.onRemoved();
         else { h.data.value = JSON.stringify(state()); h.node.onConfigure(); }
         await navigation; await late();
-        assert.equal(snapshot.removed, true); assert.equal(h.widget.backgroundTransition, null);
+        assert.equal(incoming.removed, true);
         if (remove) assert.equal(h.widget.disposed, true);
         else { await h.ready(); assert.equal(h.widget.state.background_id, A); assert.equal(h.widget.scene.background_id, A); }
     }
@@ -1001,9 +1204,35 @@ test("stale CG confirmations cannot delete after workflow restoration or removal
     }
 });
 
-test("model generation runs independently and starts at the calibrated source camera", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready(); const modelId = "2".repeat(32), completed = background(A, { revision: 4 });
-    completed.models.push({ model_id: modelId, source_image_id: IMAGE }); completed.model = completed.models.at(-1);
+test("replacing a saved model requires confirmation even when a different generator is selected", async () => {
+    const h = harness(JSON.stringify(state({ model_id: "", selected_cg_id: "" })));
+    h.documents.get(A).models[0].settings.provider = "triposplat";
+    await h.ready();
+    const button = h.control('[data-action="model"]'), posts = () => h.calls.filter(call => call.options.method === "POST");
+    const cancelled = button.click();
+    await button.click();
+    assert.equal(h.widget.dialogs.size, 1);
+    assert.equal(posts().length, 0);
+    const dialog = h.control('[role="dialog"]');
+    assert.match(dialog.querySelector(".bg-dialog-fields").children[0].textContent, /deleted once the new model is ready/);
+    dialog.querySelectorAll("button")[0].onclick(); await cancelled;
+    assert.equal(posts().length, 0);
+    assert.equal(h.widget.document.models[0].model_id, MODEL);
+
+    h.api.handle = path => path === `${BASE}/backgrounds/${A}/jobs` ? response({ job_id: B })
+        : path === `${BASE}/jobs/${B}` ? response({ status: "cancelled" }) : undefined;
+    const confirmed = button.click();
+    h.control('[role="dialog"]').querySelectorAll("button").at(-1).onclick(); await confirmed;
+    assert.equal(posts().length, 1);
+    assert.equal(JSON.parse(posts()[0].options.body).action, "model");
+});
+
+test("first model generation starts directly and uses the calibrated source camera", async () => {
+    const h = harness(JSON.stringify(state({ model_id: "", selected_cg_id: "" })));
+    h.documents.set(A, background(A, { models: [], cgs: [] }));
+    await h.ready();
+    const modelId = "2".repeat(32), model = { model_id: modelId, source_image_id: IMAGE };
+    const completed = background(A, { revision: 4, models: [model], model });
     let payload;
     h.api.handle = (path, options) => {
         if (path === `${BASE}/backgrounds/${A}/jobs`) { payload = JSON.parse(options.body); return response({ job_id: B }); }
@@ -1024,7 +1253,9 @@ test("generation has an animated transient CG card and no status panel, progress
             if (path === `${BASE}/jobs/${B}`) { polled.resolve(); return completion.promise; }
         };
         const savedOutput = h.widget.state.selected_cg_id;
-        const running = action === "model" ? h.control('[data-action="model"]').click() : generateCG(h); await polled.promise; await settle();
+        const running = action === "model" ? h.control('[data-action="model"]').click() : generateCG(h);
+        if (action === "model") h.control('[role="dialog"]').querySelectorAll("button").at(-1).onclick();
+        await polled.promise; await settle();
         assert.equal(h.control("progress"), null); assert.equal(h.control("[data-stop]"), null); assert.equal(h.control(".bg-job-feedback"), null); assert.equal(h.control("footer"), null);
         if (action === "cg") {
             assert.ok(h.control("[data-pending-cg]")); assert.ok(h.control(".vnccs-common-creator-generation-scan"));
@@ -1196,7 +1427,7 @@ test("named generated variants preserve exact model, CG, preview and workflow ow
     const setId = "8".repeat(32), variantModel = "9".repeat(32), variantCG = "0".repeat(32), ref = { set_id: setId, index: 1, variant_id: "morning", name: "Morning" };
     const document = background();
     document.generated_sets = [{ set_id: setId, version: "", source_image_id: IMAGE, variants: [{ id: "morning", name: "Morning" }], images: [{ url: "/original-set.png" }, { url: "/morning.png", width: 1280, height: 720 }] }];
-    document.models.push({ model_id: variantModel, source_image_id: IMAGE, source_variant: ref });
+    document.models.push({ model_id: variantModel, source_image_id: IMAGE, source_variant: ref, settings: { provider: "pixal3d" } });
     document.cgs.push({ cg_id: variantCG, name: "Morning view", model_id: variantModel, source_image_id: IMAGE, source_variant: ref, camera, width: 1280, height: 720, url: "/morning-cg.png" });
     const h = harness(JSON.stringify(state())); h.documents.set(A, document); await h.ready();
     const choices = sourceChoices(document); assert.deepEqual(choices.map(choice => choice.label), ["Original", "Morning"]);

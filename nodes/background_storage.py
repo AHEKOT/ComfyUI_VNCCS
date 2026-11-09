@@ -17,8 +17,11 @@ from pathlib import Path
 
 FORMAT_VERSION = 3
 MAX_JSON_BYTES = 4 * 1024 * 1024
+MAX_CG_INDEX_BYTES = 64 * 1024 * 1024
+CG_INDEX = "CG/index.json"
 _ID = re.compile(r"[a-f0-9]{32}")
 _PENDING = ".background-write.pending"
+MODEL_BRANCHES = {"Model", "model"}
 JOBS_LOCK = threading.RLock()
 _JOB_OWNERS = {}
 
@@ -48,20 +51,20 @@ def contained(directory, relative):
     return target
 
 
-def json_bytes(value):
+def json_bytes(value, maximum=MAX_JSON_BYTES):
     payload = json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
-    if len(payload) > MAX_JSON_BYTES:
+    if len(payload) > maximum:
         raise ValueError("Background metadata is too large")
     return payload
 
 
-def read_json(path):
+def read_json(path, maximum=MAX_JSON_BYTES):
     with Path(path).open("rb") as stream:
-        payload = stream.read(MAX_JSON_BYTES + 1)
-    if len(payload) > MAX_JSON_BYTES:
+        payload = stream.read(maximum + 1)
+    if len(payload) > maximum:
         raise ValueError("Background metadata is too large")
     value = json.loads(payload)
-    json_bytes(value)
+    json_bytes(value, maximum)
     return value, payload
 
 
@@ -175,12 +178,45 @@ def cg_config_path(directory, record):
     return image.parent / f"{image.parent.name}_config.json"
 
 
+def cg_image_file(record):
+    relative = record.get("file")
+    if not isinstance(relative, str):
+        raise ValueError("Invalid saved CG path")
+    parts = relative.split("/")
+    if (parts[0] != "CG" or "\\" in relative or ":" in relative
+            or any(part in {"", ".", ".."} for part in parts)
+            or not (len(parts) == 2 and Path(parts[-1]).suffix == ".png"
+                    or len(parts) in {3, 4} and parts[-1] == "image.png"
+                    and (len(parts) == 3 or parts[2] == record.get("cg_id")))):
+        raise ValueError("Invalid saved CG path")
+    image = Path(relative)
+    raw = image.with_suffix(".raw.png") if len(parts) == 2 else image.with_name("raw.png")
+    if "raw_file" in record and record["raw_file"] != raw.as_posix():
+        raise ValueError("Invalid saved CG raw image path")
+    return relative
+
+
+def read_cg_index(directory):
+    records, _ = read_json(contained(directory, CG_INDEX), MAX_CG_INDEX_BYTES)
+    if not isinstance(records, list) or len(records) > 512:
+        raise ValueError("Invalid CG index")
+    return records
+
+
+def model_geometry_key(item):
+    return "model" if item.get("asset_kind") == "mesh" else "ply"
+
+
+def model_branch(directory):
+    return "model" if any(path.name == "model" for path in directory.iterdir()) else "Model"
+
+
 def hydrate(directory, document, *, allow_unsigned=False):
     """Discover actual assets; loading never migrates or renames their files."""
     value = copy.deepcopy(document)
     models, cgs, errors, latest = {}, {}, [], {}
     paths = set()
-    for kind, branch, filename in (("models", "model", "scene.json"), ("cgs", "CG", "image.png")):
+    for kind in ("models", "cgs"):
         records = value.get(kind, [])
         if not isinstance(records, list) or len(records) > (128 if kind == "models" else 512):
             raise ValueError("Invalid background asset list")
@@ -190,21 +226,22 @@ def hydrate(directory, document, *, allow_unsigned=False):
             relative = record.get("file")
             if relative is None:
                 continue
+            if kind == "cgs":
+                cg_image_file(record)
             path = contained(directory, relative)
             parts = path.relative_to(directory).parts
-            if (len(parts) not in ({3} if kind == "models" else {3, 4}) or parts[0] != branch or parts[-1] != filename
-                    or len(parts) == 4 and parts[2] != record.get("cg_id")):
+            if kind == "models" and (len(parts) != 3 or parts[0] not in MODEL_BRANCHES or parts[-1] != "scene.json"):
                 raise ValueError("Invalid CG Creator saved asset path")
             if relative.casefold() in paths:
                 raise ValueError("Duplicate CG Creator asset path")
             paths.add(relative.casefold())
     candidates = [(record, contained(directory, record.get("file", f"model/{record['model_id']}/scene.json")))
                   for record in value.get("models", [])]
-    model_root = contained(directory, "model")
-    for path in sorted(model_root.glob("*/scene.json")) if model_root.exists() else []:
-        contained(directory, path.relative_to(directory).as_posix())
-        if all(path != known for _record, known in candidates):
-            candidates.append((None, path))
+    for branch in sorted(MODEL_BRANCHES.intersection(path.name for path in directory.iterdir())):
+        for path in sorted(contained(directory, branch).glob("*/scene.json")):
+            contained(directory, path.relative_to(directory).as_posix())
+            if all(path != known for _record, known in candidates):
+                candidates.append((None, path))
     for record, path in candidates:
         if not path.is_file():
             continue
@@ -221,10 +258,10 @@ def hydrate(directory, document, *, allow_unsigned=False):
                 continue
             objects = scene.get("objects")
             if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
-                raise ValueError("Background model must contain Gaussian objects")
+                raise ValueError("Background model must contain scene objects")
             for item in objects:
-                files = item.get("files", {})
-                if not files.get("ply") or not contained(path.parent, files["ply"]).is_file():
+                geometry = item.get("files", {}).get(model_geometry_key(item))
+                if not geometry or not contained(path.parent, geometry).is_file():
                     raise FileNotFoundError("Model geometry is missing")
             model = copy.deepcopy(record) if record else {
                 "model_id": identity, "source_image_id": scene["source_image_id"], "scene_id": scene.get("scene_id", ""),
@@ -248,19 +285,35 @@ def hydrate(directory, document, *, allow_unsigned=False):
         if image.is_file():
             cgs[record["cg_id"]] = copy.deepcopy(record)
     cg_root = contained(directory, "CG")
-    cg_paths = sorted([*cg_root.glob("*/*_config.json"), *cg_root.glob("*/*/*_config.json")]) if cg_root.exists() else []
-    for path in cg_paths:
-        contained(directory, path.relative_to(directory).as_posix())
-        record, _ = read_json(path)
-        if (not isinstance(record, dict) or record.get("background_id") != value["background_id"]
-                or not isinstance(record.get("cg_id"), str) or not _ID.fullmatch(record["cg_id"])
-                or cg_config_path(directory, record) != path):
-            raise ValueError("CG configuration does not match its owner")
-        image = contained(directory, record["file"])
-        if image.is_file():
-            if record["cg_id"] in cgs and cgs[record["cg_id"]] != record:
-                raise ValueError("Duplicate CG identity")
+    index = contained(directory, CG_INDEX)
+    if index.exists():
+        cgs.clear()
+        indexed_paths = set()
+        for record in read_cg_index(directory):
+            if (not isinstance(record, dict) or record.get("background_id") != value["background_id"]
+                    or not isinstance(record.get("cg_id"), str) or not _ID.fullmatch(record["cg_id"])
+                    or record["cg_id"] in cgs):
+                raise ValueError("Invalid or duplicate CG index entry")
+            image = contained(directory, cg_image_file(record))
+            for path in (image, contained(directory, record["raw_file"])) if "raw_file" in record else (image,):
+                key = path.as_posix().casefold()
+                if key in indexed_paths:
+                    raise ValueError("Duplicate CG asset path")
+                indexed_paths.add(key)
             cgs[record["cg_id"]] = record
+    else:
+        for path in sorted([*cg_root.glob("*/*_config.json"), *cg_root.glob("*/*/*_config.json")]):
+            contained(directory, path.relative_to(directory).as_posix())
+            record, _ = read_json(path)
+            if (not isinstance(record, dict) or record.get("background_id") != value["background_id"]
+                    or not isinstance(record.get("cg_id"), str) or not _ID.fullmatch(record["cg_id"])
+                    or cg_config_path(directory, record) != path):
+                raise ValueError("CG configuration does not match its owner")
+            image = contained(directory, cg_image_file(record))
+            if image.is_file():
+                if record["cg_id"] in cgs and cgs[record["cg_id"]] != record:
+                    raise ValueError("Duplicate CG identity")
+                cgs[record["cg_id"]] = record
     active_ids = {identity for _modified, identity in latest.values()}
     value["models"] = [model for identity, model in models.items() if identity in active_ids]
     value["cgs"] = list(cgs.values())
@@ -285,9 +338,9 @@ def recover(directory, writer=atomic):
     for index, item in enumerate(plan):
         target = contained(directory, item["file"])
         relative = target.relative_to(directory)
-        allowed = relative.as_posix() in {f"{directory.name}_config.json", f"{directory.name}_config.json.backup", "source.png"}
+        allowed = relative.as_posix() in {f"{directory.name}_config.json", f"{directory.name}_config.json.backup", "source.png", CG_INDEX}
         allowed |= len(relative.parts) in {3, 4} and relative.parts[0] == "CG" and relative.name == f"{relative.parts[-2]}_config.json" and (len(relative.parts) == 3 or bool(_ID.fullmatch(relative.parts[2])))
-        allowed |= len(relative.parts) == 3 and relative.parts[0] == "model" and relative.name == "scene.json"
+        allowed |= len(relative.parts) == 3 and relative.parts[0] in MODEL_BRANCHES and relative.name == "scene.json"
         if (not allowed or not isinstance(item.get("after"), str) or not re.fullmatch(r"[a-f0-9]{64}", item["after"])
                 or item.get("before") is not None and not re.fullmatch(r"[a-f0-9]{64}", item["before"])):
             raise ValueError("Background write journal escaped its owner")
@@ -315,16 +368,17 @@ def _writes(directory, document, files=None):
         if "source_signature" not in scene:
             scene["source_signature"] = fingerprint(source_path(directory, document, scene["source_image_id"], scene.get("source_variant")))
             writes.setdefault(relative, json_bytes(scene))
+    index = []
     for record in document.get("cgs", []):
         metadata = copy.deepcopy(record)
         metadata.pop("url", None)
         metadata["background_id"] = document["background_id"]
         metadata.setdefault("file", f"CG/{record['name']}/{record['cg_id']}/image.png")
-        path = cg_config_path(directory, metadata)
-        writes[path.relative_to(directory).as_posix()] = json_bytes(metadata)
+        index.append(metadata)
+    if index or contained(directory, CG_INDEX).exists():
+        writes[CG_INDEX] = json_bytes(index, MAX_CG_INDEX_BYTES)
     encoded = json_bytes(pack(document))
     writes[f"{directory.name}_config.json"] = encoded
-    writes[f"{directory.name}_config.json.backup"] = encoded
     return {relative: payload for relative, payload in writes.items()
             if not contained(directory, relative).is_file() or contained(directory, relative).read_bytes() != payload}
 
@@ -473,13 +527,19 @@ def recover_assets(directory, writer=atomic):
     key = kind[:-1] + "_id"
     if target_record.get(key) != identity:
         raise ValueError("Invalid CG asset publication identity")
-    target = contained(directory, target_record["file"]).parent
-    branch = "model" if kind == "models" else "CG"
+    asset = contained(directory, target_record["file"])
+    branches = MODEL_BRANCHES if kind == "models" else {"CG"}
     expected = "scene.json" if kind == "models" else "image.png"
     parts = Path(target_record["file"]).parts
-    if len(parts) != 3 or parts[0] != branch or parts[-1] != expected:
+    flat_cg = kind == "cgs" and len(parts) == 2
+    if flat_cg:
+        cg_image_file(target_record)
+    elif len(parts) != 3 or parts[0] not in branches or parts[-1] != expected:
         raise ValueError("CG asset publication escaped its owner")
+    target = asset if flat_cg else asset.parent
     record = next((item for item in before.get(kind, []) if item[key] == identity), None)
+    if flat_cg and record:
+        raise ValueError("CG publication would replace an existing image")
     if record:
         relative = record.get("file", f"model/{identity}/scene.json" if kind == "models" else f"CG/{record['name']}/{identity}/image.png")
         source = contained(directory, relative).parent
@@ -518,8 +578,13 @@ def recover_assets(directory, writer=atomic):
         raise ValueError("CG asset publication belongs to another background")
     committed = current.get("revision") == before.get("revision", 0) + 1
     if committed:
-        manifest = target / "scene.json" if kind == "models" else cg_config_path(directory, target_record)
-        published, _ = read_json(manifest)
+        if flat_cg:
+            published = next((item for item in read_cg_index(directory) if item.get(key) == identity), {})
+            if published.get("file") != target_record["file"] or not target.is_file():
+                raise ValueError("Published CG image does not match its index")
+        else:
+            manifest = target / "scene.json" if kind == "models" else cg_config_path(directory, target_record)
+            published, _ = read_json(manifest)
         if published.get(key) != identity or published.get("background_id") != current["background_id"]:
             raise ValueError("CG asset publication does not match its owner")
     else:
@@ -531,9 +596,10 @@ def recover_assets(directory, writer=atomic):
                 os.replace(new, old)
         if plan.get("manifest"):
             writer(contained(source, "scene.json"), contained(pending, "scene.before.json").read_bytes())
-        backup = contained(directory, f"{directory.name}_config.json.backup")
-        if plan["had_backup"]:
-            writer(backup, contained(pending, "before.backup").read_bytes())
-        else:
-            backup.unlink(missing_ok=True)
+        if "had_backup" in plan:
+            backup = contained(directory, f"{directory.name}_config.json.backup")
+            if plan["had_backup"]:
+                writer(backup, contained(pending, "before.backup").read_bytes())
+            else:
+                backup.unlink(missing_ok=True)
     _discard_journal(directory, ".cg-assets.pending", completed=True)

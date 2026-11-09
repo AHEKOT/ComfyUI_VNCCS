@@ -117,8 +117,8 @@ try {
         const info = { widgets_values: ['stale'] }; widget.node.onSerialize(info);
         return { raw: info.widgets_values[0], size: [...widget.node.size], extra: structuredClone(widget.node.graph.extra) };
     });
-    const reloadWorkflow = async () => {
-        const saved = await workflow();
+    const reloadWorkflow = async (saved) => {
+        saved ??= await workflow();
         await page.reload(); await page.waitForFunction(() => window.ready);
         await page.evaluate(saved => setup(saved.size[0], 1, saved.raw, saved.size[1], saved.extra), saved);
         await page.waitForFunction(() => document.querySelector('[data-model-source]')?.naturalWidth > 0); await settle();
@@ -335,12 +335,16 @@ try {
         await picker.locator('.vnccs-common-creator-model-picker-menu [role="button"]').filter({ hasText: name }).click();
     };
     for (const [filename, label] of [[turboModel, 'Qwen Image 2.1 Turbo INT8 ConvRot'], [localModel, localModel]]) {
+        const stale = await workflow();
         await selectModel(label);
         assert.equal(JSON.parse((await workflow()).raw).settings.generation.diffusion_model_name, filename, 'Model choice is serialized immediately');
         await reloadWorkflow();
         assert.equal(await page.evaluate(() => widget.state.settings.generation.diffusion_model_name), filename);
         assert.match(await picker.locator('.is-picker-head').textContent(), new RegExp(label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
         assert.equal(await page.evaluate(() => widget.unsaved), true, 'A restored model choice still needs its library acknowledgement');
+        await page.evaluate(() => widget.persist());
+        await reloadWorkflow(stale);
+        assert.equal(await page.evaluate(() => widget.state.settings.generation.diffusion_model_name), filename);
         await switchBackground(nextBackgroundId); await backgroundSettled();
         assert.equal(modelDocument.cg_settings.generation.diffusion_model_name, filename);
         await switchBackground(backgroundId); await backgroundSettled();

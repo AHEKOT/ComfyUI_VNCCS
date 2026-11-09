@@ -25,7 +25,7 @@ export const document = {
         variants: [{ id: "morning_light", name: "Morning light" }, { id: "rainy_evening", name: "Rainy evening" }, { id: "night", name: "Night" }],
         images: ["Original", "Morning light", "Rainy evening", "Night"].map((name, index) => ({ name, file: `Images/${String(index).padStart(2, "0")}_${name}.png`, width: 1600, height: 896, revision: 1, settings: { seed: 0 }, url: `${base}/backgrounds/${backgroundId}/sets/${setId}/${index}?v=1` })) }],
     models: [{ model_id: modelId, source_image_id: imageId, settings: { seed: 66011999 } }],
-    model_settings: { num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: 66011999 },
+    model_settings: { provider: "triposplat", pixal_profile: "standard", num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: 66011999 },
     cgs: [
         { cg_id: "e".repeat(32), name: "Room · Wide", camera, width: 1600, height: 896 },
         { cg_id: "f".repeat(32), name: "Desk · Evening", camera: { ...camera, position: [0.5, 1.7, 4.8], target: [1.2, 1.5, -1.6], fov: 48 }, width: 1344, height: 1008 },
@@ -38,6 +38,31 @@ export const scene = {
         transform: { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 },
         urls: { splat: `${base}/backgrounds/${backgroundId}/models/${modelId}/objects/${objectId}/splat` } }],
 };
+
+export function roomMesh() {
+    const vertices = [0.125, 0.375, 0, -0.375, -0.125, 0.5, 0.625, -0.125, 0.5, 0.125, -0.125, -0.5];
+    const indices = [0, 1, 2, 0, 2, 3, 0, 3, 1, 1, 3, 2];
+    const data = Buffer.alloc(vertices.length * 4 + indices.length * 2);
+    vertices.forEach((value, i) => data.writeFloatLE(value, i * 4));
+    indices.forEach((value, i) => data.writeUInt16LE(value, vertices.length * 4 + i * 2));
+    const json = JSON.stringify({
+        asset: { version: "2.0" }, scene: 0, scenes: [{ nodes: [0] }], nodes: [{ mesh: 0 }],
+        meshes: [{ primitives: [{ attributes: { POSITION: 0 }, indices: 1, material: 0 }] }],
+        materials: [{ doubleSided: true, pbrMetallicRoughness: { baseColorFactor: [0.2, 0.7, 0.9, 1], metallicFactor: 0 } }],
+        buffers: [{ byteLength: data.length }],
+        bufferViews: [{ buffer: 0, byteLength: vertices.length * 4 },
+            { buffer: 0, byteOffset: vertices.length * 4, byteLength: indices.length * 2 }],
+        accessors: [{ bufferView: 0, componentType: 5126, count: 4, type: "VEC3", min: [-0.375, -0.125, -0.5], max: [0.625, 0.375, 0.5] },
+            { bufferView: 1, componentType: 5123, count: indices.length, type: "SCALAR" }],
+    });
+    const manifest = Buffer.from(json.padEnd(Math.ceil(json.length / 4) * 4));
+    const header = Buffer.alloc(20), binary = Buffer.alloc(8);
+    header.write("glTF"); header.writeUInt32LE(2, 4);
+    header.writeUInt32LE(header.length + manifest.length + binary.length + data.length, 8);
+    header.writeUInt32LE(manifest.length, 12); header.write("JSON", 16);
+    binary.writeUInt32LE(data.length); binary.write("BIN", 4);
+    return Buffer.concat([header, manifest, binary, data]);
+}
 
 export function roomSplat() {
     const points = [], step = 0.065;

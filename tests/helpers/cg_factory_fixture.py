@@ -41,6 +41,15 @@ def factory_fixture():
         return scene
 
     def settings(value):
+        if value.get("provider") == "pixal3d":
+            quality = value.get("quality", "high")
+            return {"seed": value.get("seed", -1), "provider": "pixal3d",
+                    "quality": quality, "target_resolution": 1024 if quality == "preview" else 1536,
+                    "texture_resolution": 1024 if quality == "preview" else 2048,
+                    "normal_resolution": 1024 if quality == "preview" else 2048,
+                    "ao_resolution": 512 if quality == "preview" else 1024,
+                    "remove_background": value.get("remove_background", "1") == "1",
+                    "refine_textures": value.get("refine_textures", "0") == "1"}
         return {"num_gaussians": 131072, "steps": 20, "guidance_scale": 3.0, "seed": -1,
                 "conditioning_resolution": 1024, "prevent_upscale": False, **value,
                 "provider": "triposplat", "remove_background": False}
@@ -84,5 +93,6 @@ def factory_fixture():
     runtime._check_cancel = check
     runtime._job_public = lambda job: {key: copy.deepcopy(value) for key, value in job.items() if key != "cancel_event"}
     runtime._generate_object = lambda *args: None
+    runtime._generate_mesh_object = lambda *args: None
     runtime.JobCancelled = JobCancelled
     return runtime, factory

@@ -44,8 +44,9 @@ MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_MODEL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CGS = 512
 MAX_MODELS = 512
+CHARACTER_PROMPT_LIMIT = 8000
 _ID = re.compile(r"^[a-f0-9]{32}$")
-_ASSET_KINDS = {"ply", "splat", "reference", "prepared"}
+_ASSET_SUFFIXES = {"ply": ".ply", "splat": ".splat", "model": ".glb", "reference": ".png", "prepared": ".png"}
 
 
 
@@ -423,28 +424,31 @@ def image_path(background_id, image_id, source_variant=None):
 
 
 def _asset_file(record, kind):
+    if kind == "cgs":
+        relative = background_storage.cg_image_file(record)
+        parts = Path(relative).parts
+        _name(Path(parts[1]).stem if len(parts) == 2 else parts[1])
+        return relative
     relative = record.get("file")
-    branch, filename = ("model", "scene.json") if kind == "models" else ("CG", "image.png")
-    if (not isinstance(relative, str) or "\\" in relative or relative != Path(relative).as_posix() or len(Path(relative).parts) not in ({3, 4} if kind == "cgs" else {3})
-            or Path(relative).parts[0] != branch or Path(relative).name != filename):
+    if (not isinstance(relative, str) or "\\" in relative or relative != Path(relative).as_posix() or len(Path(relative).parts) != 3
+            or Path(relative).parts[0] not in background_storage.MODEL_BRANCHES or Path(relative).name != "scene.json"):
         raise ValueError("Invalid CG Creator saved asset path")
     _name(Path(relative).parts[1])
-    if kind == "cgs" and "raw_file" in record and record["raw_file"] != str(Path(relative).with_name("raw.png")).replace("\\", "/"):
-        raise ValueError("Invalid CG Creator raw image path")
     return relative
 
 
-def _next_asset_directory(directory, branch, name, *, flatten=None):
+def _next_asset_path(directory, branch, name, *, extension="", reserved=()):
     base = _contained(directory, branch)
     name = _name(name)
     occupied = {path.name.casefold() for path in base.iterdir()} if base.exists() else set()
+    occupied.update(Path(path).name.casefold() for path in reserved)
     index = 1
     while True:
         suffix = f" ({index})" if index > 1 else ""
         candidate = _name(name[:96 - len(suffix)] + suffix)
-        target = _contained(base, candidate)
-        if candidate.casefold() not in occupied or target == flatten and not any((target / name).exists() for name in ("image.png", "raw.png")):
-            return target
+        filename = candidate + extension
+        if filename.casefold() not in occupied:
+            return _contained(base, filename)
         index += 1
 
 
@@ -459,20 +463,15 @@ def _recover_assets(directory):
 
 
 @contextmanager
-def _asset_publication(directory, previous, kind, record, moves, *, manifest=None):
+def _asset_publication(directory, previous, kind, record, moves):
     pending = _contained(directory, ".cg-assets.pending")
     pending.mkdir(exist_ok=False)
     try:
         saved = json.loads(previous)
         before = background_storage.hydrate(directory, background_storage.unpack(saved), allow_unsigned=saved.get("schema_version") == 2)
+        before.pop("cgs", None)
         _atomic(pending / "before.json", _json_bytes(before))
-        backup = _contained(directory, f"{directory.name}_config.json.backup")
-        if backup.exists():
-            _atomic(pending / "before.backup", backup.read_bytes())
-        if manifest is not None:
-            _atomic(pending / "scene.before.json", manifest)
         plan = {"kind": kind, "id": record[kind[:-1] + "_id"], "record": record,
-                "had_backup": backup.exists(), "manifest": manifest is not None,
                 "moves": [[old.relative_to(directory).as_posix(), new.relative_to(directory).as_posix()] for old, new in moves]}
         _atomic(pending / "plan.json", _json_bytes(plan))
     except BaseException:
@@ -512,7 +511,7 @@ def _replace_model_records(document, model):
 def _copy_model(source, scene, target):
     objects = scene.get("objects")
     if not isinstance(objects, list) or not 1 <= len(objects) <= 32:
-        raise ValueError("Background model must contain Gaussian objects")
+        raise ValueError("Background model must contain scene objects")
     copies, total, object_ids = [], 0, set()
     for index, item in enumerate(objects, 1):
         if not isinstance(item, dict) or _id(item.get("object_id")) in object_ids:
@@ -520,10 +519,10 @@ def _copy_model(source, scene, target):
         object_id = item["object_id"]
         object_ids.add(object_id)
         files = item.get("files")
-        if not isinstance(files, dict) or not files.get("ply"):
-            raise ValueError("Background model PLY is missing")
+        if not isinstance(files, dict) or not files.get(background_storage.model_geometry_key(item)):
+            raise ValueError("Background model geometry is missing")
         retained = {}
-        for kind in _ASSET_KINDS:
+        for kind in ("ply", "splat", "model"):
             relative = files.get(kind)
             if not relative:
                 continue
@@ -535,8 +534,8 @@ def _copy_model(source, scene, target):
             total += source_file.stat().st_size
             if total > MAX_MODEL_BYTES:
                 raise ValueError("Background model assets are too large")
-            suffix = {"ply": ".ply", "splat": ".splat", "reference": ".png", "prepared": ".png"}[kind]
-            target_relative = f"objects/Object {index}/{kind}{suffix}"
+            suffix = _ASSET_SUFFIXES[kind]
+            target_relative = f"{kind}{suffix}" if index == 1 else f"{kind}-{index}{suffix}"
             retained[kind] = target_relative
             copies.append((source_file, target_relative))
         item["files"] = retained
@@ -567,8 +566,9 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
         if not old_models and len(document.get("models", [])) >= MAX_MODELS:
             raise ValueError("Background model limit reached")
         model_id = uuid.uuid4().hex
+        branch = background_storage.model_branch(directory)
         target = (_model_directory(directory, old_models[-1]["model_id"], document) if old_models
-                  else _contained(directory, "model", _source_label(document, image_id, variant)))
+                  else _contained(directory, branch, _source_label(document, image_id, variant)))
         retired_moves = _retired_model_moves(directory, document, old_models)
         if target.exists() and not retired_moves:
             retired, _ = _read_json(_contained(target, "scene.json"))
@@ -576,7 +576,7 @@ def commit_model(background_id, image_id, scene_directory, scene, settings, expe
                 raise BackgroundStorageError("Existing model belongs to another background; files are preserved")
             if (any(model["model_id"] == retired.get("model_id") for model in document["models"])
                     and _model_source(retired) != (image_id, _variant_key(variant))):
-                target = _next_asset_directory(directory, "model", _source_label(document, image_id, variant))
+                target = _next_asset_path(directory, branch, _source_label(document, image_id, variant))
             else:
                 retired_moves.append((target, _contained(directory, ".cg-assets.pending", "retired", _id(retired["model_id"]))))
         scene.update(background_id=background_id, model_id=model_id, source_image_id=image_id,
@@ -620,7 +620,7 @@ def model_scene(background_id, model_id):
 
 def model_asset_path(background_id, model_id, object_id, kind):
     _id(object_id)
-    if kind not in _ASSET_KINDS:
+    if kind not in _ASSET_SUFFIXES:
         raise ValueError("Unsupported background model asset kind")
     with background._LOCK:
         scene = model_scene(background_id, model_id)
@@ -744,6 +744,8 @@ def _characters(value):
                     or not isinstance(text, str) or len(text) > 255 or re.search(r"[\\/\x00-\x1f]", text)
                     or text in {".", ".."} for key, text in source.items())):
                 raise ValueError("Invalid CG character source")
+        if "prompt" in item:
+            _text(item["prompt"], "CG character prompt", CHARACTER_PROMPT_LIMIT)
         if ("origin" in item and not vector(item["origin"]) or "baseScale" in item and
                 (type(item["baseScale"]) not in (int, float) or not .001 <= item["baseScale"] <= 1000)):
             raise ValueError("Invalid CG character placement")
@@ -761,18 +763,19 @@ def commit_cg(background_id, name, raw, finished, camera, settings, model_id, ex
         if len(document.get("cgs", [])) >= MAX_CGS:
             raise ValueError("Background CG limit reached")
         cg_id = uuid.uuid4().hex
-        target = _next_asset_directory(directory, "CG", name)
+        reserved = [cg[key] for cg in document.get("cgs", []) for key in ("file", "raw_file") if key in cg]
+        target = _next_asset_path(directory, "CG", name, extension=".png", reserved=reserved)
         metadata = {"cg_id": cg_id, "name": name, "background_id": background_id,
                     "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera, "settings": settings,
                     "width": finished.width, "height": finished.height, "characters": characters,
-                    "file": (target / "image.png").relative_to(directory).as_posix()}
+                    "file": target.relative_to(directory).as_posix()}
         variant = _source_variant(model.get("source_variant"))
         if variant:
             metadata["source_variant"] = variant
         _json_bytes(metadata)
         stage = _contained(directory, ".cg-assets.pending", "data")
         with _asset_publication(directory, previous, "cgs", metadata, [(stage, target)]):
-            _atomic(_contained(stage, "image.png"), finished_bytes)
+            _atomic(stage, finished_bytes)
             target.parent.mkdir(parents=True, exist_ok=True)
             os.replace(stage, target)
             document.setdefault("cgs", []).append(metadata)
@@ -822,6 +825,7 @@ ASSETS = {
 }
 TURBO_LORA = "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
 TURBO_MODEL = "qwen_image_2.1_turbo_int8_convrot.safetensors"
+CG_LORA_NAME = "VNCCS Lucid Dreams QI2"
 ANYANGLE_REPO = "lilylilith/QI_2.1_AnyAngle"
 ANYANGLE_REVISION = "35b746e4121e1e9fc6a3e334fd8036ba1a9560d0"
 ANYANGLE_FILENAME = "QI2.1_AnyAngle.safetensors"
@@ -1047,14 +1051,12 @@ def _asset_name(category: str, name: str) -> str:
     return matches[0]
 
 
-@lru_cache(maxsize=1)
-def resolve_pose_lora() -> str:
+def resolve_cg_lora() -> str:
     from . import vnccs_control_center as center
-    with open(center._get_packaged_cc_path(), encoding="utf-8") as handle:
-        config = json.load(handle)
-    entry = center._find_entry(config.get("lora", []), "VNCCS Pose Studio QI2")
+    config = center._get_cc_config("MIUProject/VNCCS_v3.0")
+    entry = center._find_entry(config.get("lora", []), CG_LORA_NAME)
     if entry is None:
-        raise ValueError("QI2 Pose Studio LoRA is not configured in Control Center")
+        raise ValueError(f"{CG_LORA_NAME} is not configured in Control Center")
     return _asset_name("loras", center._rel_within_folder(entry["local_path"]))
 
 
@@ -1405,7 +1407,7 @@ def _save_dataset(references, image, prompt):
 
 
 @logged_operation("CGCreator", "refine")
-def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None):
+def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None, *, character_prompt=""):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
@@ -1424,19 +1426,21 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
     prompt = ANYANGLE_PROMPT
     if character is not None:
         prompt += " White dummy is character from image3"
+        extra_prompt = _text(character_prompt, "CG character prompt", CHARACTER_PROMPT_LIMIT)
+        if extra_prompt:
+            prompt += "\n" + extra_prompt
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
-        _stage(draw_id, cancel_event, "loading", 0.01, "Installing AnyAngle LoRA if needed")
-        anyangle_lora = resolve_anyangle_lora(cancel_event)
-        pose_lora = resolve_pose_lora() if character is not None else None
+        _stage(draw_id, cancel_event, "loading", 0.01, "Locating CG LoRA")
+        cg_lora = resolve_cg_lora()
         _stage(draw_id, cancel_event, "loading", 0.03, "Loading Qwen Image 2.1")
         model, clip, vae = _load_assets(generation["diffusion_model_name"])
         _stage(draw_id, cancel_event, "loading", 0.12, "Applying CG model settings")
-        model, _ = apply_generation_lora(model, None, anyangle_lora, 1.0, clip_strength=0)
-        if pose_lora:
-            model, _ = apply_generation_lora(model, None, pose_lora, 1.0, clip_strength=0)
+        model, _ = apply_generation_lora(model, None, cg_lora, 1.0, clip_strength=0)
+        cg_filename = cg_lora.replace("\\", "/").rsplit("/", 1)[-1].casefold()
         for item in generation["lora_stack"]:
-            if item["name"].replace("\\", "/").rsplit("/", 1)[-1].casefold() == ANYANGLE_FILENAME.casefold():
+            filename = item["name"].replace("\\", "/").rsplit("/", 1)[-1].casefold()
+            if filename in (ANYANGLE_FILENAME.casefold(), cg_filename):
                 continue
             model, clip = apply_generation_lora(model, clip, item["name"], item["strength"])
             _check_cancel(cancel_event)
@@ -1488,7 +1492,7 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         _stage(draw_id, cancel_event, "complete", 1, "CG image ready")
         return image, {"settings": settings, "prompt": prompt, "width": image.width, "height": image.height,
                        "seed": generation["seed"], "model": "qi2",
-                       "anyangle_lora": {"name": anyangle_lora, "strength": 1.0, "revision": ANYANGLE_REVISION}}
+                       "cg_lora": {"name": cg_lora, "strength": 1.0}}
 
 # Workflow node, workspace jobs and ComfyUI HTTP registration.
 
@@ -1528,7 +1532,7 @@ class VNCCS_CGCreator:
     FUNCTION = "create_cg"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
-    DESCRIPTION = "Select a saved background, build its TripoSplat model and compose CG camera views. Workflow execution returns the selected finished CG."
+    DESCRIPTION = "Select a saved background, build a TripoSplat or Pixal3D model and compose CG camera views. Workflow execution returns the selected finished CG."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1634,7 +1638,8 @@ def public_document(document):
 def public_model(background_id, model_id):
     scene = model_scene(background_id, model_id)
     for item in scene.get("objects", []):
-        item["urls"] = {"splat": f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/splat"}
+        kind = "model" if background_storage.model_geometry_key(item) == "model" else "splat"
+        item["urls"] = {kind: f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/{kind}"}
         item["locked"] = True
         item.pop("files", None)
     return scene
@@ -1643,8 +1648,21 @@ def public_model(background_id, model_id):
 def model_settings(value):
     factory = provider()["storage"]
     if not isinstance(value, dict):
-        raise ValueError("TripoSplat settings must be an object")
-    return factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
+        raise ValueError("Background model settings must be an object")
+    gaussian = factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
+    gaussian["pixal_profile"] = "fast" if value.get("pixal_profile", "fast") == "fast" else "standard"
+    for key, options in (
+        ("pixal_mesh_resolution", (0, 1024, 1536, 2048)),
+        ("pixal_texture_resolution", (0, 256, 512, 1024, 2048, 4096)),
+    ):
+        resolution = value.get(key, 0)
+        if type(resolution) is not int or resolution not in options:
+            raise ValueError(f"Invalid {key.replace('_', ' ')}")
+        gaussian[key] = resolution
+    if value.get("provider", "pixal3d") == "pixal3d":
+        mesh = factory._generation_settings({**value, "remove_background": "0", "refine_textures": "0", "provider": "pixal3d"})
+        return {**gaussian, **mesh, "provider": "pixal3d"}
+    return gaussian
 
 
 def ensure_idle(background_id):
@@ -1703,6 +1721,8 @@ def start_job(background_id, payload, raw_image=None):
               "source_signature": background_storage.fingerprint(image_path(background_id, image_id, source_variant)),
               "model_settings": model_settings(payload.get("model_settings", {})),
               "settings": normalize_settings(payload.get("settings", {}))}
+    if action == "model" and values["model_settings"]["provider"] == "pixal3d" and not callable(getattr(runtime, "_generate_mesh_object", None)):
+        raise RuntimeError("Pixal3D requires a 3D Factory version with mesh generation")
     if action == "cg":
         values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
         scene = model_scene(background_id, values["model_id"])
@@ -1749,8 +1769,9 @@ def _execute(job, values):
             if job["action"] == "cg":
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                     background_image = source.convert("RGB")
+                characters = values.get("characters", [])
                 image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background_image,
-                                                 character=values.get("character"))
+                    character=values.get("character"), character_prompt=characters[0].get("prompt", "") if characters else "")
                 runtime._check_cancel(job)
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
@@ -1758,7 +1779,7 @@ def _execute(job, values):
                         if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
                             raise BackgroundConflictError("Background source changed while generating CG; the result was not published")
                         document = commit_cg(job["background_id"], values["name"], values["raw"], image, values["camera"],
-                            settings, values["model_id"], None, characters=values.get("characters", []))
+                            settings, values["model_id"], None, characters=characters)
                     job["published"] = True
             else:
                 scene = factory.create_scene("CG Creator")
@@ -1766,10 +1787,27 @@ def _execute(job, values):
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                     encoded = io.BytesIO()
                     source.convert("RGB").save(encoded, format="PNG")
-                runtime._generate_object(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**values["model_settings"], "capture_source_camera": True})
+                settings = values["model_settings"]
+                mesh = settings["provider"] == "pixal3d"
+                if mesh:
+                    settings = settings.copy()
+                    if settings["pixal_profile"] == "fast":
+                        preview = factory._generation_settings({**settings, "quality": "preview"})
+                        settings.update(preview, base_color_only=True)
+                    mesh_resolution = settings["pixal_mesh_resolution"]
+                    texture_resolution = settings["pixal_texture_resolution"]
+                    if mesh_resolution:
+                        settings["target_resolution"] = mesh_resolution
+                    if texture_resolution:
+                        settings["texture_resolution"] = texture_resolution
+                        settings["normal_resolution"] = min(settings["normal_resolution"], texture_resolution)
+                        settings["ao_resolution"] = min(settings["ao_resolution"], texture_resolution)
+                generate = runtime._generate_mesh_object if mesh else runtime._generate_object
+                generate(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**settings, "capture_source_camera": True})
                 runtime._check_cancel(job)
                 scene = factory.load_scene(scene["scene_id"])
-                scene = factory.update_scene(scene["scene_id"], {"camera": scene["objects"][0]["source_camera"], "lighting": {"preset": "off", "background": "#000000"}})
+                camera = scene["camera"] if mesh else scene["objects"][0]["source_camera"]
+                scene = factory.update_scene(scene["scene_id"], {"camera": camera, "lighting": {"preset": "off", "background": "#000000"}})
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
                     with background._LOCK:

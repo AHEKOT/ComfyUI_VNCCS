@@ -2,6 +2,7 @@ const vector = value => Array.isArray(value) && value.length === 3 && value.ever
 
 export const MESH_DEFAULTS = Object.freeze({ age: 25, gender: .5, weight: .5, muscle: .5, height: .5 });
 export const LIGHT_DEFAULTS = Object.freeze({ x: 10, y: 20, z: 30, intensity: 1.25, color: "#ffffff" });
+export const CHARACTER_PROMPT_LIMIT = 8000;
 
 export function validateCharacters(value) {
     if (!Array.isArray(value) || value.length > 16) throw new Error("Invalid CG characters.");
@@ -29,6 +30,8 @@ export function validateCharacters(value) {
             || Object.entries(item.source).some(([key, value]) => !["character", "costume", "sprite", "emotion"].includes(key)
                 || typeof value !== "string" || value.length > 255 || /[\\/\x00-\x1f]/.test(value) || value === "." || value === "..")))
             throw new Error("Invalid CG character source.");
+        if (Object.hasOwn(item, "prompt") && (typeof item.prompt !== "string" || item.prompt.length > CHARACTER_PROMPT_LIMIT
+            || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(item.prompt))) throw new Error("Invalid CG character prompt.");
         if (item.origin != null && !vector(item.origin) || item.baseScale != null && (!Number.isFinite(item.baseScale)
             || item.baseScale < .001 || item.baseScale > 1000)) throw new Error("Invalid CG character placement.");
         if (!vector(item.pose.modelRotation)) throw new Error("Invalid CG character rotation.");
@@ -122,6 +125,7 @@ export class CGCharacterEditor {
             const { bones, bonePositions } = core.getPose(), mesh = core.skinnedMesh;
             return { id, position: mesh.position.toArray(), scale: mesh.scale.x,
                 mesh: { ...core.mesh }, light: { ...core.light }, source: { ...core.source },
+                ...(core.prompt ? { prompt: core.prompt } : {}),
                 origin: [...core.origin], baseScale: core.baseScale,
                 pose: { bones, bonePositions, modelRotation: [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z].map(n => n * 180 / Math.PI) } };
         });
@@ -143,6 +147,7 @@ export class CGCharacterEditor {
             }
             core.transform.setMode(this.mode === "move" ? "translate" : "rotate");
             core.source = { ...item.source }; core.origin = [...(item.origin || item.position)]; core.baseScale = item.baseScale || item.scale;
+            core.prompt = item.prompt || "";
             core.setMesh(item.mesh); core.setLight(item.light);
             core.skinnedMesh.position.fromArray(item.position); core.skinnedMesh.scale.setScalar(item.scale);
             core.setPose(item.pose, true); core.updateIKEffectorPositions();
