@@ -234,14 +234,12 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
     multiview = load("nodes.cg_moge_multiview")
     monkeypatch.setattr(multiview, "require_colmap", mock.Mock())
-    monkeypatch.setattr(multiview, "expansion_matches_capture", lambda *_args: True)
     calibration = torch.diag(torch.tensor([1., 1.5, 1.]))
     infer = mock.Mock(side_effect=lambda batch, *_args: {
         "intrinsics": [calibration], "depth": torch.full(batch.shape[:3], 2.),
     })
     monkeypatch.setattr(service, "_infer_moge", infer)
     mesh = object()
-    final_mesh = object()
     export = mock.Mock(return_value=(types.SimpleNamespace(get_bytes=lambda: b"glTF fixture"),))
     monkeypatch.setattr(service, "_call_comfy_node", lambda name, **kwargs: (
         (mesh,) if name == "MoGePointMapToMesh" else export(**kwargs)))
@@ -253,7 +251,7 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     seen = []
 
     def refine(_settings, _job_id, _cancel, frame, background, *, save_dataset, progress_range):
-        assert not save_dataset and 0 < progress_range[0] < progress_range[1] < 0.86
+        assert not save_dataset and 0 < progress_range[0] < progress_range[1] < 0.6
         assert background.getpixel((0, 0)) == (255, 0, 0)
         seen.append(frame.getpixel((0, 0))[0])
         return frame, {}
@@ -276,63 +274,38 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
 
     register = mock.Mock(side_effect=register)
     monkeypatch.setattr(multiview, "register_views", register)
-    merge = mock.Mock(side_effect=[mesh, final_mesh])
+    merge = mock.Mock(return_value=mesh)
     monkeypatch.setattr(multiview, "merge_moge_views", merge)
-    new_poses = np.array([[[0, 0, turn, 0], [0, 1, 0, 0], [-turn, 0, 0, step], [0, 0, 0, 1]]
-                          for turn, step in [(1, .3), (-1, .4)]])
-    new_tracks = [track.copy() / [1, 1, 3] for track in tracks[:2]]
-    def capture(assembled, source_depth, *_args):
-        assert assembled is mesh and source_depth.ndim == 2
-        assert not list(factory._factory_root().rglob("*.glb"))
-        frames = [(torch.full((1, *source_depth.shape, 3), pixel), np.zeros(source_depth.shape, dtype=bool))
-                  for pixel in (.125, .875)]
-        return frames, new_poses, new_tracks
-
-    monkeypatch.setattr(multiview, "render_expanded_mesh_views", capture)
     document = workspace.document
     settings = service.normalize_settings({"resolution_mp": 0.05})
     service.start_job(document["background_id"], job_payload(document, "model", settings=settings,
         model_settings={"provider": "moge", "moge_refine_views": True}))
     job = workspace.run_pending()
     assert job["status"] == ("failed" if colmap_failed else "completed"), job["error"]
-    assert [len(call.args[0]) for call in infer.call_args_list] == ([1] if colmap_failed else [1, 5, 2])
+    assert [len(call.args[0]) for call in infer.call_args_list] == ([1] if colmap_failed else [1, 5])
     assert rasterize.call_args.args[:2] == (mesh, calibration)
-    assert seen == ([63, 127, 191, 255] if colmap_failed else [63, 127, 191, 255, 31, 223])
+    assert seen == [63, 127, 191, 255]
     register.assert_called_once()
     if colmap_failed:
         merge.assert_not_called()
         export.assert_not_called()
     else:
-        assert [len(call.args[1]) for call in merge.call_args_list] == [5, 7]
-        geometry, images, _, merged_poses, merged_tracks, *_ = merge.call_args.args
-        assert len(geometry["depth"]) == len(merged_poses) == len(merged_tracks) == 7
+        merge.assert_called_once()
+        geometry, images, *_ = merge.call_args.args
+        assert len(geometry["depth"]) == len(images) == 5
         assert (images[:, 0, 0, 0] * 255).round().tolist() == [255, *seen]
-        assert list(merge.call_args.kwargs["capture_holes"]) == [1, 2, 3, 4, 5, 6]
-        relative = merged_poses[5:] @ np.linalg.inv(poses[0])
-        relative[:, :3, 3] /= 3
-        np.testing.assert_allclose(np.linalg.inv(relative), new_poses, atol=1e-7)
-        np.testing.assert_allclose(merged_tracks[5:], tracks[:2])
-        export.assert_called_once_with(mesh=final_mesh)
+        assert list(merge.call_args.kwargs["capture_holes"]) == [1, 2, 3, 4]
+        export.assert_called_once_with(mesh=mesh)
     saved = library.load_background(document["background_id"])
     assert len(saved["models"]) == (0 if colmap_failed else 1) and not saved["cgs"]
     diagnostics = library.root().parent / "CG_MoGe_Diagnostics" / job["job_id"]
     with Image.open(diagnostics / "image_1.png") as image:
         assert image.getpixel((0, 0)) == (255, 0, 0)
-    for view, pixel in zip(("01-up", "02-forward", "03-right", "04-left", "05-forward-right", "06-forward-left"), seen):
+    for view, pixel in zip(("01-up", "02-forward", "03-right", "04-left"), seen):
         for file in ("image_2.png", "qi2_result.png"):
             with Image.open(diagnostics / view / file) as image:
                 assert image.getpixel((0, 0)) == (pixel,) * 3
     assert not list(factory._factory_root().iterdir())
-
-
-def test_expansion_camera_stops_before_thin_geometry():
-    import numpy as np
-
-    multiview = load("nodes.cg_moge_multiview")
-    bounds = np.array([[-.5, -.5, .2]]), np.array([[.5, .5, .2]])
-    assert multiview._camera_travel(bounds, np.zeros(3), np.array([0, 0, 1]), .6, .03) == pytest.approx(.17, abs=1e-6)
-    assert multiview._camera_travel(bounds, np.array([0, 0, .18]), np.array([0, 0, 1]), .6, .03) == 0
-    assert multiview._camera_travel(bounds, np.array([1, 0, 0]), np.array([0, 0, 1]), .6, .03) == pytest.approx(.6, abs=1e-6)
 
 
 @pytest.mark.parametrize("name", [None, "", "   "])
@@ -724,15 +697,10 @@ def test_worldmirror_model_job_saves_native_splats_and_predicted_camera(workspac
     multiview = load("nodes.cg_moge_multiview")
     monkeypatch.setattr(multiview, "require_colmap", mock.Mock(side_effect=AssertionError("WorldMirror must not require COLMAP")))
     monkeypatch.setattr(multiview, "register_views", mock.Mock(side_effect=AssertionError("WorldMirror must not run COLMAP")))
-    monkeypatch.setattr(multiview, "expansion_matches_capture", lambda *_args: True)
     batch = torch.zeros(5 if refined else 4, 64, 128, 3)
     shifts = mock.Mock(return_value=batch)
     monkeypatch.setattr(service, "_generate_camera_shift_views", shifts)
-    def prepare(_job, _source, _settings, diagnostics):
-        diagnostics.mkdir(parents=True)
-        return batch, 100., {}
-
-    refine = mock.Mock(side_effect=prepare)
+    refine = mock.Mock(return_value=(batch, 100., {}))
     monkeypatch.setattr(service, "_generate_refined_moge_views", refine)
     model = object()
     loader = mock.Mock(return_value=(model,))
@@ -742,14 +710,9 @@ def test_worldmirror_model_job_saves_native_splats_and_predicted_camera(workspac
     splats = {"means": torch.tensor([[[2., 2., 3.]]]), "sh": torch.tensor([[[[.2, .3, .4]]]]),
               "opacities": torch.tensor([[.75]]), "scales": torch.tensor([[[.125, .25, .5]]]),
               "quats": torch.tensor([[[1., 0., 0., 0.]]])}
-    depth = torch.ones(1, 32, 64, 3)
     predicted = mock.Mock(return_value=(
-        {"splats": splats, "depth": torch.ones(1, 1, 32, 64, 1)}, depth, None, pose[None, None], intrinsics[None, None],
+        {"splats": splats}, torch.zeros(1, 32, 64, 3), None, pose[None, None], intrinsics[None, None],
     ))
-    capture = mock.Mock(return_value=[torch.full_like(batch[:1], value) for value in (.25, .75)])
-    monkeypatch.setattr(service, "_render_worldmirror_expansion", capture)
-    refine_image = mock.Mock(side_effect=lambda _s, _j, _c, frame, _source, **_opts: (frame, {}))
-    monkeypatch.setattr(service, "generate_image", refine_image)
     monkeypatch.setattr(mirror.VNCCS_WorldMirrorV2Reconstruction, "run_inference", predicted)
     document = with_generated_set(workspace)
     variant = source_variant(document)
@@ -764,26 +727,15 @@ def test_worldmirror_model_job_saves_native_splats_and_predicted_camera(workspac
     assert job["scene_id"] == "" and not list(factory._factory_root().iterdir())
     loader.assert_called_once_with(precision="bf16")
     (loaded, image), options = predicted.call_args
-    assert loaded is model
+    assert predicted.call_count == 1 and loaded is model and image is batch
     view_generator, unused = (refine, shifts) if refined else (shifts, refine)
     view_generator.assert_called_once()
     unused.assert_not_called()
     assert view_generator.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
     if refined:
         assert refine.call_args.args[-1].name == job["job_id"]
-        assert [len(call.args[1]) for call in predicted.call_args_list] == [5, 7]
-        assert predicted.call_args_list[0].args[1] is batch
-        assert torch.equal(image[:5], batch)
-        assert (image[5:, 0, 0, 0] * 255).round().tolist() == [63, 191]
-        capture.assert_called_once()
-        assert capture.call_args.args[0] is splats
-        assert torch.equal(capture.call_args.args[2], pose)
-        assert refine_image.call_count == 2
     else:
         assert shifts.call_args.args[-1] == SHIFT_LORA
-        assert predicted.call_count == 1 and image is batch
-        capture.assert_not_called()
-        refine_image.assert_not_called()
     assert options == {"target_size": size, "apply_sky_mask": sky, "enable_splat_upsample": False,
                        "splat_camera_source": "predicted", "low_vram_mode": False, "offload_scheme": "none",
                        "debug_log": False}

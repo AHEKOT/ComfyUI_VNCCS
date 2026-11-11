@@ -11,8 +11,6 @@ from PIL import Image
 
 
 REFINED_MOGE_VIEWS = (("up", (0, -2, 0)), ("forward", (0, 0, 2)), ("right", (1, 0, 0)), ("left", (-1, 0, 0)))
-EXPANDED_VIEWS = (("forward-right", 1.5, 1), ("forward-left", 2.0, -1))
-VIEW_STEP = 0.12
 
 
 def require_colmap():
@@ -25,115 +23,7 @@ def require_colmap():
     return pycolmap
 
 
-def reference_depth(depth):
-    import torch
-
-    depth = depth.flatten().float()
-    sample = depth[::max(1, len(depth) // 4096)]
-    sample = sample[torch.isfinite(sample) & (sample > 0)]
-    if not len(sample):
-        raise ValueError("The source camera has no visible depth for shifted views")
-    return float(torch.quantile(sample, 0.25))
-
-
-def _camera_travel(bounds, start, direction, distance, clearance):
-    lo, hi = bounds
-    end = start + distance * direction
-    nearby = ((lo <= np.maximum(start, end) + clearance) & (hi >= np.minimum(start, end) - clearance)).all(axis=1)
-    lo, hi = lo[nearby] - clearance, hi[nearby] + clearance
-    entry, exit = np.zeros(len(lo)), np.full(len(lo), distance)
-    for axis in np.flatnonzero(np.abs(direction) > 1e-7):
-        a = (lo[:, axis] - start[axis]) / direction[axis]
-        b = (hi[:, axis] - start[axis]) / direction[axis]
-        entry = np.maximum(entry, np.minimum(a, b))
-        exit = np.minimum(exit, np.maximum(a, b))
-    return max(0.0, float(entry[entry <= exit].min(initial=distance)) - 1e-5 * clearance)
-
-
-def expanded_camera_poses(source_pose, depth_unit, points, bounds, focal, size, check_cancel):
-    height, width = size
-    fx, fy = focal
-    pose = source_pose.detach().cpu().float().numpy()
-    if not np.isfinite(pose).all():
-        raise ValueError("Invalid source camera for expanded views")
-    margin = 0.03 * depth_unit
-    sample = points[::max(1, len(points) // 65000)].detach().cpu().float().numpy()
-    x, y, z = ((sample - pose[:3, 3]) @ pose[:3, :3] / depth_unit).T
-    forward = np.isfinite(z) & (z > 0.05)
-    ahead = z[forward & (np.abs(x) < 0.15 * z) & (np.abs(y) < 0.2 * z)]
-    clearance = 0.8 * np.quantile(ahead, 0.1) if len(ahead) >= 32 else 0.0
-    clearance = min(clearance, _camera_travel(bounds, pose[:3, 3], pose[:3, 2],
-                                               2 * VIEW_STEP * max(factor for _, factor, _ in EXPANDED_VIEWS) * depth_unit,
-                                               margin) / depth_unit)
-    poses = []
-    for _, factor, turn in EXPANDED_VIEWS:
-        side = z[forward & (turn * x > 0.15 * z) & (np.abs(y) < 0.6 * z)]
-        limit = min(2 * VIEW_STEP * factor, clearance, 0.8 * np.quantile(side, 0.25)) if len(side) >= 32 else 0.0
-        candidates = []
-        for step in dict.fromkeys(limit * fraction for fraction in (1, 0.75, 0.5, 0.25, 0)):
-            check_cancel()
-            for angle in (90, 75, 60, 45, 35, 25, 15):
-                c, s = math.cos(math.radians(angle)), turn * math.sin(math.radians(angle))
-                depth = s * x + c * (z - step)
-                front = np.isfinite(depth) & (depth > 0.06)
-                u = 0.5 + fx / width * (c * x[front] - s * (z[front] - step)) / depth[front]
-                v = 0.5 + fy / height * y[front] / depth[front]
-                inside = (u >= 0) & (u < 1) & (v >= 0) & (v < 1)
-                cells = np.zeros((16, 24), dtype=bool)
-                cells[(v[inside] * 16).astype(int), (u[inside] * 24).astype(int)] = True
-                if has_expansion_coverage(cells):
-                    candidate = source_pose @ source_pose.new_tensor(
-                        [[c, 0, s, 0], [0, 1, 0, 0], [-s, 0, c, step * depth_unit], [0, 0, 0, 1]])
-                    candidates.append((angle + 45 * step, candidate))
-        options = []
-        for _, candidate in sorted(candidates, key=lambda item: item[0], reverse=True)[:6]:
-            check_cancel()
-            start, backward = candidate[:3, 3].cpu().numpy(), -candidate[:3, 2].cpu().numpy()
-            travel = _camera_travel(bounds, start, backward, 3 * VIEW_STEP * depth_unit, margin)
-            candidate[:3, 3] += candidate.new_tensor(backward * travel)
-            options.append(candidate)
-        poses.append(options)
-    return poses
-
-
-def has_expansion_coverage(visible):
-    height, width = visible.shape
-    center = visible[height // 4:3 * height // 4, width // 4:3 * width // 4]
-    return visible.mean() >= 0.45 and center.mean() >= 0.50
-
-
-def expansion_matches_capture(frame, result, source):
-    import cv2
-
-    height, width = frame.shape[1:3]
-    scale = min(1, 1024 / max(height, width))
-    size = (round(width * scale), round(height * scale))
-    sift = cv2.SIFT_create(nfeatures=3000)
-
-    def features(image, *, capture=False):
-        rgb = (image[0].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
-        gray = cv2.resize(cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY), size, interpolation=cv2.INTER_AREA)
-        mask = cv2.erode((gray > 4).astype(np.uint8), np.ones((7, 7), np.uint8)) if capture else None
-        return sift.detectAndCompute(gray, mask)
-
-    generated, target = features(result)
-    if target is None or len(target) < 2:
-        return False
-    matcher = cv2.BFMatcher()
-
-    def aligned(image, *, capture=False):
-        points, descriptors = features(image, capture=capture)
-        if descriptors is None:
-            return 0
-        return sum(best.distance < 0.78 * other.distance
-                   and math.dist(points[best.queryIdx].pt, generated[best.trainIdx].pt) <= 0.018 * max(size)
-                   for best, other in matcher.knnMatch(descriptors, target, k=2))
-
-    side = aligned(frame, capture=True)
-    return side >= 12 and aligned(source) <= max(50, 2 * side)
-
-
-def _render_mesh_views(mesh, intrinsics, poses, size, depth_unit, check_cancel, *, align_corners):
+def render_shifted_views(mesh, intrinsics, check_cancel):
     import torch
     from torch.nn.functional import grid_sample
     from comfy.model_management import get_torch_device
@@ -144,20 +34,26 @@ def _render_mesh_views(mesh, intrinsics, poses, size, depth_unit, check_cancel, 
 
     device = get_torch_device()
     texture = mesh.texture[0].to(device=device, dtype=torch.float32)
-    height, width = size
+    height, width, _ = texture.shape
     texture = texture.permute(2, 0, 1).unsqueeze(0).contiguous()
     vertices = mesh.vertices[0].to(device=device, dtype=torch.float32)
-    vertices = vertices * vertices.new_tensor([1, -1, -1]) / depth_unit
+    vertices = vertices * vertices.new_tensor([1, -1, -1])
     faces = mesh.faces[0].to(device=device, dtype=torch.long)
     uvs = mesh.uvs[0].to(device=device, dtype=torch.float32)
-    fx, fy = float(intrinsics[0, 0]), float(intrinsics[1, 1])
-    cx, cy = float(intrinsics[0, 2]), float(intrinsics[1, 2])
+    sample = vertices[::max(1, len(vertices) // 4096), 2]
+    sample = sample[torch.isfinite(sample) & (sample > 0)]
+    if not len(sample):
+        raise ValueError("MoGe returned no visible geometry for the shifted views")
+    vertices = vertices / torch.quantile(sample, 0.25)
+    fx, fy = float(intrinsics[0, 0]) * width, float(intrinsics[1, 1]) * height
+    cx, cy = float(intrinsics[0, 2]) * width, float(intrinsics[1, 2]) * height
     if not all(math.isfinite(value) for value in (fx, fy, cx, cy)) or min(fx, fy) <= 0:
         raise ValueError("MoGe returned invalid camera intrinsics for the shifted views")
-    for pose in poses:
+    # OpenCV camera coordinates. Each translation starts at the source camera with the same orientation.
+    views = []
+    for _, direction in REFINED_MOGE_VIEWS:
         check_cancel()
-        pose = pose.to(device=device, dtype=torch.float32)
-        view = (vertices - pose[:3, 3] / depth_unit) @ pose[:3, :3]
+        view = vertices - 0.12 * vertices.new_tensor(direction)
         z = view[:, 2]
         view[:, 0] += z * ((cx - width * 0.5) / fx)
         view[:, 1] = view[:, 1] * (fy / fx) + z * ((cy - height * 0.5) / fx)
@@ -172,54 +68,13 @@ def _render_mesh_views(mesh, intrinsics, poses, size, depth_unit, check_cancel, 
             weights = barycentric / z[corners]
             uv = (uvs[corners] * weights.unsqueeze(-1)).sum(dim=1) / weights.sum(dim=1, keepdim=True)
             grid = (uv * 2 - 1).reshape(1, 1, -1, 2)
-            return grid_sample(texture, grid, align_corners=align_corners, padding_mode="border")[0, :, 0].T
+            return grid_sample(texture, grid, align_corners=True, padding_mode="border")[0, :, 0].T
 
         _rasterize_person(view, faces, fx, width, height, z_buffer, colors, visible, shade)
-        yield colors.reshape(1, height, width, 3).cpu(), (~visible.reshape(height, width)).cpu().numpy(), z_buffer.reshape(height, width)
-
-
-def render_shifted_views(mesh, intrinsics, check_cancel):
-    import torch
-
-    height, width = mesh.texture.shape[1:3]
-    depth_unit = reference_depth(-mesh.vertices[0, :, 2])
-    poses = torch.eye(4).repeat(len(REFINED_MOGE_VIEWS), 1, 1)
-    poses[:, :3, 3] = VIEW_STEP * depth_unit * torch.tensor([shift for _, shift in REFINED_MOGE_VIEWS])
-    calibration = intrinsics.detach().cpu().numpy() * np.array([[width], [height], [1]])
-    views = []
-    for frame, holes, _ in _render_mesh_views(mesh, calibration, poses, (height, width), depth_unit, check_cancel,
-                                              align_corners=True):
-        if holes.all():
+        if not visible.any():
             raise ValueError("MoGe produced an empty shifted camera view")
-        views.append((frame, holes))
+        views.append((colors.reshape(1, height, width, 3).cpu(), (~visible.reshape(height, width)).cpu().numpy()))
     return views
-
-
-def render_expanded_mesh_views(mesh, source_depth, calibration, check_cancel):
-    import torch
-
-    depth_unit = reference_depth(source_depth)
-    vertices = mesh.vertices[0] * mesh.vertices.new_tensor([1, -1, -1])
-    corners = vertices[mesh.faces[0].long()]
-    bounds = corners.amin(dim=1).cpu().numpy(), corners.amax(dim=1).cpu().numpy()
-    del corners
-    candidates = expanded_camera_poses(torch.eye(4), depth_unit, vertices, bounds, (calibration[0, 0], calibration[1, 1]),
-                                       source_depth.shape, check_cancel)
-    views, poses, tracks = [None] * 2, [None] * 2, [None] * 2
-    for index, options in enumerate(candidates):
-        renders = _render_mesh_views(mesh, calibration, options, source_depth.shape, depth_unit, check_cancel,
-                                     align_corners=False)
-        for pose, (frame, holes, z_buffer) in zip(options, renders, strict=True):
-            if not has_expansion_coverage(~holes):
-                continue
-            y, x = np.nonzero(~holes)
-            stride = max(1, len(x) // 4096)
-            y, x = y[::stride], x[::stride]
-            z = z_buffer[y, x].cpu().numpy() * depth_unit
-            tracks[index] = np.column_stack((x + 0.5, y + 0.5, z))
-            views[index], poses[index] = (frame, holes), pose.numpy()
-            break
-    return views, poses, tracks
 
 
 def _colmap_matches(colmap, database):
