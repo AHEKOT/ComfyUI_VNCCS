@@ -1917,12 +1917,12 @@ def _generate_worldmirror_scene(job, images, scene, scene_directory, settings, c
         camera_options = {"splat_camera_source": "camera_inputs", "camera_poses": camera_to_world,
                           "camera_intrinsics": torch.tensor(cameras["intrinsics"], dtype=torch.float32)}
     with _model_session(job_id, cancel), torch.inference_mode():
-        _stage(job_id, cancel, "loading", 0.60, "Loading WorldMirror V2")
-        model, = VNCCS_WorldMirrorV2Loader().load_model(precision="bf16")
+        _stage(job_id, cancel, "loading", 0.60, "Loading WorldMirror V2 ConvRot INT4")
+        model, = VNCCS_WorldMirrorV2Loader().load_model(precision="convrot4")
         _stage(job_id, cancel, "reconstructing", 0.70, f"Reconstructing {len(images)} views with WorldMirror V2")
         ply, depth, _, poses, intrinsics, *_ = VNCCS_WorldMirrorV2Reconstruction().run_inference(
             model, images, target_size=settings["target_size"],
-            offload_scheme="none", low_vram_mode=False, debug_log=False,
+            offload_scheme="model_cpu_offload", low_vram_mode=True, debug_log=False,
             apply_sky_mask=settings["apply_sky_mask"], enable_splat_upsample=False, **camera_options,
         )
         if cameras is None:

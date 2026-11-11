@@ -508,6 +508,8 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
         np.testing.assert_allclose(capture_pose[:3, 2], look / np.linalg.norm(look))
         assert captured["intrinsics"][-1][0][2] == 64
         assert captured["intrinsics"][-1][1][2] == 32
+        focal_y = captured["intrinsics"][-1][1][1]
+        assert np.rad2deg(2 * np.arctan(32 / focal_y)) == pytest.approx(CAMERA["fov"])
     workspace.generated.assert_called_once()
     assert workspace.generated.call_args.args[3].getpixel((0, 0)) == (255, 255, 0)
     assert library.load_background(background_id) == document
@@ -952,7 +954,7 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
     assert job["scene_id"] == "" and not list(factory._factory_root().iterdir())
-    loader.assert_called_once_with(precision="bf16")
+    loader.assert_called_once_with(precision="convrot4")
     (loaded, image), options = predicted.call_args
     assert predicted.call_count == 1 and loaded is model and image is batch
     view_generator, unused = (refine, shifts) if refined else (shifts, refine)
@@ -968,7 +970,7 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
         torch.testing.assert_close(options.pop("camera_intrinsics"),
                                    torch.tensor(calibration, dtype=torch.float32).repeat(len(batch), 1, 1))
     assert options == {"target_size": size, "apply_sky_mask": sky, "enable_splat_upsample": False,
-                       "splat_camera_source": "camera_inputs" if refined else "predicted", "low_vram_mode": False, "offload_scheme": "none",
+                       "splat_camera_source": "camera_inputs" if refined else "predicted", "low_vram_mode": True, "offload_scheme": "model_cpu_offload",
                        "debug_log": False}
     saved = library.load_background(document["background_id"])
     model_id = saved["models"][0]["model_id"]

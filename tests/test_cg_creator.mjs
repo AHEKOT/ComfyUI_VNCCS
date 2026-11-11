@@ -234,7 +234,11 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
     const emit = (name, detail) => { for (const callback of events.get(name) || []) callback({ detail }); };
     return { node, widget, calls, api, events, timers, drafts, queued, documents, context, window, extension, data: node.widgets[0],
         emit: detail => emit("vnccs_cg_creator", { node_id: "7", ...detail }), emitEvent: emit, fireTimers,
-        ready: async ({ loadSource = true } = {}) => { fireTimers(0); await widget.operations; if (loadSource) await widget.sourceLoad?.onload?.(); },
+        ready: async ({ loadSource = true, loadModel = true } = {}) => {
+            fireTimers(0); await widget.operations;
+            if (loadSource) await widget.sourceLoad?.onload?.();
+            if (loadModel) await widget.modelOperation;
+        },
         control: selector => widget.container.querySelector(selector),
     };
 }
@@ -560,7 +564,9 @@ test("late model asset loading cannot overwrite a more recently configured model
     };
     h.widget.state.model_id = oldId; const oldLoad = h.widget.showModel(); await started.promise;
     h.data.value = JSON.stringify(state({ background_id: B, model_id: newId, selected_cg_id: "" })); h.node.onConfigure(); h.fireTimers(0); await settle(); await settle();
-    loading.resolve(); await oldLoad; await h.widget.operations;
+    assert.equal(h.widget.document.background_id, B);
+    assert.equal(h.control("[data-library]").disabled, false);
+    loading.resolve(); await oldLoad; await h.widget.operations; await h.widget.modelOperation;
     assert.equal(viewer.visibleModel, newId); assert.equal(h.widget.scene.model_id, newId);
     assert.equal(h.widget.state.background_id, B); assert.equal(h.widget.restoring, false);
 });
@@ -861,9 +867,29 @@ test("late restoration cannot replace a newer configured scene or camera", async
     h.fireTimers(0); await settle(); assert.equal(intercepted, true);
     const savedCamera = { ...camera, fov: 72 };
     h.data.value = JSON.stringify(state({ background_id: B, camera: savedCamera })); h.node.onConfigure(); h.fireTimers(0);
-    pending.resolve(response(configuration())); await h.widget.operations;
+    pending.resolve(response(configuration())); await h.widget.operations; await h.widget.modelOperation;
     assert.equal(h.widget.document.background_id, B); assert.equal(h.widget.scene.background_id, B);
     assert.deepEqual(h.widget.viewer.camera, savedCamera); assert.equal(JSON.parse(h.data.value).background_id, B);
+});
+
+test("startup shows the source and lets the user switch variants while the viewer loads", async () => {
+    const h = harness(JSON.stringify(state({ selected_cg_id: "" }))), loading = deferred();
+    const loadRuntime = h.context.loadFactoryRuntime;
+    h.context.loadFactoryRuntime = async () => { await loading.promise; return loadRuntime(); };
+    const doc = h.documents.get(A);
+    doc.generated_sets = [{ set_id: "8".repeat(32), version: "", source_image_id: IMAGE,
+        variants: [{ id: "night", name: "Night" }], images: [{ url: "/original.png" }, { url: "/night.png" }] }];
+    await h.ready({ loadModel: false });
+    assert.equal(h.widget.restoring, false);
+    assert.equal(h.control("[data-model-source]").src, doc.images[0].url);
+    const variant = h.control(`[data-source-choice="${sourceChoices(doc)[1].key}"]`);
+    assert.equal(variant.disabled, false);
+    await variant.click();
+    await h.widget.sourceLoad.onload();
+    assert.equal(h.control("[data-model-source]").src, "/night.png");
+    loading.resolve();
+    await settle();
+    assert.equal(h.widget.scene, null);
 });
 
 test("library navigation publishes the new image before the model finishes loading", async () => {

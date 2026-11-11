@@ -1,3 +1,4 @@
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,37 @@ import comfy
 import folder_paths
 import huggingface_hub
 from nodes import world_mirror_v2 as mirror
-from nodes._world_mirror_v2_model import _GaussianParameters
+from nodes._world_mirror_v2_model import _GaussianParameters, _WorldMirror
+
+
+def test_streamed_dense_heads_keep_frame_order_and_gaussian_parameters(monkeypatch):
+    monkeypatch.setitem(sys.modules, "comfy.model_management",
+                        SimpleNamespace(throw_exception_if_processing_interrupted=lambda: None))
+    class Depth:
+        projects = [None]
+
+        def __call__(self, tokens, *, images, patch_start_idx):
+            depth = tokens[0][..., :1].reshape(1, images.shape[1], 1, 1, 1).expand(1, -1, 2, 2, 1)
+            return depth, depth[..., 0], depth[..., 0]
+
+    class GaussianDepth(Depth):
+        def __call__(self, tokens, *, images, patch_start_idx):
+            depth, conf, mask = super().__call__(tokens, images=images, patch_start_idx=patch_start_idx)
+            return images[:, :, :2], depth, conf, mask
+
+    renderer = _GaussianParameters(feature_dim=4).eval()
+    model = SimpleNamespace(depth_head=Depth(), gs_head=GaussianDepth(), gs_renderer=renderer, enable_gs=True)
+    images = torch.rand(1, 3, 3, 2, 2)
+    tokens = [torch.tensor([2., 4., 6.]).reshape(1, 3, 1, 1)]
+    cameras = {"camera_poses": torch.eye(4)[None, None].repeat(1, 3, 1, 1),
+               "camera_intrs": torch.eye(3)[None, None].repeat(1, 3, 1, 1)}
+    features, depth, _, _ = model.gs_head(tokens, images=images, patch_start_idx=0)
+    with torch.inference_mode():
+        expected = renderer(features, images, {**cameras, "gs_depth": depth})
+        streamed = _WorldMirror._stream_dense_heads(model, tokens, images, 0, cameras)
+    torch.testing.assert_close(streamed["gs_depth"], depth)
+    for key in expected:
+        torch.testing.assert_close(streamed["splats"][key], expected[key])
 
 
 def test_model_files_download_only_missing_files(monkeypatch, tmp_path):

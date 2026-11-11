@@ -1334,7 +1334,7 @@ class VisualGeometryTransformer(nn.Module):
         nn.init.normal_(self.cam_token, std=1e-06)
         nn.init.normal_(self.reg_token, std=1e-06)
 
-    def forward(self, images: torch.Tensor, priors: List | None=None, cond_flags: List[int]=[0, 0, 0], ctx_frames: int=None, enable_bf16=False, sp_size: int=1, sp_group: torch._C._distributed_c10d.ProcessGroup=None) -> Tuple[List[torch.Tensor], int]:
+    def forward(self, images: torch.Tensor, priors: List | None=None, cond_flags: List[int]=[0, 0, 0], ctx_frames: int=None, enable_bf16=False, sp_size: int=1, sp_group: torch._C._distributed_c10d.ProcessGroup=None, stream_to_cpu=False) -> Tuple[List[torch.Tensor], int]:
         depth_maps, ray_dirs, poses = priors if priors is not None else (None, None, None)
         if ctx_frames is not None:
             for var_name in ['images', 'depth_maps', 'ray_dirs', 'poses']:
@@ -1347,9 +1347,11 @@ class VisualGeometryTransformer(nn.Module):
         with torch.amp.autocast('cuda', enabled=not enable_bf16 and images.is_cuda, dtype=torch.bfloat16):
             images = (images - self._resnet_mean.to(images)) / self._resnet_std.to(images)
             images = images.reshape(b * seq_len, ch, h, w)
-            patch_tokens = self.patch_embed(images)
-            if isinstance(patch_tokens, dict):
-                patch_tokens = patch_tokens['x_norm_patchtokens']
+            def embed(batch):
+                result = self.patch_embed(batch)
+                return result['x_norm_patchtokens'] if isinstance(result, dict) else result
+
+            patch_tokens = torch.cat([embed(frame) for frame in images.split(1)]) if stream_to_cpu else embed(images)
         _, patch_count, embed_dim = patch_tokens.shape
         cam_tokens = expand_and_flatten_special_tokens(self.cam_token.to(patch_tokens), b, seq_len)
         reg_tokens = expand_and_flatten_special_tokens(self.reg_token.to(patch_tokens), b, seq_len)
@@ -1373,13 +1375,23 @@ class VisualGeometryTransformer(nn.Module):
             outputs = []
             global_tokens = None
             for idx in range(self.depth):
-                local_tokens = self._process_attention_blocks(tokens=all_tokens if global_tokens is None else global_tokens, b=b, seq_len=seq_len, patch_count=patch_count, embed_dim=embed_dim, block_idx=idx, blocks=self.frame_blocks, block_type='frame', pos=pos_emb)
+                incoming = all_tokens if global_tokens is None else global_tokens
+                if stream_to_cpu:
+                    # Frame attention is independent. Global attention still sees the entire batch.
+                    local_tokens = torch.cat([
+                        self.frame_blocks[idx](frame, pos=None if pos_emb is None else pos_emb[i:i + 1])
+                        for i, frame in enumerate(incoming.reshape(b * seq_len, patch_count, embed_dim).split(1))
+                    ]).reshape(token_shape)
+                else:
+                    local_tokens = self._process_attention_blocks(tokens=incoming, b=b, seq_len=seq_len, patch_count=patch_count, embed_dim=embed_dim, block_idx=idx, blocks=self.frame_blocks, block_type='frame', pos=pos_emb)
                 global_tokens = self._process_attention_blocks(tokens=local_tokens, b=b, seq_len=seq_len, patch_count=patch_count, embed_dim=embed_dim, block_idx=idx, blocks=self.global_blocks, block_type='global', pos=pos_emb)
                 if idx in self.intermediate_idxs:
-                    combined_out = torch.cat([local_tokens, global_tokens], dim=-1)
+                    if stream_to_cpu:
+                        combined_out = torch.cat([local_tokens.cpu(), global_tokens.cpu()], dim=-1)
+                    else:
+                        combined_out = torch.cat([local_tokens, global_tokens], dim=-1)
                     outputs.append(combined_out)
             if idx in self.intermediate_idxs:
-                combined_out = torch.cat([local_tokens, global_tokens], dim=-1)
                 outputs.append(combined_out)
         return (outputs, self.patch_start_idx)
 
@@ -1503,6 +1515,7 @@ class _WorldMirror(nn.Module):
 
     def forward(self, views, cond_flags):
         images = views["img"]
+        stream_to_cpu = views.get("stream_to_cpu", False)
         height, width = images.shape[-2:]
         poses = views.get("camera_poses")
         poses = extrinsics_to_vector(normalize_poses(poses[..., :3, :]))[..., :7] if poses is not None else None
@@ -1516,17 +1529,20 @@ class _WorldMirror(nn.Module):
             rays = rays.bfloat16() if rays is not None else None
             depths = depths.bfloat16() if depths is not None else None
         tokens, patch_start = self.visual_geometry_transformer(
-            images, (depths, rays, poses), cond_flags=cond_flags, enable_bf16=self.enable_bf16)
+            images, (depths, rays, poses), cond_flags=cond_flags, enable_bf16=self.enable_bf16,
+            stream_to_cpu=stream_to_cpu)
         if not self.enable_bf16:
             tokens = [token.float() for token in tokens]
-        camera = self.cam_head(tokens)[-1]
+        camera_tokens = [tokens[-1][:, :, :1].to(images.device)] if stream_to_cpu else tokens
+        camera = self.cam_head(camera_tokens)[-1]
         ext, intrinsics = vector_to_camera_matrices(camera, image_hw=(height, width))
         w2c = torch.eye(4, device=ext.device, dtype=ext.dtype).expand(*ext.shape[:-2], 4, 4).clone()
         w2c[..., :3, :] = ext
+        result = {"camera_params": camera, "camera_poses": torch.linalg.inv(w2c.float()), "camera_intrs": intrinsics}
+        if stream_to_cpu:
+            return self._stream_dense_heads(tokens, images, patch_start, result)
         depth, confidence, mask = self.depth_head(tokens, images=images, patch_start_idx=patch_start)
-        result = {"depth": depth, "depth_conf": confidence, "depth_mask": mask.sigmoid(),
-                  "depth_mask_logits": mask, "camera_params": camera,
-                  "camera_poses": torch.linalg.inv(w2c.float()), "camera_intrs": intrinsics}
+        result.update(depth=depth, depth_conf=confidence, depth_mask=mask.sigmoid(), depth_mask_logits=mask)
         if self.enable_pts:
             result["pts3d"], result["pts3d_conf"] = self.pts_head(tokens, images=images, patch_start_idx=patch_start)
         if self.enable_norm:
@@ -1537,6 +1553,33 @@ class _WorldMirror(nn.Module):
             result["gs_depth_mask_logits"] = mask
             result["gs_depth_mask"] = mask.sigmoid()
             result["splats"] = self.gs_renderer(features, images, result)
+        return result
+
+    def _stream_dense_heads(self, tokens, images, patch_start, camera):
+        from comfy.model_management import throw_exception_if_processing_interrupted
+
+        result = {key: value.cpu() for key, value in camera.items()}
+        dense, splats = {}, {}
+        for i, frame in enumerate(images.split(1, dim=1)):
+            throw_exception_if_processing_interrupted()
+            frame_tokens = [token[:, i:i + 1].to(frame.device) for token in tokens[:len(self.depth_head.projects)]]
+            depth, confidence, mask = self.depth_head(frame_tokens, images=frame, patch_start_idx=patch_start)
+            outputs = {"depth": depth, "depth_conf": confidence, "depth_mask_logits": mask}
+            if self.enable_gs:
+                features, gs_depth, confidence, mask = self.gs_head(frame_tokens, images=frame, patch_start_idx=patch_start)
+                outputs.update(gs_depth=gs_depth, gs_depth_conf=confidence, gs_depth_mask_logits=mask)
+                frame_camera = {key: value[:, i:i + 1] for key, value in camera.items()}
+                for key, value in self.gs_renderer(features, frame, {**frame_camera, "gs_depth": gs_depth}).items():
+                    splats.setdefault(key, []).append(value.cpu())
+                del features, value
+            for key, value in outputs.items():
+                dense.setdefault(key, []).append(value.cpu())
+            del outputs, frame_tokens, depth, confidence, mask, value
+        result.update({key: torch.cat(parts, dim=1) for key, parts in dense.items()})
+        result["depth_mask"] = result["depth_mask_logits"].sigmoid()
+        if self.enable_gs:
+            result["gs_depth_mask"] = result["gs_depth_mask_logits"].sigmoid()
+            result["splats"] = {key: torch.cat(parts, dim=1) for key, parts in splats.items()}
         return result
 
 

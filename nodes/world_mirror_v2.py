@@ -1334,7 +1334,8 @@ class _WorldMirrorV2Inference:
             raise ValueError(f"Unsupported WorldMirror offload scheme: {offload_scheme}.")
         if low_vram_mode:
             head_frame_chunk_size = 1
-            head_compute_mode = "depth_only"
+            if head_compute_mode == "all":
+                head_compute_mode = "depth_only"
             gs_param_chunk_size = 1
             transformer_mlp_chunk_size = 8192
         target_size    = (target_size // _PATCH_SIZE) * _PATCH_SIZE
@@ -1409,6 +1410,9 @@ class _WorldMirrorV2Inference:
         _set_worldmirror_transformer_mlp_chunk_size(worldmirror, transformer_mlp_chunk_size)
         original_heads = _apply_worldmirror_head_compute_mode(worldmirror, head_compute_mode, use_gsplat)
         cpu_offload = offload_scheme == "model_cpu_offload" and exec_dev.type == "cuda"
+        stream_to_cpu = cpu_offload and low_vram_mode and head_compute_mode == "depth+gs"
+        if stream_to_cpu:
+            views["stream_to_cpu"] = True
         try:
             model_management.throw_exception_if_processing_interrupted()
             model_management.load_models_gpu(
@@ -1422,6 +1426,9 @@ class _WorldMirrorV2Inference:
             if cpu_offload:
                 model_management.unload_model_and_clones(model, unload_additional_models=False)
 
+        if stream_to_cpu:
+            del views
+            imgs_tensor = imgs_tensor.cpu()
         S, H, W = predictions["depth"].shape[1:4]
 
         model_camera_poses = predictions.get("camera_poses")
@@ -1465,7 +1472,8 @@ class _WorldMirrorV2Inference:
                     )
 
         if debug_log:
-            _log_worldmirror_debug(predictions, views, camera_poses, camera_intrinsics, imgs_tensor)
+            _log_worldmirror_debug(predictions, {"img": imgs_tensor} if stream_to_cpu else views,
+                                   camera_poses, camera_intrinsics, imgs_tensor)
 
         input_camera_icp = None
         if use_input_camera_source:
@@ -1556,11 +1564,11 @@ class _WorldMirrorV2Inference:
             "splats":         splats,
             "images":         imgs_tensor,
             "filter_mask": (
-                torch.from_numpy(pts_mask.reshape(-1)).to(exec_dev)
+                torch.from_numpy(pts_mask.reshape(-1)).to(imgs_tensor.device)
                 if pts_mask is not None else None
             ),
             "gs_filter_mask": (
-                torch.from_numpy(gs_mask.reshape(-1)).to(exec_dev)
+                torch.from_numpy(gs_mask.reshape(-1)).to(imgs_tensor.device)
                 if gs_mask is not None else None
             ),
             "camera_poses":   predictions.get("camera_poses"),

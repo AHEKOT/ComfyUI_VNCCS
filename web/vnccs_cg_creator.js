@@ -1105,12 +1105,6 @@ class CGCreatorWidget {
                 const raw = this.node.widgets.find(item => item.name === "cg_data").value, state = readState(raw);
                 const [config, catalog] = await Promise.all([this.request("/config"), this.request("/backgrounds")]);
                 if (this.disposed || epoch !== this.epoch) return;
-                this.factoryRuntime = await loadFactoryRuntime(config.factory);
-                if (this.disposed || epoch !== this.epoch) return;
-                this.history ??= new this.factoryRuntime.FactoryCommandHistory({ onRestore: snapshot => {
-                    this.characters?.restore(snapshot.characters);
-                    this.viewer.setCameraState(snapshot.camera, { emit: true }); this.sync(); this.characterPanel?.refresh(); this.updateControls();
-                } });
                 this.state = state; this.document = null; this.expansionId = ""; this.config = config; this.catalog = catalog.backgrounds;
                 const recovered = this.restoreDraft();
                 this.libraryError = (catalog.errors || []).map(item => `${item.name}: ${item.error}`).join(" ");
@@ -1120,10 +1114,11 @@ class CGCreatorWidget {
                 if (state.background_id) {
                     const document = await this.request(`/backgrounds/${state.background_id}`);
                     if (this.disposed || epoch !== this.epoch) return;
-                    await this.acceptDocument(document, false, epoch);
+                    await this.acceptDocument(document, false, epoch, { deferModel: true });
                 }
                 if (this.disposed || epoch !== this.epoch) return;
                 this.render();
+                this.modelOperation = this.loadBackgroundModel(epoch, { trackChange: false });
                 const scroll = this.state.scroll;
                 this.container.querySelector("[data-source-choices]").scrollLeft = scroll?.sources || 0;
                 this.container.querySelector("[data-cgs]").scrollTop = scroll?.cgs || 0;
@@ -1132,7 +1127,11 @@ class CGCreatorWidget {
                 this.sync({ trackChange: Boolean(recovered) });
                 this.message(this.document?._recovery ? "Recovered backup is read-only. The original data is preserved." : this.catalog.length ? "Set the camera and press Generate CG." : "Create a background in VNCCS Background Creator.", Boolean(this.document?._recovery));
                 this.restorePreview();
-                if (this.state.job && !this.document?._recovery && !this.document?.archived) this.jobOperation = this.runJob(this.state.job.action).catch(error => { if (!this.disposed && epoch === this.epoch) this.message(error.message, true); });
+                if (this.state.job && !this.document?._recovery && !this.document?.archived) {
+                    this.jobOperation = this.modelOperation.then(() => {
+                        if (!this.disposed && epoch === this.epoch && this.state.job) return this.runJob(this.state.job.action);
+                    }).catch(error => { if (!this.disposed && epoch === this.epoch) this.message(error.message, true); });
+                }
             } catch (error) { if (!this.disposed && epoch === this.epoch) { this.restoreFailed = true; this.message(error.message + " Original workflow data is preserved. Restoration will retry when the connection returns or this window becomes active.", true); } }
             this.updateControls();
         }); return this.operations;
@@ -1172,7 +1171,7 @@ class CGCreatorWidget {
         }
     }
 
-    async acceptDocument(document, adopt = true, epoch = this.epoch, { preserveScene = false } = {}) {
+    async acceptDocument(document, adopt = true, epoch = this.epoch, { preserveScene = false, deferModel = false } = {}) {
         if (this.disposed || epoch !== this.epoch) return;
         if (!adopt && document.background_id !== this.state.background_id) throw new Error("The response belongs to another background.");
         const previousSource = this.document?.images.find(image => image.image_id === this.document.selected_image_id);
@@ -1209,7 +1208,8 @@ class CGCreatorWidget {
             }
         }
         this.modelError = "";
-        if (adopt) return;
+        if (adopt || deferModel) return;
+        this.render();
         if (this.state.model_id && (!preserveScene || !this.selectedScene() || !this.state.camera)) {
             try {
                 const opening = this.showModel(epoch);
@@ -1243,6 +1243,13 @@ class CGCreatorWidget {
             const scene = this.expansionId ? await this.request(this.expansionURL(this.expansionId)) : saved;
             if (!current()) return;
             if (!this.viewer) {
+                const runtime = this.factoryRuntime ?? await loadFactoryRuntime(this.config.factory);
+                if (!current()) return;
+                this.factoryRuntime = runtime;
+                this.history ??= new this.factoryRuntime.FactoryCommandHistory({ onRestore: snapshot => {
+                    this.characters?.restore(snapshot.characters);
+                    this.viewer.setCameraState(snapshot.camera, { emit: true }); this.sync(); this.characterPanel?.refresh(); this.updateControls();
+                } });
                 this.viewer = new this.factoryRuntime.Factory3DViewer(this.host, { cameraDragScale: 0.7, resolveAssetURL: path => this.api.apiURL(path),
                     onSelectionChange: () => this.viewer.select("", { emit: false }),
                     onStateChange: value => { if (this.canEditCamera()) { if (!this.expansionId) this.state.camera = clone(value.camera); this.syncFov(value.camera); this.sync(); } },
@@ -1361,17 +1368,18 @@ class CGCreatorWidget {
         } finally { if (current()) this.backgroundTransition = false; }
     }
 
-    async loadBackgroundModel(epoch) {
+    async loadBackgroundModel(epoch, { trackChange = true } = {}) {
         const modelId = this.state.model_id;
         if (!modelId) return;
         const opening = this.showModel(epoch), load = this.modelLoad;
+        this.updateControls();
         const current = () => !this.disposed && epoch === this.epoch && load === this.modelLoad && this.state.model_id === modelId;
         try { await opening; }
         catch (error) {
             if (!current()) return;
             this.scene = null; this.modelError = error.message; this.message(error.message, true);
         }
-        if (current()) { this.render(); this.sync(); }
+        if (current()) { this.render(); this.sync({ trackChange }); }
     }
 
     render() {
@@ -1627,7 +1635,7 @@ class CGCreatorWidget {
 
     async click(event) {
         const button = event.target.closest("button"); if (!button || !this.container.contains(button) || button.disabled) return; const epoch = this.epoch;
-        let navigating = false, sourceFocus;
+        let navigating = false;
         try {
             if (button.hasAttribute("data-expand-scene")) {
                 if (!this.canEditCamera() || this.expansionId) return;
@@ -1709,13 +1717,15 @@ class CGCreatorWidget {
             if (button.hasAttribute("data-source-choice")) {
                 const choice = sourceChoices(this.document).find(choice => choice.key === button.dataset.sourceChoice);
                 if (!choice || choice.key === selectedSource(this.document, this.state)?.key && !this.state.selected_cg_id) return;
-                if (document.activeElement === button) sourceFocus = choice.key;
+                const restoreFocus = document.activeElement === button;
                 this.cgPreviewClose?.();
-                navigating = this.busy = true; this.updateControls(); this.state.selected_image_id = choice.image_id; this.state.selected_variant = clone(choice.variant);
+                this.state.selected_image_id = choice.image_id; this.state.selected_variant = clone(choice.variant);
                 this.state.model_id = latestModel(this.document, this.state)?.model_id || ""; this.state.selected_cg_id = ""; this.state.camera = null; this.state.frame = null;
                 this.modelError = "";
                 this.sync(); this.render();
-                await this.loadBackgroundModel(epoch); return;
+                this.modelOperation = this.loadBackgroundModel(epoch);
+                if (restoreFocus) button.focus?.({ preventScroll: true });
+                return;
             }
             if (button.hasAttribute("data-pending-cg")) { this.openPreview(this.pendingCG); return; }
             if (button.dataset.cgId) {
@@ -1821,7 +1831,6 @@ class CGCreatorWidget {
         } catch (error) { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); this.busy = false; this.render(); this.message(error.message, true); } }
         finally { if (navigating && epoch === this.epoch && !this.disposed) {
             this.busy = false; this.render();
-            if (sourceFocus) [...this.container.querySelectorAll("[data-source-choice]")].find(item => item.dataset.sourceChoice === sourceFocus)?.focus?.({ preventScroll: true });
         } }
     }
     input(event) {
