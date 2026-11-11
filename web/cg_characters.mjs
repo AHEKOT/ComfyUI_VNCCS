@@ -200,10 +200,15 @@ export class CGCharacterEditor {
         }
         this.viewer.invalidate();
     }
-    async capture(options) {
+    async capture(options, { backgroundOnly = false } = {}) {
+        const meshes = backgroundOnly ? [...this.entries.values()].map(core => [core.skinnedMesh, core.skinnedMesh.visible]) : [];
         this.showHelpers(true);
+        for (const [mesh] of meshes) mesh.visible = false;
         try { return await this.viewer.capturePreview(options); }
-        finally { if (!this.disposed) this.showHelpers(); }
+        finally {
+            for (const [mesh, visible] of meshes) mesh.visible = visible;
+            if (!this.disposed) this.showHelpers();
+        }
     }
     pointer(event) {
         if (!this.canEdit() || !this.entries.size) return;

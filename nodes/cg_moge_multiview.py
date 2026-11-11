@@ -209,6 +209,137 @@ def _depth_scale(depth, tracks):
     raise ValueError("MoGe depths could not be aligned with the COLMAP tracks")
 
 
+def extend_saved_mesh(path, camera, raw, refined, depth, focal, call_node, check_cancel):
+    import io
+    import struct
+
+    import cv2
+    import torch
+    from comfy.model_management import get_torch_device
+    from comfy_api.latest import Types
+    from comfy_extras.sam3d_body.rasterizer import _rasterize_person
+
+    # Read the single textured primitive emitted by MeshToFile3D for this model.
+    with path.open("rb") as stream:
+        magic, version, _, length, kind = struct.unpack("<4sIII4s", stream.read(20))
+        if magic != b"glTF" or version != 2 or kind != b"JSON" or length > 4 * 1024 * 1024:
+            raise ValueError("Unsupported saved MoGe mesh")
+        document = json.loads(stream.read(length))
+        size, kind = struct.unpack("<I4s", stream.read(8))
+        if kind != b"BIN\x00" or size > path.stat().st_size - stream.tell():
+            raise ValueError("Invalid saved MoGe mesh buffer")
+        data = stream.read(size)
+
+    def accessor(index, channels):
+        item = document["accessors"][index]
+        view = document["bufferViews"][item["bufferView"]]
+        dtype = {5123: "<u2", 5125: "<u4", 5126: "<f4"}[item["componentType"]]
+        offset = view.get("byteOffset", 0) + item.get("byteOffset", 0)
+        return torch.from_numpy(np.frombuffer(data, dtype=dtype, count=item["count"] * channels, offset=offset)
+                                .reshape(-1, channels).copy())
+
+    primitive, = document["meshes"][0]["primitives"]
+    vertices = accessor(primitive["attributes"]["POSITION"], 3)
+    uvs = accessor(primitive["attributes"]["TEXCOORD_0"], 2)
+    faces = accessor(primitive["indices"], 1).long().reshape(-1, 3)
+    texture_view = document["bufferViews"][document["images"][0]["bufferView"]]
+    offset = texture_view.get("byteOffset", 0)
+    with Image.open(io.BytesIO(data[offset:offset + texture_view["byteLength"]])) as image:
+        texture = torch.from_numpy(np.array(image.convert("RGB"), dtype=np.float32) / 255)
+    del data
+
+    position = vertices.new_tensor(camera["position"])
+    forward = torch.nn.functional.normalize(vertices.new_tensor(camera["target"]) - position, dim=0)
+    right = torch.linalg.cross(forward, vertices.new_tensor(camera["up"]))
+    if right.norm() < 1e-6:
+        raise ValueError("The MoGe capture camera has an invalid up direction")
+    right = torch.nn.functional.normalize(right, dim=0)
+    basis = torch.stack((right, torch.linalg.cross(forward, right), forward), dim=1)
+    view = (vertices - position) @ basis
+    height, width = depth.shape
+    device = get_torch_device()
+    check_cancel()
+    z_buffer = torch.full((height * width,), float("inf"), device=device)
+    visible = torch.zeros(height * width, dtype=torch.bool, device=device)
+    dummy = torch.zeros((height * width, 3), device=device)
+    # Normalize only for the rasterizer's fixed 0.05 near plane. Keep anchors in mesh units.
+    positive = view[::max(1, len(view) // 4096), 2]
+    positive = positive[positive > 0]
+    if not len(positive):
+        raise ValueError("The capture does not see the saved MoGe scene")
+    unit = float(positive.median()) * 0.1
+    _rasterize_person((view / unit).to(device), faces.to(device), focal, width, height, z_buffer, dummy, visible,
+                      lambda ids, _weights: dummy.new_zeros((len(ids), 3)))
+    existing = z_buffer.reshape(height, width).cpu().numpy() * unit
+    raw_rgb = np.asarray(raw.resize((width, height), Image.Resampling.LANCZOS))
+    generated = (refined.numpy() * 255).round().astype(np.uint8)
+    raw_visible = raw_rgb.any(axis=-1)
+    anchors = np.isfinite(existing) & raw_visible
+
+    sift = cv2.SIFT_create(nfeatures=4000)
+    mask = cv2.erode(anchors.astype(np.uint8), np.ones((5, 5), dtype=np.uint8))
+    first, desc = sift.detectAndCompute(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2GRAY), mask)
+    second, candidate = sift.detectAndCompute(cv2.cvtColor(generated, cv2.COLOR_RGB2GRAY), mask)
+    tracks = []
+    if desc is not None and candidate is not None and len(candidate) >= 2:
+        for match, alternative in cv2.BFMatcher().knnMatch(desc, candidate, k=2):
+            x, y = first[match.queryIdx].pt
+            point = second[match.trainIdx].pt
+            if match.distance < 0.78 * alternative.distance and math.dist((x, y), point) <= 0.01 * max(width, height):
+                z = existing[int(y), int(x)]
+                if np.isfinite(z):
+                    tracks.append((*point, z))
+    if len(tracks) < 12:
+        raise ValueError("QI2 changed too much of the captured geometry to align the expanded MoGe view")
+    try:
+        depth = depth * _depth_scale(depth.numpy(), np.asarray(tracks))
+    except ValueError as error:
+        raise ValueError("The expanded view's MoGe depth disagrees with the saved scene") from error
+
+    x = (torch.arange(width) + 0.5 - width / 2) / focal
+    y = (torch.arange(height) + 0.5 - height / 2) / focal
+    points = torch.stack((depth * x, depth * y[:, None], depth), dim=-1)
+    stride = max(1, math.ceil(max(width, height) / 2048))
+    calibration = np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]])
+    patch, = call_node("MoGePointMapToMesh", moge_geometry={"points": points[None], "depth": depth[None],
+        "intrinsics": torch.from_numpy(calibration)[None]}, batch_index=0, texture=False, decimation=stride,
+        discontinuity_threshold=0.04)
+    flip = vertices.new_tensor([1, -1, -1])
+    new_vertices = patch.vertices[0] * flip
+    visible_indices, py, px, _ = _project_pixels(new_vertices.numpy(), None, (height, width), calibration)
+    missing = ~np.isfinite(existing) & ~raw_visible
+    with np.errstate(invalid="ignore"):
+        agrees = anchors & (np.abs(depth.numpy() - existing) <= 0.08 * existing)
+    # Only keep new surface components that meet a depth-consistent edge of the saved mesh.
+    growth = np.zeros((height, width), dtype=np.uint8)
+    growth[py, px] = missing[py, px] | agrees[py, px]
+    _, labels = cv2.connectedComponents(growth[::stride, ::stride], connectivity=4)
+    attached = np.unique(labels[(agrees[::stride, ::stride]) & (labels != 0)])
+    keep = torch.zeros(len(new_vertices), dtype=torch.bool)
+    keep[visible_indices] = torch.from_numpy(missing[py, px] & np.isin(labels[py // stride, px // stride], attached))
+    new_faces = patch.faces[0].long()
+    new_faces = new_faces[keep[new_faces].all(dim=1)]
+    if not len(new_faces):
+        raise ValueError("No new geometry connects to the saved MoGe scene in this view")
+    used, indices = torch.unique(new_faces, return_inverse=True)
+    tile_height = min(height, 8192)
+    tile_width = min(width, texture.shape[1])
+    tile = torch.nn.functional.interpolate(refined.permute(2, 0, 1)[None], (tile_height, tile_width),
+                                           mode="bilinear", align_corners=False)[0].permute(1, 2, 0)
+    row = texture.new_zeros((tile_height, texture.shape[1], 3))
+    row[:, :tile_width] = tile
+    combined = torch.cat((texture, row))
+    new_uvs = (patch.uvs[0, used] * vertices.new_tensor([tile_width - 1, tile_height - 1])
+               + vertices.new_tensor([0.5, texture.shape[0] + 0.5])) / vertices.new_tensor([texture.shape[1], combined.shape[0]])
+    uvs[:, 1] *= texture.shape[0] / combined.shape[0]
+    if combined.shape[0] > 8192:
+        combined = torch.nn.functional.interpolate(combined.permute(2, 0, 1)[None], (8192, combined.shape[1]),
+                                                   mode="bilinear", align_corners=False)[0].permute(1, 2, 0)
+    return Types.MESH(vertices=torch.cat((vertices, new_vertices[used] @ basis.T + position))[None],
+                      faces=torch.cat((faces, indices.reshape(-1, 3) + len(vertices)))[None],
+                      uvs=torch.cat((uvs, new_uvs))[None], texture=combined[None], unlit=True)
+
+
 def _project_pixels(vertices, transform, shape, calibration):
     fx, fy, cx, cy = calibration[0, 0], calibration[1, 1], calibration[0, 2], calibration[1, 2]
     height, width = shape

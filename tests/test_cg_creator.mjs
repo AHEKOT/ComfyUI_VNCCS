@@ -594,6 +594,20 @@ test("source-camera calibration keeps image-plane framing while saved CG cameras
     assert.deepEqual(h.widget.viewer.camera, saved);
 });
 
+test("Expand Scene explains why an older model cannot be expanded before capturing or submitting", async () => {
+    const h = harness(JSON.stringify(state({ selected_cg_id: "" })));
+    h.api.handle = path => path.includes(`/models/${MODEL}`) ? response(scene(A, {
+        background_settings: { provider: "worldmirror" },
+    })) : undefined;
+    await h.ready();
+    const button = h.control("[data-expand-scene]");
+    assert.equal(button.disabled, false);
+    await button.click();
+    assert.match(h.widget.status.textContent, /no reconstruction frames.*Create Model/);
+    assert.equal(h.widget.viewer.captureOptions, undefined);
+    assert.equal(h.calls.some(call => call.path.endsWith("/jobs")), false);
+});
+
 test("WorldMirror restores the predicted up direction and recenters to the predicted camera", async () => {
     const predicted = { position: [1, 2, 3], target: [2, 2, 3], up: [0, -1, 0], fov: 47 };
     const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: null, model_settings: { provider: "worldmirror" } })));
@@ -632,6 +646,11 @@ test("MoGe restores and recenters its source camera in the imported mesh coordin
     assert.equal(h.control("[data-model-settings]").disabled, false);
     assert.deepEqual(h.widget.viewer.camera, imported);
     assert.deepEqual(JSON.parse(h.data.value).camera, imported);
+    await h.widget.captureScene({ width: 128, height: 64, cameraState: imported });
+    assert.equal(h.widget.viewer.captureOptions.cameraState, undefined);
+    const otherView = { ...imported, fov: 53 };
+    await h.widget.captureScene({ width: 128, height: 64, cameraState: otherView });
+    assert.equal(h.widget.viewer.captureOptions.cameraState, otherView);
     h.widget.viewer.objects = new Map([[B, { localBounds: {
         isEmpty: () => false, min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 1, z: 1 },
     } }]]);

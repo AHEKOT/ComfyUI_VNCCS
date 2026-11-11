@@ -537,7 +537,39 @@ def _copy_model(source, scene, target):
         if copied_bytes > MAX_MODEL_BYTES:
             raise ValueError("Background model assets are too large")
         _copy_asset(source_file, _contained(target, relative), MAX_MODEL_BYTES)
+    _copy_reconstruction(source, target)
     _atomic(_contained(target, "scene.json"), encoded)
+
+
+def _copy_reconstruction(source, target):
+    folder = _contained(source, "reconstruction")
+    if not folder.is_dir():
+        return
+    total = 0
+    for entry in sorted(folder.iterdir()):
+        if not re.fullmatch(r"(?:mask-)?[0-9]{6}\.png|settings\.json", entry.name):
+            continue
+        path = _contained(folder, entry.name)
+        total += path.stat().st_size
+        if total > MAX_MODEL_BYTES:
+            raise ValueError("Reconstruction references are too large")
+        _copy_asset(path, _contained(target, "reconstruction", entry.name), MAX_IMAGE_BYTES)
+
+
+def _save_reconstruction(directory, images, settings, focal_length, capture_holes):
+    import numpy as np
+
+    folder = _contained(directory, "reconstruction")
+    folder.mkdir()
+    for index, image in enumerate(images):
+        frame = Image.fromarray((np.asarray(image.cpu()) * 255).round().clip(0, 255).astype(np.uint8))
+        (folder / f"{index:06}.png").write_bytes(_image_bytes(frame))
+        if capture_holes and index in capture_holes:
+            mask = Image.fromarray(capture_holes[index].astype(np.uint8) * 255)
+            mask.save(folder / f"mask-{index:06}.png")
+    stored = {key: settings[key] for key in ("provider", "target_size", "apply_sky_mask") if key in settings}
+    height, width = images.shape[1:3]
+    (folder / "settings.json").write_bytes(_json_bytes({**stored, "focal_length": focal_length, "size": [width, height]}))
 
 
 def commit_model(background_id, image_id, scene_directory, scene, settings, expected_revision, source_variant=None):
@@ -1632,17 +1664,80 @@ def public_document(document):
     return value
 
 
-def public_model(background_id, model_id):
-    scene = model_scene(background_id, model_id)
+def _public_scene(scene, url):
     for item in scene.get("objects", []):
         kind = "model" if background_storage.model_geometry_key(item) == "model" else "splat"
         if kind == "splat" and scene.get("background_settings", {}).get("provider") == "worldmirror":
             # Factory rotates every SPLAT as TripoSplat. Cancel that child rotation in the scene transform.
             item["transform"] = {**item.get("transform", {}), "rotation": [180, 90, 0]}
-        item["urls"] = {kind: f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/{kind}"}
+        item["urls"] = {kind: f"{url}/objects/{item['object_id']}/{kind}"}
         item["locked"] = True
         item.pop("files", None)
     return scene
+
+
+def public_model(background_id, model_id):
+    with background._LOCK:
+        scene = model_scene(background_id, model_id)
+        directory, document, _ = _locate(background_id)
+        model = _model_directory(directory, model_id, document)
+        manifest = _contained(model, "reconstruction", "settings.json")
+        if manifest.is_file():
+            settings, _ = _read_json(manifest)
+            scene["can_expand"] = True
+            scene["reconstruction_size"] = settings["size"]
+        pending = _contained(model, ".expansion", "scene.json")
+        if pending.is_file():
+            preview, _ = _read_json(pending)
+            scene["expansion_id"] = _id(preview["expansion_id"])
+    return _public_scene(scene, f"{API_BASE}/backgrounds/{background_id}/models/{model_id}")
+
+
+def _expansion_scene(background_id, model_id, expansion_id):
+    base = model_scene(background_id, model_id)
+    directory, document, _ = _locate(background_id)
+    folder = _contained(_model_directory(directory, model_id, document), ".expansion")
+    scene, _ = _read_json(_contained(folder, "scene.json"))
+    if (scene.get("expansion_id") != _id(expansion_id) or scene.get("model_id") != model_id
+            or scene.get("background_id") != background_id):
+        raise FileNotFoundError("Scene expansion is no longer available")
+    return base, folder, scene
+
+
+def public_expansion(background_id, model_id, expansion_id):
+    with background._LOCK:
+        _, _, scene = _expansion_scene(background_id, model_id, expansion_id)
+        url = f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"
+        return _public_scene(scene, url)
+
+
+def expansion_asset(background_id, model_id, expansion_id, object_id, kind):
+    with background._LOCK:
+        _, folder, scene = _expansion_scene(background_id, model_id, expansion_id)
+        item = next((item for item in scene["objects"] if item["object_id"] == _id(object_id)), None)
+        key = "ply" if kind == "splat" else "model" if kind == "model" else None
+        relative = item and key and item["files"].get(key)
+        if not relative:
+            raise FileNotFoundError("Expansion geometry is unavailable")
+        path = _contained(folder, relative)
+        return provider()["storage"]._ensure_cached_splat(path, ply_sha256="") if kind == "splat" else path
+
+
+def finish_expansion(background_id, model_id, expansion_id, save):
+    with _JOBS_LOCK, background._LOCK:
+        ensure_idle(background_id)
+        _editable(background_id, None)
+        base, folder, scene = _expansion_scene(background_id, model_id, expansion_id)
+        if save:
+            if background_storage.fingerprint(image_path(background_id, base["source_image_id"], base.get("source_variant"))) != scene["source_signature"]:
+                raise BackgroundConflictError("Background source changed while expanding its scene")
+            scene.pop("expansion_id")
+            document = commit_model(background_id, base["source_image_id"], folder, scene, base["background_settings"],
+                                    None, source_variant=base.get("source_variant"))
+        else:
+            shutil.rmtree(folder)
+            document = load_background(background_id)
+    return public_document(document)
 
 
 def model_settings(value):
@@ -1875,19 +1970,49 @@ def _generate_moge_scene(job, images, scene, scene_directory, *, diagnostics=Non
         _stage(job_id, cancel, "meshing", 0.86, "Aligning and merging the MoGe geometry")
         mesh = merge_moge_views(geometry, images, calibration, poses, tracks, _call_comfy_node, check_cancel,
                                 capture_holes=capture_holes)
-        _stage(job_id, cancel, "saving", 0.94, "Saving the MoGe mesh and camera")
-        file, = _call_comfy_node("MeshToFile3D", mesh=mesh)
-        payload = file.get_bytes()
-        if not payload.startswith(b"glTF") or len(payload) > MAX_MODEL_BYTES:
-            raise ValueError("MoGe returned an invalid or oversized GLB model")
-        _check_cancel(cancel)
-        object_id = uuid.uuid4().hex
-        relative = f"objects/{object_id}/model.glb"
-        path = _contained(scene_directory, relative)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("xb") as stream:
-            stream.write(payload)
+        _save_moge_mesh(job, scene, scene_directory, mesh, camera)
+
+
+def _save_moge_mesh(job, scene, scene_directory, mesh, camera):
+    cancel = job["cancel_event"]
+    _stage(job["job_id"], cancel, "saving", 0.94, "Saving the MoGe mesh and camera")
+    file, = _call_comfy_node("MeshToFile3D", mesh=mesh)
+    payload = file.get_bytes()
+    if not payload.startswith(b"glTF") or len(payload) > MAX_MODEL_BYTES:
+        raise ValueError("MoGe returned an invalid or oversized GLB model")
+    _check_cancel(cancel)
+    object_id = uuid.uuid4().hex
+    relative = f"objects/{object_id}/model.glb"
+    path = _contained(scene_directory, relative)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as stream:
+        stream.write(payload)
     _set_reconstruction_object(scene, object_id, camera, "model", relative)
+
+
+def _expand_moge_scene(job, values, images, scene, scene_directory):
+    import torch
+    from .cg_moge_multiview import extend_saved_mesh
+
+    job_id, cancel = job["job_id"], job["cancel_event"]
+    base = model_scene(job["background_id"], values["model_id"])
+    item = base["objects"][0]
+    path = _contained(values["model_directory"], item["files"]["model"])
+    camera = values["model_camera"]
+    height, width = images.shape[1:3]
+    focal = height / (2 * math.tan(math.radians(camera["fov"]) / 2))
+    fov_x = math.degrees(2 * math.atan(width / (2 * focal)))
+    with _model_session(job_id, cancel), torch.inference_mode():
+        _stage(job_id, cancel, "reconstructing", 0.70, "Estimating depth for the captured MoGe view")
+        depth = _infer_moge(images[-1:], fov_x)["depth"][0].detach().cpu().float()
+        depth = depth.masked_fill(~torch.isfinite(depth) | (depth <= 0), torch.inf)
+        _stage(job_id, cancel, "meshing", 0.86, "Aligning new geometry with the saved MoGe mesh")
+        try:
+            mesh = extend_saved_mesh(path, camera, values["raw"], images[-1], depth, focal, _call_comfy_node,
+                                     lambda: _check_cancel(cancel))
+        except ValueError as error:
+            raise ValueError(f"{error}. See {values['expansion_diagnostics']}.") from error
+        _save_moge_mesh(job, scene, scene_directory, mesh, base["camera"])
 
 
 def _set_reconstruction_object(scene, object_id, camera, kind, relative):
@@ -1936,15 +2061,15 @@ def start_job(background_id, payload, raw_image=None):
     if not isinstance(payload, dict):
         raise ValueError("CG job must be an object")
     action = payload.get("action")
-    if action not in {"model", "cg"}:
-        raise ValueError("CG Creator supports only model reconstruction and CG refinement")
+    if action not in {"model", "cg", "expand"}:
+        raise ValueError("Unsupported CG Creator action")
     request_id = _request_id(payload["request_id"]) if "request_id" in payload else ""
     image_id = payload.get("image_id", "")
     source_variant = copy.deepcopy(_source_variant(payload.get("source_variant")))
     image_path(background_id, image_id, source_variant)
     values = {"image_id": image_id, "source_variant": source_variant,
               "source_signature": background_storage.fingerprint(image_path(background_id, image_id, source_variant)),
-              "model_settings": model_settings(payload.get("model_settings", {})),
+              "model_settings": model_settings(payload.get("model_settings", {})) if action != "expand" else {},
               "settings": normalize_settings(payload.get("settings", {}))}
     if action == "model" and values["model_settings"]["provider"] == "pixal3d" and not callable(getattr(runtime, "_generate_mesh_object", None)):
         raise RuntimeError("Pixal3D requires a 3D Factory version with mesh generation")
@@ -1957,8 +2082,11 @@ def start_job(background_id, payload, raw_image=None):
         if values["model_settings"]["provider"] == "moge":
             from .cg_moge_multiview import require_colmap
             require_colmap()
-    if action == "cg":
-        values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
+    if action in {"cg", "expand"}:
+        values["model_id"] = _id(payload.get("model_id"))
+        if action == "cg":
+            values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")),
+                          camera=_camera(payload.get("camera")))
         scene = model_scene(background_id, values["model_id"])
         if (scene["source_image_id"] != image_id
                 or _variant_key(scene.get("source_variant")) != _variant_key(source_variant)):
@@ -1967,7 +2095,7 @@ def start_job(background_id, payload, raw_image=None):
         if min(raw.size) < 64 or max(raw.size) > 4096 or raw.width % 16 or raw.height % 16 or raw.width * raw.height > 16_000_000:
             raise ValueError("CG frame must be 64–4096 pixels, aligned to 16 pixels, at most 16 MP")
         values["raw"] = raw
-        if values["characters"]:
+        if values.get("characters"):
             source = values["characters"][0].get("source", {})
             if not all(source.get(key) for key in ("character", "costume", "sprite")):
                 raise ValueError("Select a character, costume and sprite before generating CG")
@@ -1979,6 +2107,23 @@ def start_job(background_id, payload, raw_image=None):
         document = load_background(background_id)
         if document.get("_recovery") or document.get("archived"):
             raise ValueError("This saved background is read-only")
+        if action == "expand":
+            directory, _, _ = _locate(background_id)
+            model = _model_directory(directory, values["model_id"], document)
+            if _contained(model, ".expansion").exists():
+                raise BackgroundConflictError("Save or discard the current scene expansion first")
+            manifest = _contained(model, "reconstruction", "settings.json")
+            if not manifest.is_file():
+                raise ValueError("Create this model again to save its reconstruction frames")
+            settings, _ = _read_json(manifest)
+            provider_name = settings.get("provider")
+            if provider_name not in {"moge", "worldmirror"}:
+                raise ValueError("Scene expansion requires a MoGe or WorldMirror model")
+            if scene.get("source_signature") != values["source_signature"]:
+                raise BackgroundConflictError("The background source changed. Recreate its model before expanding")
+            if provider_name == "moge":
+                values["model_camera"] = _camera(payload.get("model_camera"))
+            values.update(model_settings=settings, model_directory=model)
         values["revision"] = document["revision"]
         for old_id in list(_JOBS):
             if len(_JOBS) < 64:
@@ -1989,11 +2134,48 @@ def start_job(background_id, payload, raw_image=None):
             raise RuntimeError("CG job queue is full. Wait for a job to finish before trying again.")
         job = runtime._new_job(f"cg_creator_{action}")
         job.update(background_id=background_id, action=action, request_id=request_id)
-        if action == "model":
+        if action in {"model", "expand"}:
             job["model_provider"] = values["model_settings"]["provider"]
         _JOBS[job["job_id"]] = job
         _WORKER.submit(runtime._run_job, job, lambda current: _execute(current, values))
     return job_status(job["job_id"])
+
+
+def _expand_references(job, values):
+    import numpy as np
+    import torch
+
+    folder = _contained(values["model_directory"], "reconstruction")
+    paths = sorted(entry.name for entry in folder.iterdir() if re.fullmatch(r"[0-9]{6}\.png", entry.name))
+    if not paths:
+        raise ValueError("The scene has no reconstruction frames")
+    images, holes = [], {}
+    for index, name in enumerate(paths):
+        _check_cancel(job["cancel_event"])
+        with Image.open(_contained(folder, name)) as stored:
+            frame = stored.convert("RGB")
+        if index == 0:
+            original = frame
+        if frame.size != original.size:
+            raise ValueError("Reconstruction frames have inconsistent dimensions")
+        images.append(_pil_to_tensor(frame))
+        mask = _contained(folder, f"mask-{name}")
+        if mask.is_file():
+            with Image.open(mask) as stored:
+                holes[index] = np.asarray(stored.convert("L")) != 0
+    diagnostics = _contained(root().parent, "CG_Expansion_Diagnostics", _id(job["job_id"]))
+    diagnostics.mkdir(parents=True)
+    values["expansion_diagnostics"] = diagnostics
+    (diagnostics / "capture.png").write_bytes(_image_bytes(values["raw"]))
+    if "model_camera" in values:
+        (diagnostics / "camera.json").write_bytes(_json_bytes(values["model_camera"]))
+    log_event("expansion_diagnostics", component="CGCreator", job_id=job["job_id"], directory=str(diagnostics))
+    refined, _ = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], original,
+                                save_dataset=False, progress_range=(0.02, 0.58))
+    (diagnostics / "qi2_result.png").write_bytes(_image_bytes(refined))
+    if refined.size != original.size:
+        refined = refined.resize(original.size, Image.Resampling.LANCZOS)
+    return torch.cat((*images, _pil_to_tensor(refined))), holes
 
 
 def _execute(job, values):
@@ -2029,7 +2211,10 @@ def _execute(job, values):
                     diagnostics = None
                     focal_length = None
                     capture_holes = None
-                    if settings.get("moge_refine_views"):
+                    if job["action"] == "expand":
+                        images, capture_holes = _expand_references(job, values)
+                        focal_length = settings["focal_length"]
+                    elif settings.get("moge_refine_views"):
                         diagnostics = _contained(root().parent, "CG_MoGe_Diagnostics", _id(job["job_id"]))
                         images, focal_length, capture_holes = _generate_refined_moge_views(
                             job, source_image, values["settings"], diagnostics)
@@ -2037,9 +2222,12 @@ def _execute(job, values):
                         images = _generate_camera_shift_views(job, source_image, values["settings"], settings["camera_shift_lora"])
                     if settings["provider"] == "worldmirror":
                         _generate_worldmirror_scene(job, images, scene, scene_directory, settings)
+                    elif job["action"] == "expand":
+                        _expand_moge_scene(job, values, images, scene, scene_directory)
                     else:
                         _generate_moge_scene(job, images, scene, scene_directory, diagnostics=diagnostics,
                                              focal_length=focal_length, capture_holes=capture_holes)
+                    _save_reconstruction(scene_directory, images, settings, focal_length, capture_holes)
                     scene["lighting"] = lighting
                 else:
                     encoded = io.BytesIO()
@@ -2069,6 +2257,24 @@ def _execute(job, values):
                     with background._LOCK:
                         if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
                             raise BackgroundConflictError("Background source changed while building its model; the result was not published")
+                        if job["action"] == "expand":
+                            directory, document, _ = _editable(job["background_id"], None)
+                            model = _model_directory(directory, values["model_id"], document)
+                            base = model_scene(job["background_id"], values["model_id"])
+                            scene.update({key: base[key] for key in ("background_id", "model_id", "source_image_id",
+                                                                     "background_settings", "source_signature")})
+                            if values["source_variant"]:
+                                scene["source_variant"] = values["source_variant"]
+                            scene["expansion_id"] = job["job_id"]
+                            with tempfile.TemporaryDirectory(prefix=".expansion-", dir=model) as temporary:
+                                stage = Path(temporary) / "preview"
+                                _copy_model(scene_directory, scene, stage)
+                                target = _contained(model, ".expansion")
+                                if target.exists():
+                                    raise BackgroundConflictError("Save or discard the current scene expansion first")
+                                os.replace(stage, target)
+                            job["published"] = True
+                            return {"expansion_id": job["job_id"]}
                         document = commit_model(job["background_id"], values["image_id"], scene_directory,
                             scene, {"provider": settings["provider"]}, None, source_variant=values["source_variant"])
                     job["published"] = True
@@ -2248,6 +2454,24 @@ def register_routes(routes):
     async def asset(request):
         info = request.match_info
         return await serve(request, lambda: model_asset_path(info["background_id"], info["model_id"], info["object_id"], info["kind"]))
+
+    expansion = base + "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"
+
+    @routes.get(expansion)
+    async def expansion_preview(request):
+        info = request.match_info
+        return await perform(public_expansion, info["background_id"], info["model_id"], info["expansion_id"])
+
+    @routes.get(expansion + "/objects/{object_id}/{kind}")
+    async def expansion_geometry(request):
+        return await serve(request, lambda: expansion_asset(**dict(request.match_info)))
+
+    @routes.post(expansion)
+    @respond
+    def resolve_expansion(info, payload, _image):
+        if type(payload.get("save")) is not bool:
+            raise ValueError("Choose whether to save the scene expansion")
+        return finish_expansion(info["background_id"], info["model_id"], info["expansion_id"], payload["save"])
 
     @routes.get(base + "/backgrounds/{background_id}/cg/{cg_id}/{kind}")
     async def cg_image(request):

@@ -308,6 +308,72 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     assert not list(factory._factory_root().iterdir())
 
 
+@pytest.mark.parametrize("provider_name", ["moge", "worldmirror"])
+@pytest.mark.parametrize("save", [True, False])
+def test_expansion_keeps_references_and_geometry_private_until_save(workspace, monkeypatch, routes, provider_name, save):
+    torch = pytest.importorskip("torch")
+    multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setattr(multiview, "require_colmap", mock.Mock())
+    batch = torch.stack([torch.full((64, 128, 3), value) for value in (0., .25, .5, .75, 1.)])
+    monkeypatch.setattr(service, "_generate_refined_moge_views", mock.Mock(return_value=(batch, 100., {})))
+    calls = []
+
+    def reconstruct(_job, images, scene, folder, *_args, **_kwargs):
+        calls.append(images)
+        name = "model.glb" if provider_name == "moge" else "model.ply"
+        (folder / name).write_bytes(f"geometry-{len(images)}".encode())
+        service._set_reconstruction_object(scene, f"{len(images):032x}", CAMERA,
+                                           "model" if provider_name == "moge" else "ply", name)
+
+    monkeypatch.setattr(service, "_generate_moge_scene", reconstruct)
+    monkeypatch.setattr(service, "_generate_worldmirror_scene", reconstruct)
+    def expand_moge(job, values, images, scene, folder):
+        assert values["model_camera"] == CAMERA
+        assert (values["expansion_diagnostics"] / "capture.png").is_file()
+        assert (values["expansion_diagnostics"] / "qi2_result.png").is_file()
+        reconstruct(job, images, scene, folder)
+
+    monkeypatch.setattr(service, "_expand_moge_scene", expand_moge)
+    document = workspace.document
+    background_id = document["background_id"]
+    service.start_job(background_id, job_payload(document, "model",
+        model_settings={"provider": provider_name, "moge_refine_views": True}))
+    first = workspace.run_pending()
+    assert first["status"] == "completed", first["error"]
+    document = library.load_background(background_id)
+    model_id = document["models"][0]["model_id"]
+    directory = library.root() / document["name"]
+    base = library._model_directory(directory, model_id, document)
+    original = {path.name: path.read_bytes() for path in (base / "reconstruction").glob("*.png")}
+    assert len(original) == 5
+    assert service.public_model(background_id, model_id)["reconstruction_size"] == [128, 64]
+    if provider_name == "moge":
+        multiview.require_colmap.side_effect = AssertionError("MoGe expansion must reuse the captured camera")
+    service.start_job(background_id, job_payload(document, "expand", model_camera=CAMERA), png(color="yellow"))
+    expansion = workspace.run_pending()
+    assert expansion["status"] == "completed", expansion["error"]
+    expansion_id = expansion["job_id"]
+    assert [len(images) for images in calls] == [5, 6]
+    assert calls[-1][-1, 0, 0].tolist() == [0., 0., 1.]
+    assert workspace.generated.call_args.args[3].getpixel((0, 0)) == (255, 255, 0)
+    assert library.load_background(background_id) == document
+    assert service.public_model(background_id, model_id)["expansion_id"] == expansion_id
+    url = "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"
+    info = {"background_id": background_id, "model_id": model_id, "expansion_id": expansion_id}
+    response = call(routes, "GET", url, Request(info=info))
+    assert response.status == 200
+    preview = json.loads(response.text)
+    assert f"/expansion/{expansion_id}/objects/" in next(iter(preview["objects"][0]["urls"].values()))
+    response = call(routes, "POST", url, Request({"save": save}, info=info))
+    assert response.status == 200, response.text
+    updated = json.loads(response.text)
+    updated_model = updated["models"][0]["model_id"]
+    assert (updated_model != model_id) == save
+    assert not (base / ".expansion").exists()
+    assert len(list((base / "reconstruction").glob("*.png"))) == (6 if save else 5)
+    assert all((base / "reconstruction" / name).read_bytes() == data for name, data in original.items())
+
+
 @pytest.mark.parametrize("name", [None, "", "   "])
 def test_cg_creation_requires_an_explicit_scene_name(workspace, name):
     document = with_model(workspace)
@@ -982,6 +1048,9 @@ def test_http_inventory_has_no_background_authoring_actions(routes):
         ("GET", "/backgrounds/{background_id}/sets/{set_id}/{index}"),
         ("GET", "/backgrounds/{background_id}/models/{model_id}"),
         ("GET", "/backgrounds/{background_id}/models/{model_id}/objects/{object_id}/{kind}"),
+        ("GET", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"),
+        ("POST", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"),
+        ("GET", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}/objects/{object_id}/{kind}"),
         ("GET", "/backgrounds/{background_id}/cg/{cg_id}/{kind}")}
     assert set(routes) == {(method, service.API_BASE + path) for method, path in expected}
 
