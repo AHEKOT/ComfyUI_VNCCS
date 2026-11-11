@@ -86,7 +86,15 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-camera-toolbar input[type=number] { width:58px; padding:7px 4px; flex:none; }
 .vnccs-cg-creator .bg-camera-toolbar input[type=range] { width:60px; flex:1; }
 .vnccs-cg-creator .bg-camera-toolbar button { width:auto; flex:0 0 auto; min-height:34px; font-size:11px; padding:7px 9px; }
-.vnccs-cg-creator .bg-expansion-actions:not([hidden]) { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); display:flex; gap:8px; padding:8px; background:var(--bg-primary); border:1px solid var(--accent-border); border-radius:var(--radius-md); white-space:nowrap; }
+.vnccs-cg-creator .bg-expansion-actions:not([hidden]) { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); display:flex; flex-wrap:wrap; justify-content:center; gap:8px; padding:8px; box-sizing:border-box; width:max-content; max-width:calc(100% - 24px); background:var(--bg-primary); border:1px solid var(--accent-border); border-radius:var(--radius-md); }
+.vnccs-cg-creator .bg-expansion-actions > button { flex:0 1 auto; min-width:0; width:auto; height:auto; white-space:normal; overflow-wrap:anywhere; }
+.vnccs-cg-creator .bg-expansion-compare:not([hidden]) { position:absolute; z-index:4; inset:0; display:grid; place-items:center; container-type:size; background:#000; cursor:ew-resize; }
+.vnccs-cg-creator .bg-expansion-images { position:relative; width:min(100%, calc(100cqh * var(--frame-aspect))); aspect-ratio:var(--frame-aspect); }
+.vnccs-cg-creator .bg-expansion-images img { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
+.vnccs-cg-creator [data-expansion-after] { clip-path:inset(0 0 0 var(--split, 50%)); }
+.vnccs-cg-creator .bg-expansion-images::after { content:""; position:absolute; top:0; bottom:0; left:var(--split, 50%); border-left:1px solid var(--accent); pointer-events:none; }
+.vnccs-cg-creator [data-expansion-split] { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:inherit; }
+.vnccs-cg-creator .bg-expansion-images:has([data-expansion-split]:focus-visible) { outline:2px solid var(--accent); outline-offset:-2px; }
 .vnccs-cg-creator .bg-viewer-empty { position:absolute; inset:20px; display:grid; place-items:center; text-align:center; color:var(--text-secondary); pointer-events:none; }
 .vnccs-cg-creator .bg-hint { font-size:10px; color:var(--text-secondary); }
 .vnccs-cg-creator .bg-cg-panel { overflow:hidden; }
@@ -879,7 +887,7 @@ class CGCreatorWidget {
                     <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary bg-wide" data-action="model">Create model</button>
                 </aside>
                 <section class="cg-middle">
-                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge" data-model-kind>Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-expand-scene title="Create the model to save reconstruction frames">Expand Scene</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div><div class="bg-expansion-actions" data-expansion-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-expansion>Save Scene</button></div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
+                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge" data-model-kind>Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-expand-scene title="Create the model to save reconstruction frames">Expand Scene</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div><div class="bg-expansion-compare" data-expansion-compare hidden><div class="bg-expansion-images"><img data-expansion-before alt="Captured view"><img data-expansion-after alt="QI2 reconstruction frame"><input type="range" min="0" max="100" value="50" class="vnccs-common-creator-slider" data-expansion-split aria-label="Compare captured view and QI2 frame"></div></div><div class="bg-expansion-actions" data-expansion-frame-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion-frame>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-approve-expansion-frame>Rebuild Scene</button></div><div class="bg-expansion-actions" data-expansion-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-expansion>Save Scene</button></div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
                     <div class="bg-generation-dock" data-qi2><div class="bg-frame-settings" data-frame-settings>
                     <label class="bg-field vnccs-common-creator-field"><span class="vnccs-common-creator-label">Aspect ratio</span><select class="vnccs-common-creator-select" data-aspect aria-label="Aspect ratio">${ASPECTS.map(value => `<option>${value}</option>`).join("")}</select></label>
                     </div></div>
@@ -887,6 +895,25 @@ class CGCreatorWidget {
                 <aside class="bg-panel bg-cg-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Generated CG <span class="bg-badge" data-cg-count>0</span></div><div class="bg-cg-list" data-cgs></div><p data-cg-empty>Compose the camera and press Generate CG.</p></aside>
             </section>`;
         this.host = this.container.querySelector("[data-viewer]"); this.status = this.container.querySelector(".bg-hint"); this.status.setAttribute("role", "status");
+        this.expansionCompare = this.container.querySelector("[data-expansion-compare]");
+        this.expansionBefore = this.container.querySelector("[data-expansion-before]");
+        this.expansionAfter = this.container.querySelector("[data-expansion-after]");
+        this.expansionSplit = this.container.querySelector("[data-expansion-split]");
+        this.on(this.expansionCompare, "pointermove", event => {
+            if (this.expansionCompare.hidden || this.expansionSplit.disabled || event.pointerType === "touch") return;
+            const { left, width } = this.expansionBefore.getBoundingClientRect();
+            if (width <= 0) return;
+            const split = Math.round(100 * Math.max(0, Math.min(1, (event.clientX - left) / width)));
+            this.expansionSplit.value = String(split);
+            this.expansionCompare.style.setProperty("--split", split + "%");
+        });
+        for (const image of [this.expansionBefore, this.expansionAfter]) {
+            this.on(image, "load", () => this.updateControls());
+            this.on(image, "error", () => {
+                if (!this.expansionCompare.hidden) this.message("The expansion comparison could not be loaded.", true);
+                this.updateControls();
+            });
+        }
         this.fov = this.container.querySelector("[data-fov]"); this.fovNumber = this.container.querySelector("[data-fov-number]");
         this.customSelects = createSakuraInteractions(this.container, node);
         this.canvasNavigation = enableMiddleMouseCanvasPan(this.container, node);
@@ -921,31 +948,48 @@ class CGCreatorWidget {
     json(path, data, method = "POST") { return this.request(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) }); }
     selectedScene() { return this.scene?.model_id === this.state?.model_id && this.scene?.background_id === this.state?.background_id ? this.scene : null; }
     expansionURL(id) { return `/backgrounds/${this.state.background_id}/models/${this.state.model_id}/expansion/${id}`; }
-    canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.state?.job && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.selectedScene()); }
+    canEditCamera() { return !this.disposed && !this.restoring && !this.busy && !this.state?.job && !this.loadingModel && !this.previewSource && Boolean(this.viewer && this.selectedScene() && !this.scene.expansion_frame_id); }
     editorSnapshot() { return { camera: this.viewer.getCameraState(), characters: this.characters?.snapshot() || [] }; }
     beginGesture() { if (this.canEditCamera()) this.history.begin("Scene", this.editorSnapshot()); }
     beginCameraNavigation() {
         if (!this.canEditCamera()) return;
         const scene = this.selectedScene(), viewer = this.viewer;
-        const moge = scene.background_settings?.provider === "moge";
-        const bounds = moge ? viewer.objects?.get(scene.objects[0]?.object_id)?.localBounds : null;
+        const provider = scene.background_settings?.provider;
+        const moge = provider === "moge", worldmirror = provider === "worldmirror";
+        const bounds = (moge || worldmirror) ? viewer.objects?.get(scene.objects[0]?.object_id)?.localBounds : null;
         const snapshot = this.editorSnapshot();
         let panSpeed = 1, zoomSensitivity = 0.1;
+        this.worldMirrorDollyStep = 0;
         if (bounds && !bounds.isEmpty()) {
             const { min, max } = bounds;
             const { position, target } = snapshot.camera;
             const distance = Math.hypot(...target.map((value, axis) => value - position[axis]));
             // Distant geometry can stretch the bounds far beyond the foreground.
-            const maxReference = this.mogeUnit > 0 ? 25 * this.mogeUnit : Infinity;
+            const maxReference = moge && this.mogeUnit > 0 ? 25 * this.mogeUnit : Infinity;
             const reference = Math.min(maxReference, Math.max(max.x - min.x, max.y - min.y, max.z - min.z) / 2);
-            const zoomDistance = Math.max(0.1, distance);
-            panSpeed = Math.max(1, reference / Math.max(0.001, distance));
-            zoomSensitivity *= Math.min(maxReference, Math.max(zoomDistance, reference)) / zoomDistance;
+            if (worldmirror && Number.isFinite(reference) && reference > 0) {
+                panSpeed = reference / Math.max(0.001, distance);
+                this.worldMirrorDollyStep = reference * 0.1;
+            } else if (moge) {
+                const zoomDistance = Math.max(0.1, distance);
+                panSpeed = Math.max(1, reference / Math.max(0.001, distance));
+                zoomSensitivity *= Math.min(maxReference, Math.max(zoomDistance, reference)) / zoomDistance;
+            }
         }
         viewer.controls.panSpeed = panSpeed;
         viewer.setZoomSensitivity(zoomSensitivity, { emit: false });
         viewer.options.cameraDragScale = moge ? 1.4 : 0.7;
         this.history.begin("Scene", snapshot);
+    }
+    dollyWorldMirrorCamera(amount, options) {
+        const { position, target } = this.viewer.getCameraState();
+        const forward = target.map((value, axis) => value - position[axis]);
+        const distance = Math.hypot(...forward);
+        if (!amount || !distance) return;
+        // The look target is one unit from the source camera regardless of the splat scale.
+        const travel = Math.max(-10, Math.min(10, amount)) * this.worldMirrorDollyStep;
+        const move = point => point.map((value, axis) => value + forward[axis] * travel / distance);
+        this.viewer.setCameraState({ position: move(position), target: move(target) }, options);
     }
     rotateWorldMirrorCamera({ yaw = 0, pitch = 0 }, { emit = true } = {}) {
         const { camera, controls } = this.viewer;
@@ -1012,11 +1056,37 @@ class CGCreatorWidget {
             }
             this.container.querySelector("[data-save-expansion]").disabled ||= !savedScene?.expansion_id;
         }
+        const frameId = savedScene?.expansion_frame_id;
+        const compareURL = frameId ? this.expansionURL(frameId) + "/frame/" : "";
+        this.expansionCompare.hidden = !frameId;
+        const frameActions = this.container.querySelector("[data-expansion-frame-actions]");
+        frameActions.hidden = !frameId;
+        if (compareURL !== this.expansionCompare.dataset.url) {
+            this.expansionCompare.dataset.url = compareURL;
+            this.expansionSplit.value = "50";
+            this.expansionCompare.style.setProperty("--split", "50%");
+            if (frameId) {
+                const [width, height] = savedScene.reconstruction_size;
+                this.expansionCompare.style.setProperty("--frame-aspect", width / height);
+                this.expansionBefore.src = this.api.apiURL(BASE + compareURL + "before");
+                this.expansionAfter.src = this.api.apiURL(BASE + compareURL + "after");
+            } else {
+                this.expansionBefore.removeAttribute("src");
+                this.expansionAfter.removeAttribute("src");
+            }
+        }
+        if (frameId) {
+            for (const control of this.container.querySelectorAll("button,input,select,textarea")) {
+                if (control !== this.expansionSplit && !frameActions.contains(control)) control.disabled = true;
+            }
+            this.container.querySelector("[data-approve-expansion-frame]").disabled ||= ![this.expansionBefore, this.expansionAfter]
+                .every(image => image.complete && image.naturalWidth > 0);
+        }
         this.container.querySelector('[data-action="model"]').disabled ||= !this.state?.selected_image_id;
         this.container.querySelector("[data-model-provider]").disabled ||= !this.document;
         const modelSettings = this.state?.model_settings;
         this.container.querySelector("[data-model-settings]").disabled ||= modelSettings?.provider === "moge" && modelSettings.moge_refine_views === true;
-        this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(this.state?.job || this.document?._recovery || this.document?.archived));
+        this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(frameId || this.state?.job || this.document?._recovery || this.document?.archived));
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
         this.host.inert = !this.canEditCamera();
@@ -1190,6 +1260,9 @@ class CGCreatorWidget {
                 const rotate = this.viewer.rotateCameraFPV;
                 this.viewer.rotateCameraFPV = (turn, options) => this.selectedScene()?.background_settings?.provider === "worldmirror"
                     ? this.rotateWorldMirrorCamera(turn, options) : rotate.call(this.viewer, turn, options);
+                const dolly = this.viewer.dollyCamera;
+                this.viewer.dollyCamera = (amount, options) => this.selectedScene()?.background_settings?.provider === "worldmirror" && this.worldMirrorDollyStep
+                    ? this.dollyWorldMirrorCamera(amount, options) : dolly.call(this.viewer, amount, options);
                 this.viewer.controls.enableDamping = false; this.viewer.canvas.setAttribute("aria-label", "CG camera. Drag to look, middle-drag to pan, scroll to move.");
             }
             if (!this.selectedScene() || this.scene.expansion_id !== scene.expansion_id) {
@@ -1454,7 +1527,7 @@ class CGCreatorWidget {
     syncFov(camera) { this.fov.value = String(camera.fov); this.fovNumber.value = String(Math.round(camera.fov * 10) / 10); }
     sync({ trackChange = true, sceneChanged = false } = {}) {
         if (this.disposed || this.restoring || this.backgroundTransition || !this.state) return;
-        const sceneReady = this.selectedScene() && !this.expansionId && !this.busy && !this.loadingModel;
+        const sceneReady = this.selectedScene() && !this.scene.expansion_frame_id && !this.expansionId && !this.busy && !this.loadingModel;
         if (this.viewer && sceneReady) this.state.camera = this.viewer.getCameraState();
         if (this.characters && sceneReady) {
             this.state.characters ??= {}; this.state.characters[this.state.model_id] = this.characters.snapshot();
@@ -1565,7 +1638,8 @@ class CGCreatorWidget {
                 const camera = this.viewer.getCameraState();
                 const scene = this.selectedScene();
                 const [width, height] = scene.reconstruction_size;
-                let modelCamera;
+                // WorldMirror splats and viewport cameras already share the PLY coordinate system.
+                let modelCamera = camera;
                 if (scene.background_settings.provider === "moge") {
                     const space = this.viewer.objects.get(scene.objects[0].object_id)?.modelSpace;
                     if (!space) throw new Error("The MoGe model camera is unavailable.");
@@ -1583,6 +1657,21 @@ class CGCreatorWidget {
                 const raw = await this.captureScene({ ...size, cameraState: camera }, { backgroundOnly: true });
                 if (epoch !== this.epoch || this.disposed) return;
                 await this.runJob("expand", { model_id: this.state.model_id, model_camera: modelCamera }, raw);
+                return;
+            }
+            if (button.hasAttribute("data-approve-expansion-frame") || button.hasAttribute("data-discard-expansion-frame")) {
+                const scene = this.selectedScene(), frameId = scene?.expansion_frame_id;
+                if (!frameId || this.busy || this.loadingModel) return;
+                if (button.hasAttribute("data-approve-expansion-frame")) {
+                    await this.runJob("expand", { model_id: scene.model_id, expansion_frame_id: frameId });
+                } else {
+                    this.busy = true; this.updateControls();
+                    await this.json(this.expansionURL(frameId) + "/frame", {}, "DELETE");
+                    if (epoch !== this.epoch || this.disposed) return;
+                    delete scene.expansion_frame_id;
+                    this.busy = false; this.updateControls();
+                    this.message("Expansion frame discarded.", false, true);
+                }
                 return;
             }
             if (button.hasAttribute("data-save-expansion") || button.hasAttribute("data-discard-expansion")) {
@@ -1737,7 +1826,8 @@ class CGCreatorWidget {
     }
     input(event) {
         if (this.restoring || this.busy || !this.state) return; const control = event.target;
-        if (control === this.fov || control === this.fovNumber) { const value = Number(control.value); if (!this.canEditCamera() || !control.value || !Number.isFinite(value)) return;
+        if (control.hasAttribute("data-expansion-split")) this.expansionCompare.style.setProperty("--split", control.value + "%");
+        else if (control === this.fov || control === this.fovNumber) { const value = Number(control.value); if (!this.canEditCamera() || !control.value || !Number.isFinite(value)) return;
             this.beginGesture(); this.viewer.setCameraState({ ...this.viewer.getCameraState(), fov: Math.max(5, Math.min(120, value)) }, { emit: true });
         } else if (control.dataset.modelSetting && control.value !== "" && Number.isFinite(Number(control.value))) { this.state.model_settings[control.dataset.modelSetting] = Number(control.value); this.markEdited(); }
     }
@@ -1813,9 +1903,12 @@ class CGCreatorWidget {
             }
             if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return; terminal = true; if (result.status !== "completed") throw new Error(result.error || "Generation stopped.");
             if (action === "expand") {
-                await this.loadBackgroundModel(epoch);
-                if (epoch === this.epoch && !this.disposed && this.selectedScene()?.expansion_id) {
-                    this.message("Explore the expanded scene, then save or discard it.", false, true);
+                const frameId = result.result?.expansion_frame_id;
+                if (frameId && this.selectedScene()) this.scene.expansion_frame_id = frameId;
+                else await this.loadBackgroundModel(epoch);
+                if (epoch === this.epoch && !this.disposed) {
+                    if (this.selectedScene()?.expansion_frame_id) this.message("Review the QI2 frame before rebuilding the scene.", false, true);
+                    else if (this.selectedScene()?.expansion_id) this.message("Explore the expanded scene, then save or discard it.", false, true);
                 }
                 return;
             }

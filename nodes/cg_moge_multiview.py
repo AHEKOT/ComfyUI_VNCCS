@@ -44,14 +44,17 @@ def render_shifted_views(mesh, intrinsics, check_cancel):
     sample = sample[torch.isfinite(sample) & (sample > 0)]
     if not len(sample):
         raise ValueError("MoGe returned no visible geometry for the shifted views")
-    vertices = vertices / torch.quantile(sample, 0.25)
+    depth_unit = float(torch.quantile(sample, 0.25))
+    vertices = vertices / depth_unit
     fx, fy = float(intrinsics[0, 0]) * width, float(intrinsics[1, 1]) * height
     cx, cy = float(intrinsics[0, 2]) * width, float(intrinsics[1, 2]) * height
     if not all(math.isfinite(value) for value in (fx, fy, cx, cy)) or min(fx, fy) <= 0:
         raise ValueError("MoGe returned invalid camera intrinsics for the shifted views")
     # OpenCV camera coordinates. Each translation starts at the source camera with the same orientation.
+    calibration = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+    poses = np.repeat(np.eye(4)[None], 1 + len(REFINED_MOGE_VIEWS), axis=0)
     views = []
-    for _, direction in REFINED_MOGE_VIEWS:
+    for index, (_, direction) in enumerate(REFINED_MOGE_VIEWS, 1):
         check_cancel()
         view = vertices - 0.12 * vertices.new_tensor(direction)
         z = view[:, 2]
@@ -73,8 +76,10 @@ def render_shifted_views(mesh, intrinsics, check_cancel):
         _rasterize_person(view, faces, fx, width, height, z_buffer, colors, visible, shade)
         if not visible.any():
             raise ValueError("MoGe produced an empty shifted camera view")
-        views.append((colors.reshape(1, height, width, 3).cpu(), (~visible.reshape(height, width)).cpu().numpy()))
-    return views
+        poses[index, :3, 3] = -0.12 * depth_unit * np.asarray(direction)
+        views.append((colors.reshape(1, height, width, 3).cpu(), (~visible.reshape(height, width)).cpu().numpy(),
+                      z_buffer.reshape(height, width).cpu().numpy() * depth_unit))
+    return views, calibration, poses
 
 
 def _colmap_matches(colmap, database):
@@ -209,14 +214,31 @@ def _depth_scale(depth, tracks):
     raise ValueError("MoGe depths could not be aligned with the COLMAP tracks")
 
 
-def extend_saved_mesh(path, camera, raw, refined, depth, focal, call_node, check_cancel):
-    import io
+def capture_depth_tracks(raw_rgb, generated, existing, anchors):
+    import cv2
+
+    height, width = existing.shape
+    sift = cv2.SIFT_create(nfeatures=4000)
+    mask = cv2.erode(anchors.astype(np.uint8), np.ones((5, 5), dtype=np.uint8))
+    first, desc = sift.detectAndCompute(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2GRAY), mask)
+    second, candidate = sift.detectAndCompute(cv2.cvtColor(generated, cv2.COLOR_RGB2GRAY), mask)
+    tracks = []
+    if desc is not None and candidate is not None and len(candidate) >= 2:
+        for match, alternative in cv2.BFMatcher().knnMatch(desc, candidate, k=2):
+            x, y = first[match.queryIdx].pt
+            point = second[match.trainIdx].pt
+            if match.distance < 0.78 * alternative.distance and math.dist((x, y), point) <= 0.01 * max(width, height):
+                z = existing[int(y), int(x)]
+                if np.isfinite(z):
+                    tracks.append((*point, z))
+    return np.asarray(tracks, dtype=np.float64).reshape(-1, 3)
+
+
+def align_expansion_depth(path, camera, raw, refined, depth, focal, check_cancel):
     import struct
 
-    import cv2
     import torch
     from comfy.model_management import get_torch_device
-    from comfy_api.latest import Types
     from comfy_extras.sam3d_body.rasterizer import _rasterize_person
 
     # Read the single textured primitive emitted by MeshToFile3D for this model.
@@ -240,12 +262,7 @@ def extend_saved_mesh(path, camera, raw, refined, depth, focal, call_node, check
 
     primitive, = document["meshes"][0]["primitives"]
     vertices = accessor(primitive["attributes"]["POSITION"], 3)
-    uvs = accessor(primitive["attributes"]["TEXCOORD_0"], 2)
     faces = accessor(primitive["indices"], 1).long().reshape(-1, 3)
-    texture_view = document["bufferViews"][document["images"][0]["bufferView"]]
-    offset = texture_view.get("byteOffset", 0)
-    with Image.open(io.BytesIO(data[offset:offset + texture_view["byteLength"]])) as image:
-        texture = torch.from_numpy(np.array(image.convert("RGB"), dtype=np.float32) / 255)
     del data
 
     position = vertices.new_tensor(camera["position"])
@@ -276,68 +293,18 @@ def extend_saved_mesh(path, camera, raw, refined, depth, focal, call_node, check
     raw_visible = raw_rgb.any(axis=-1)
     anchors = np.isfinite(existing) & raw_visible
 
-    sift = cv2.SIFT_create(nfeatures=4000)
-    mask = cv2.erode(anchors.astype(np.uint8), np.ones((5, 5), dtype=np.uint8))
-    first, desc = sift.detectAndCompute(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2GRAY), mask)
-    second, candidate = sift.detectAndCompute(cv2.cvtColor(generated, cv2.COLOR_RGB2GRAY), mask)
-    tracks = []
-    if desc is not None and candidate is not None and len(candidate) >= 2:
-        for match, alternative in cv2.BFMatcher().knnMatch(desc, candidate, k=2):
-            x, y = first[match.queryIdx].pt
-            point = second[match.trainIdx].pt
-            if match.distance < 0.78 * alternative.distance and math.dist((x, y), point) <= 0.01 * max(width, height):
-                z = existing[int(y), int(x)]
-                if np.isfinite(z):
-                    tracks.append((*point, z))
+    tracks = capture_depth_tracks(raw_rgb, generated, existing, anchors)
     if len(tracks) < 12:
         raise ValueError("QI2 changed too much of the captured geometry to align the expanded MoGe view")
     try:
-        depth = depth * _depth_scale(depth.numpy(), np.asarray(tracks))
+        scale = _depth_scale(depth.numpy(), tracks)
     except ValueError as error:
         raise ValueError("The expanded view's MoGe depth disagrees with the saved scene") from error
-
-    x = (torch.arange(width) + 0.5 - width / 2) / focal
-    y = (torch.arange(height) + 0.5 - height / 2) / focal
-    points = torch.stack((depth * x, depth * y[:, None], depth), dim=-1)
-    stride = max(1, math.ceil(max(width, height) / 2048))
-    calibration = np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]])
-    patch, = call_node("MoGePointMapToMesh", moge_geometry={"points": points[None], "depth": depth[None],
-        "intrinsics": torch.from_numpy(calibration)[None]}, batch_index=0, texture=False, decimation=stride,
-        discontinuity_threshold=0.04)
+    pose = np.eye(4)
     flip = vertices.new_tensor([1, -1, -1])
-    new_vertices = patch.vertices[0] * flip
-    visible_indices, py, px, _ = _project_pixels(new_vertices.numpy(), None, (height, width), calibration)
-    missing = ~np.isfinite(existing) & ~raw_visible
-    with np.errstate(invalid="ignore"):
-        agrees = anchors & (np.abs(depth.numpy() - existing) <= 0.08 * existing)
-    # Only keep new surface components that meet a depth-consistent edge of the saved mesh.
-    growth = np.zeros((height, width), dtype=np.uint8)
-    growth[py, px] = missing[py, px] | agrees[py, px]
-    _, labels = cv2.connectedComponents(growth[::stride, ::stride], connectivity=4)
-    attached = np.unique(labels[(agrees[::stride, ::stride]) & (labels != 0)])
-    keep = torch.zeros(len(new_vertices), dtype=torch.bool)
-    keep[visible_indices] = torch.from_numpy(missing[py, px] & np.isin(labels[py // stride, px // stride], attached))
-    new_faces = patch.faces[0].long()
-    new_faces = new_faces[keep[new_faces].all(dim=1)]
-    if not len(new_faces):
-        raise ValueError("No new geometry connects to the saved MoGe scene in this view")
-    used, indices = torch.unique(new_faces, return_inverse=True)
-    tile_height = min(height, 8192)
-    tile_width = min(width, texture.shape[1])
-    tile = torch.nn.functional.interpolate(refined.permute(2, 0, 1)[None], (tile_height, tile_width),
-                                           mode="bilinear", align_corners=False)[0].permute(1, 2, 0)
-    row = texture.new_zeros((tile_height, texture.shape[1], 3))
-    row[:, :tile_width] = tile
-    combined = torch.cat((texture, row))
-    new_uvs = (patch.uvs[0, used] * vertices.new_tensor([tile_width - 1, tile_height - 1])
-               + vertices.new_tensor([0.5, texture.shape[0] + 0.5])) / vertices.new_tensor([texture.shape[1], combined.shape[0]])
-    uvs[:, 1] *= texture.shape[0] / combined.shape[0]
-    if combined.shape[0] > 8192:
-        combined = torch.nn.functional.interpolate(combined.permute(2, 0, 1)[None], (8192, combined.shape[1]),
-                                                   mode="bilinear", align_corners=False)[0].permute(1, 2, 0)
-    return Types.MESH(vertices=torch.cat((vertices, new_vertices[used] @ basis.T + position))[None],
-                      faces=torch.cat((faces, indices.reshape(-1, 3) + len(vertices)))[None],
-                      uvs=torch.cat((uvs, new_uvs))[None], texture=combined[None], unlit=True)
+    pose[:3, :3] = (basis.T * flip).numpy()
+    pose[:3, 3] = (-basis.T @ position).numpy()
+    return pose, scale
 
 
 def _project_pixels(vertices, transform, shape, calibration):
@@ -393,6 +360,43 @@ def _additional_surface_vertices(vertices, index, depth, poses, camera_to_world,
     return keep
 
 
+def _surface_quality(depth, calibration):
+    fx, fy, cx, cy = calibration[0, 0], calibration[1, 1], calibration[0, 2], calibration[1, 2]
+    height, width = depth.shape
+    valid = np.isfinite(depth) & (depth > 0)
+    z = np.where(valid, depth, 0)
+    dy, dx = np.gradient(z)
+    # The perspective surface normal is proportional to (-fx*dx, -fy*dy, z + (u-cx)*dx + (v-cy)*dy).
+    u = np.arange(width, dtype=np.float32) + 0.5 - cx
+    v = np.arange(height, dtype=np.float32)[:, None] + 0.5 - cy
+    normal = np.sqrt((fx * dx) ** 2 + (fy * dy) ** 2 + (z + u * dx + v * dy) ** 2)
+    ray = np.sqrt(1 + (u / fx) ** 2 + (v / fy) ** 2)
+    quality = fx * fy / np.maximum(normal * ray * z, 1e-10)
+    return np.where(valid, quality, 0)
+
+
+def _best_surface_vertices(vertices, index, depths, calibrations, poses, camera_to_world, qualities):
+    shape = depths.shape[1:]
+    indices, y, x, _ = _project_pixels(vertices, None, shape, calibrations[index])
+    own_quality = np.zeros(len(vertices), dtype=np.float32)
+    own_quality[indices] = qualities[index][y, x]
+    keep = own_quality > 0
+    for other, calibration in enumerate(calibrations):
+        if other == index:
+            continue
+        ids, y, x, z = _project_pixels(vertices, poses[other] @ camera_to_world[index], shape, calibration)
+        observed = depths[other, y, x]
+        competing = qualities[other][y, x]
+        own = own_quality[ids]
+        # Prefer a closer or more frontal observation where both cameras see the same surface.
+        comparable = np.isfinite(observed) & (np.abs(z - observed) <= 0.18 * z)
+        wins = (competing > 1.2 * own) | ((other < index) & (competing >= own / 1.2))
+        # A nearer surface that a stronger view should see but does not is likely a depth outlier.
+        unsupported = (competing > 1.2 * own) & (z < 0.82 * observed)
+        keep[ids[(comparable & wins) | unsupported]] = False
+    return keep
+
+
 def merge_moge_views(geometry, images, calibration, poses, tracks, call_node, check_cancel, *, capture_holes=None):
     import torch
 
@@ -402,16 +406,35 @@ def merge_moge_views(geometry, images, calibration, poses, tracks, call_node, ch
     depth = depth.detach().cpu().float()
     scales = [_depth_scale(np.asarray(view), track) for view, track in zip(depth, tracks)]
     # COLMAP's world scale is arbitrary. Use the original MoGe frame as the scale reference.
-    depth = depth * torch.tensor([scale / scales[0] for scale in scales])[:, None, None]
-    depth = depth.masked_fill(~torch.isfinite(depth) | (depth <= 0), torch.inf)
-    depth_maps = np.asarray(depth)
     poses = poses.copy()
     poses[:, :3, 3] /= scales[0]
+    return _mesh_moge_surfaces(depth, images, [calibration] * len(images), poses,
+                               [scale / scales[0] for scale in scales], call_node, check_cancel,
+                               capture_holes=capture_holes)
+
+
+def fuse_moge_views(depth, images, cameras, call_node, check_cancel):
+    calibration = np.asarray(cameras["intrinsics"], dtype=np.float64)
+    poses = np.asarray(cameras["world_to_camera"], dtype=np.float64)
+    scales = np.asarray(cameras["depth_scales"], dtype=np.float32)
+    count = len(images)
+    if (tuple(depth.shape) != tuple(images.shape[:3]) or calibration.shape != (count, 3, 3)
+            or poses.shape != (count, 4, 4) or scales.shape != (count,)
+            or not np.isfinite(calibration).all() or not np.isfinite(poses).all() or not np.isfinite(scales).all()
+            or np.any(scales <= 0) or np.any(calibration[:, (0, 1), (0, 1)] <= 0)):
+        raise ValueError("Saved camera calibration does not match the reconstruction frames")
+    return _mesh_moge_surfaces(depth, images, calibration, poses, scales, call_node, check_cancel, ranked=True)
+
+
+def _mesh_moge_surfaces(depth, images, calibrations, poses, scales, call_node, check_cancel, *, capture_holes=None, ranked=False):
+    import torch
+
+    depth = depth * torch.as_tensor(scales)[:, None, None]
+    depth = depth.masked_fill(~torch.isfinite(depth) | (depth <= 0), torch.inf)
+    depth_maps = np.asarray(depth)
+    qualities = [_surface_quality(view, calibration) for view, calibration in zip(depth_maps, calibrations)] if ranked else None
     camera_to_world = np.linalg.inv(poses)
-    fx, fy, cx, cy = calibration[0, 0], calibration[1, 1], calibration[0, 2], calibration[1, 2]
     count, height, width, _ = images.shape
-    x = (torch.arange(width, dtype=torch.float32) + 0.5 - cx) / fx
-    y = (torch.arange(height, dtype=torch.float32) + 0.5 - cy) / fy
     flip_yz = torch.tensor([1., -1., -1.])
     rows = math.ceil(count / 2)
     tile_height = min(height, 8192 // rows)
@@ -424,14 +447,20 @@ def merge_moge_views(geometry, images, calibration, poses, tracks, call_node, ch
     vertices, faces, uvs = [], [], []
     offset = 0
     stride = max(1, math.ceil(max(width, height) / 2048))
-    for index, view_depth in enumerate(depth):
+    for index, (view_depth, calibration) in enumerate(zip(depth, calibrations, strict=True)):
         check_cancel()
+        fx, fy, cx, cy = calibration[0, 0], calibration[1, 1], calibration[0, 2], calibration[1, 2]
+        x = (torch.arange(width, dtype=torch.float32) + 0.5 - cx) / fx
+        y = (torch.arange(height, dtype=torch.float32) + 0.5 - cy) / fy
         points = torch.stack((view_depth * x, view_depth * y[:, None], view_depth), dim=-1)
         view = {"points": points.unsqueeze(0), "depth": view_depth.unsqueeze(0), "intrinsics": calibration}
         mesh, = call_node("MoGePointMapToMesh", moge_geometry=view, batch_index=0, texture=False,
                           decimation=stride, discontinuity_threshold=0.04)
         verts, triangles = mesh.vertices[0] * flip_yz, mesh.faces[0].long()
-        if index:
+        if ranked:
+            keep = _best_surface_vertices(np.asarray(verts), index, depth_maps, calibrations, poses, camera_to_world, qualities)
+            triangles = triangles[torch.from_numpy(keep)[triangles].all(dim=1)]
+        elif index:
             keep = _additional_surface_vertices(np.asarray(verts), index, depth_maps, poses, camera_to_world,
                                                 calibration, [np.asarray(surface) for surface in vertices], stride,
                                                 capture_holes.get(index) if capture_holes else None)
@@ -449,5 +478,7 @@ def merge_moge_views(geometry, images, calibration, poses, tracks, call_node, ch
         tile = torch.tensor([left + 0.5, top + 0.5])
         uvs.append((mesh.uvs[0, used] * source_pixels + tile) / texture_size)
 
+    if not faces:
+        raise ValueError("MoGe found no consistent surfaces across the reconstruction views")
     return type(mesh)(vertices=(torch.cat(vertices) * flip_yz)[None], faces=torch.cat(faces)[None],
                       uvs=torch.cat(uvs)[None], texture=texture[None], unlit=True)

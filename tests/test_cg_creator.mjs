@@ -69,7 +69,7 @@ test("Add Character works without randomUUID and adds only one character", async
 // Only the DOM operations used by the widget are emulated; no browser or GPU is involved.
 class Element {
     constructor(tag = "div") {
-        this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.attributes = new Map();
+        this.tagName = tag.toUpperCase(); this.style = { setProperty(name, value) { this[name] = String(value); } }; this.dataset = {}; this.attributes = new Map();
         this.listeners = new Map(); this.children = []; this.className = ""; this.value = ""; this.type = "";
         if (["SELECT", "TEXTAREA"].includes(this.tagName)) Object.defineProperty(this, "type", { get: () => this.tagName === "SELECT" ? "select-one" : "textarea" });
         this.scrollTop = 0; this.scrollLeft = 0; this.disabled = false; this.hidden = false;
@@ -166,7 +166,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         setLighting(settings) { this.lighting = settings; }
         setCaptureSettings(settings) { this.settings = settings; }
         setZoomSensitivity(value) { this.zoomSensitivity = value; }
-        setCameraState(value, { emit = false } = {}) { this.camera = clone(value); this.frames.push(this.camera); if (emit) this.options.onStateChange({ camera: this.camera }); }
+        setCameraState(value, { emit = false } = {}) { this.camera = { ...this.camera, ...clone(value) }; this.frames.push(this.camera); if (emit) this.options.onStateChange({ camera: this.camera }); }
         getCameraState() { return clone(this.camera); }
         select() {}
         resize() { this.resized = true; }
@@ -608,6 +608,60 @@ test("Expand Scene explains why an older model cannot be expanded before capturi
     assert.equal(h.calls.some(call => call.path.endsWith("/jobs")), false);
 });
 
+test("Expand Scene compares the captured and generated frames before enabling a rebuild", async () => {
+    const h = harness(JSON.stringify(state({ selected_cg_id: "" })));
+    const frameId = "1".repeat(32), buildId = "2".repeat(32);
+    const modelURL = `${BASE}/backgrounds/${A}/models/${MODEL}`;
+    const base = scene(A, { source_image_id: IMAGE, can_expand: true, reconstruction_size: [1600, 896],
+        background_settings: { provider: "worldmirror" } });
+    const builds = [];
+    h.api.handle = (path, options) => {
+        if (path === modelURL) return response(builds.length ? { ...base, expansion_id: buildId } : base);
+        if (path === modelURL + "/expansion/" + buildId) return response({ ...base, expansion_id: buildId });
+        if (path.endsWith("/jobs")) {
+            if (options.body instanceof FormData) {
+                assert.deepEqual(JSON.parse(options.body.get("data")).model_camera, h.widget.viewer.getCameraState());
+                return response({ job_id: frameId });
+            }
+            builds.push(JSON.parse(options.body));
+            return response({ job_id: buildId });
+        }
+        if (path === `${BASE}/jobs/${frameId}`) return response({ status: "completed", result: { expansion_frame_id: frameId } });
+        if (path === `${BASE}/jobs/${buildId}`) return response({ status: "completed", result: { expansion_id: buildId } });
+    };
+    await h.ready();
+    await h.control("[data-expand-scene]").click();
+    const compare = h.control("[data-expansion-compare]"), before = h.control("[data-expansion-before]");
+    const after = h.control("[data-expansion-after]"), approve = h.control("[data-approve-expansion-frame]");
+    assert.equal(compare.hidden, false);
+    assert.equal(h.widget.host.inert, true);
+    assert.equal(h.control("[data-fov]").disabled, true);
+    assert.equal(approve.disabled, true);
+    assert.equal(builds.length, 0);
+    assert.equal(before.src, modelURL + "/expansion/" + frameId + "/frame/before");
+    assert.equal(after.src, modelURL + "/expansion/" + frameId + "/frame/after");
+    const slider = h.control("[data-expansion-split]");
+    before.getBoundingClientRect = () => ({ left: 100, width: 200 });
+    await compare.fire("pointermove", { pointerType: "mouse", buttons: 0, clientX: 140 });
+    assert.equal(compare.style["--split"], "20%");
+    assert.equal(slider.value, "20");
+    await compare.fire("pointermove", { pointerType: "mouse", buttons: 0, clientX: 350 });
+    assert.equal(compare.style["--split"], "100%");
+    slider.value = "73";
+    await slider.fire("input");
+    assert.equal(compare.style["--split"], "73%");
+    for (const image of [before, after]) {
+        Object.assign(image, { complete: true, naturalWidth: 1600 });
+        await image.fire("load");
+    }
+    assert.equal(approve.disabled, false);
+    await approve.click();
+    assert.equal(builds[0].expansion_frame_id, frameId);
+    assert.equal(compare.hidden, true);
+    assert.equal(h.control("[data-expansion-actions]").hidden, false);
+    assert.equal(h.widget.host.inert, false);
+});
+
 test("WorldMirror restores the predicted up direction and recenters to the predicted camera", async () => {
     const predicted = { position: [1, 2, 3], target: [2, 2, 3], up: [0, -1, 0], fov: 47 };
     const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: null, model_settings: { provider: "worldmirror" } })));
@@ -626,6 +680,29 @@ test("WorldMirror restores the predicted up direction and recenters to the predi
     await h.control("[data-recenter]").click();
     assert.deepEqual(h.widget.viewer.camera, predicted);
     assert.deepEqual(JSON.parse(h.data.value).camera, predicted);
+});
+
+test("WorldMirror camera translation follows splat scale and preserves the viewing direction", async () => {
+    const source = { position: [0, 0, 0], target: [0, 0, 1], up: [0, -1, 0], fov: 47 };
+    const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: null })));
+    h.api.handle = path => path.includes(`/models/${MODEL}`) ? response(scene(A, {
+        source_image_id: IMAGE, camera: source, background_settings: { provider: "worldmirror" },
+        objects: [{ object_id: B, locked: true, source_camera: source }],
+    })) : undefined;
+    await h.ready();
+    for (const radius of [0.5, 100]) {
+        h.widget.viewer.setCameraState(source);
+        h.widget.viewer.objects = new Map([[B, { localBounds: {
+            isEmpty: () => false, min: { x: -radius, y: 0, z: 0 }, max: { x: radius, y: 1, z: radius },
+        } }]]);
+        await h.widget.host.fire("wheel");
+        assert.equal(h.widget.viewer.controls.panSpeed, radius);
+        h.widget.viewer.dollyCamera(0.1, { emit: true });
+        const movement = radius * 0.01;
+        const moved = h.widget.viewer.getCameraState();
+        assert.ok(Math.abs(moved.position[2] - movement) < 1e-10);
+        assert.deepEqual(moved, { ...source, position: [0, 0, moved.position[2]], target: [0, 0, 1 + moved.position[2]] });
+    }
 });
 
 test("MoGe restores and recenters its source camera in the imported mesh coordinates", async () => {
