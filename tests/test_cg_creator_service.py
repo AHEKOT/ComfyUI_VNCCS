@@ -250,6 +250,69 @@ def test_moge_fusion_uses_closer_view_for_shared_surface():
     assert torch.all(mesh.uvs[0, :, 0] > 0.5)
 
 
+def test_worldmirror_refinement_aligns_surfaces_and_removes_dense_duplicate_layers():
+    torch = pytest.importorskip("torch")
+    refiner = load("nodes.cg_splat_refine")
+    depth = torch.full((4, 48, 64), 10.)
+    poses = torch.eye(4).repeat(4, 1, 1)
+    poses[:, 0, 3] = torch.tensor([0., -.25, .25, .5])
+    intrinsics = torch.tensor([[45., 0., 32.], [0., 45., 24.], [0., 0., 1.]]).repeat(4, 1, 1)
+    x = torch.linspace(-1, 1, 70)
+    points = torch.cat([
+        torch.stack((x, torch.zeros_like(x), torch.full_like(x, z)), dim=-1)
+        for z in (10.25, 9., 11.)
+    ] + [torch.tensor([[20., 0., 10.], [20.01, 0., 10.]])])
+    count = len(points)
+    splats = {"means": points[None], "sh": torch.arange(count)[None, :, None, None].repeat(1, 1, 1, 3),
+              "scales": torch.ones((1, count, 3)), "quats": torch.ones((1, count, 4)),
+              "opacities": torch.ones((1, count))}
+
+    refined, stats = refiner.refine_splats(splats, depth, poses, intrinsics, lambda: None)
+
+    torch.testing.assert_close(refined["means"][0][:, 2], torch.full_like(x, 10.))
+    torch.testing.assert_close(refined["sh"][0][:, 0, 0], torch.arange(len(x)))
+    assert stats["moved_splats"] == len(x)
+    assert stats["removed_depth_conflicts"] == 2 * len(x)
+    assert stats["removed_detached_splats"] == 2
+
+
+@pytest.mark.parametrize("turn_camera", [True, False])
+def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setitem(sys.modules, "comfy.model_management",
+                        types.SimpleNamespace(get_torch_device=lambda: torch.device("cpu")))
+    rendered = []
+
+    def rasterize(view, _faces, _focal, _width, _height, depth, _colors, visible, _shade):
+        rendered.append(view.clone())
+        depth.fill_(float(view[0, 2]))
+        visible.fill_(True)
+
+    monkeypatch.setitem(sys.modules, "comfy_extras.sam3d_body.rasterizer",
+                        types.SimpleNamespace(_rasterize_person=rasterize))
+    points = torch.tensor([[-1., 0., 2.], [1., 0., 2.], [0., 1., 2.]])
+    mesh = types.SimpleNamespace(texture=torch.ones(1, 8, 8, 3),
+                                vertices=(points * torch.tensor([1., -1., -1.]))[None],
+                                faces=torch.tensor([[[0, 1, 2]]]), uvs=torch.zeros(1, 3, 2))
+    intrinsics = torch.tensor([[1., 0., .5], [0., 1., .5], [0., 0., 1.]])
+    views, _, poses = multiview.render_shifted_views(mesh, intrinsics, lambda: None, turn_camera=turn_camera)
+
+    expected_centers = [[0, -.48, 0], [0, 0, .48], [.24, 0, 0], [-.24, 0, 0]]
+    np.testing.assert_allclose(np.linalg.inv(poses[1:])[:, :3, 3], expected_centers, atol=1e-8)
+    sine, cosine = np.sin(np.deg2rad(20)), np.cos(np.deg2rad(20))
+    expected_look = [[0, sine, cosine], [0, 0, 1], [-sine, 0, cosine], [sine, 0, cosine]]
+    if not turn_camera:
+        expected_look = [[0, 0, 1]] * 4
+    np.testing.assert_allclose(poses[1:, 2, :3], expected_look)
+    for view, actual, pose in zip(views, rendered, poses[1:], strict=True):
+        expected = points.numpy() @ pose[:3, :3].T + pose[:3, 3]
+        np.testing.assert_allclose(actual.numpy() * 2, expected, atol=1e-7)
+        assert view[2][0, 0] == pytest.approx(expected[0, 2])
+
+
 @pytest.mark.parametrize("reject_first_view", [False, True])
 def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(workspace, monkeypatch, reject_first_view):
     torch = pytest.importorskip("torch")

@@ -1546,6 +1546,7 @@ class _WorldMirrorV2Inference:
             "pts3d":          predictions.get("pts3d"),
             "pts3d_filtered": filtered_pts,
             "depth":          predictions.get("depth"),
+            "gs_depth":       predictions.get("gs_depth"),
             "normals":        predictions.get("normals"),
             "pts3d_conf":     predictions.get("pts3d_conf"),
             "depth_conf":     predictions.get("depth_conf"),

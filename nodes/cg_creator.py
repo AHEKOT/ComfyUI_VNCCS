@@ -1933,11 +1933,33 @@ def _generate_worldmirror_scene(job, images, scene, scene_directory, settings, c
             cameras = {"intrinsics": calibration.tolist(), "world_to_camera": torch.linalg.inv(poses[0]).tolist()}
         elif not torch.allclose(poses[0], camera_to_world):
             raise ValueError("WorldMirror could not align its depth estimates with the supplied cameras")
+        splats = ply.get("splats")
+        if job["action"] == "expand":
+            from .cg_splat_refine import refine_splats
+            from .world_mirror_v2 import _depth_maps_s_h_w
+
+            _stage(job_id, cancel, "refining", 0.82, "Refining WorldMirror geometry across camera views")
+            started = time.perf_counter()
+            stats = {}
+            try:
+                maps = _depth_maps_s_h_w(ply.get("gs_depth"))
+                if maps is None:
+                    maps = _depth_maps_s_h_w(ply.get("depth"))
+                if maps is None:
+                    raise ValueError("WorldMirror returned no metric depth for splat refinement")
+                mask = ply.get("gs_filter_mask")
+                if torch.is_tensor(mask) and mask.numel() == maps.numel():
+                    maps = maps.masked_fill(~mask.reshape(maps.shape).to(device=maps.device, dtype=torch.bool), 0)
+                splats, stats = refine_splats(splats, maps, poses[0], intrinsics[0], lambda: _check_cancel(cancel))
+            finally:
+                log_event("worldmirror_splat_refine", component="CGCreator", job_id=job_id,
+                          status="completed" if stats else "interrupted", elapsed_seconds=round(time.perf_counter() - started, 3),
+                          **stats)
         _stage(job_id, cancel, "saving", 0.90, "Saving WorldMirror splats and camera")
         camera = _worldmirror_camera(poses, intrinsics, depth.shape[1])
         object_id = uuid.uuid4().hex
         relative = f"objects/{object_id}/model.ply"
-        _write_worldmirror_ply(_contained(scene_directory, relative), ply.get("splats"), cancel)
+        _write_worldmirror_ply(_contained(scene_directory, relative), splats, cancel)
     _set_reconstruction_object(scene, object_id, camera, "ply", relative)
     return cameras
 
@@ -2118,7 +2140,8 @@ def _recover_initial_moge_cameras(images, depths, geometry, check_cancel):
     size = images.shape[1:3]
     mesh, = _call_comfy_node("MoGePointMapToMesh", moge_geometry=geometry, batch_index=0,
                             decimation=max(1, math.ceil(max(size) / 1536)), discontinuity_threshold=0.04, texture=True)
-    captures, calibration, poses = render_shifted_views(mesh, geometry["intrinsics"][0], check_cancel)
+    # Reconstructions saved before the camera turns used parallel shifted views.
+    captures, calibration, poses = render_shifted_views(mesh, geometry["intrinsics"][0], check_cancel, turn_camera=False)
     scales = [1.]
     for index, (raw, holes, observed) in enumerate(captures, 1):
         check_cancel()

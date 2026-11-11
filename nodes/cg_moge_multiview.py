@@ -23,7 +23,7 @@ def require_colmap():
     return pycolmap
 
 
-def render_shifted_views(mesh, intrinsics, check_cancel):
+def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
     import torch
     from torch.nn.functional import grid_sample
     from comfy.model_management import get_torch_device
@@ -50,13 +50,23 @@ def render_shifted_views(mesh, intrinsics, check_cancel):
     cx, cy = float(intrinsics[0, 2]) * width, float(intrinsics[1, 2]) * height
     if not all(math.isfinite(value) for value in (fx, fy, cx, cy)) or min(fx, fy) <= 0:
         raise ValueError("MoGe returned invalid camera intrinsics for the shifted views")
-    # OpenCV camera coordinates. Each translation starts at the source camera with the same orientation.
+    # Each view starts at the source pose in OpenCV coordinates (+X right, +Y down).
     calibration = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
     poses = np.repeat(np.eye(4)[None], 1 + len(REFINED_MOGE_VIEWS), axis=0)
     views = []
-    for index, (_, direction) in enumerate(REFINED_MOGE_VIEWS, 1):
+    sine, cosine = math.sin(math.radians(20)), math.cos(math.radians(20))
+    for index, (name, direction) in enumerate(REFINED_MOGE_VIEWS, 1):
         check_cancel()
-        view = vertices - 0.12 * vertices.new_tensor(direction)
+        center = 0.12 * np.asarray(direction)
+        rotation = poses[index, :3, :3]
+        if turn_camera and name == "up":
+            rotation[:] = ((1, 0, 0), (0, cosine, -sine), (0, sine, cosine))
+        elif turn_camera and name in ("right", "left"):
+            yaw = sine if name == "right" else -sine
+            rotation[:] = ((cosine, 0, yaw), (0, 1, 0), (-yaw, 0, cosine))
+        view = vertices - vertices.new_tensor(center)
+        if turn_camera and name != "forward":
+            view = view @ vertices.new_tensor(rotation.T)
         z = view[:, 2]
         view[:, 0] += z * ((cx - width * 0.5) / fx)
         view[:, 1] = view[:, 1] * (fy / fx) + z * ((cy - height * 0.5) / fx)
@@ -76,7 +86,7 @@ def render_shifted_views(mesh, intrinsics, check_cancel):
         _rasterize_person(view, faces, fx, width, height, z_buffer, colors, visible, shade)
         if not visible.any():
             raise ValueError("MoGe produced an empty shifted camera view")
-        poses[index, :3, 3] = -0.12 * depth_unit * np.asarray(direction)
+        poses[index, :3, 3] = -depth_unit * (rotation @ center)
         views.append((colors.reshape(1, height, width, 3).cpu(), (~visible.reshape(height, width)).cpu().numpy(),
                       z_buffer.reshape(height, width).cpu().numpy() * depth_unit))
     return views, calibration, poses
