@@ -216,6 +216,16 @@ def test_dataset_write_failure_removes_partial_sample_and_reports_error(runtime,
     assert not [path for path in runtime.dataset.rglob("*") if path.is_file()]
 
 
+def test_internal_camera_refinement_uses_cg_conditioning_without_saving_dataset(runtime):
+    image, metadata = generation.generate_image({}, "internal-view", threading.Event(), runtime.reference,
+                                                 runtime.background, save_dataset=False, progress_range=(0.12, 0.24))
+    encode = dict(runtime.calls)["TextEncodeQwenImage21"]
+    assert metadata["prompt"] == encode["prompt"] == generation.ANYANGLE_PROMPT
+    assert set(encode["images"]) == {"image_1", "image_2"}
+    assert image.size == tuple(runtime.size)
+    assert not runtime.dataset.exists()
+
+
 @pytest.mark.parametrize("branch", ["", "control1"])
 def test_dataset_rejects_symbolic_links(runtime, tmp_path, branch):
     outside = tmp_path / "outside"

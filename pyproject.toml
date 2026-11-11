@@ -17,6 +17,9 @@ dependencies = [
     "pymatting",
 ]
 
+[project.optional-dependencies]
+cg-moge = ["pycolmap>=4.1,<5"]
+
 [project.urls]
 Repository = "https://github.com/AHEKOT/ComfyUI_VNCCS"
 #  Used by Comfy Registry https://registry.comfy.org

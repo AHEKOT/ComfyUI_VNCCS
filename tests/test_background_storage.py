@@ -64,7 +64,7 @@ def test_replacing_source_invalidates_models_and_variants_but_keeps_saved_cg(lib
     document = build_model(document, tmp_path)
     model = document["models"][0]
     image = Image.new("RGB", (128, 64), "blue")
-    document = cg.commit_cg(document["background_id"], "View", image, image, CAMERA, {}, model["model_id"], None)
+    document = cg.commit_cg(document["background_id"], "View", image, image, CAMERA, model["model_id"], None)
     saved = copy.deepcopy(document["cgs"][0])
     config = directory / "CG" / "index.json"
     original = config.read_bytes()
@@ -86,7 +86,7 @@ def test_ready_cg_is_readable_after_its_model_directory_is_lost(library):
     document, directory, tmp_path = library
     document = build_model(document, tmp_path)
     image = Image.new("RGB", (128, 64))
-    document = cg.commit_cg(document["background_id"], "Keep", image, image, CAMERA, {}, document["models"][0]["model_id"], None)
+    document = cg.commit_cg(document["background_id"], "Keep", image, image, CAMERA, document["models"][0]["model_id"], None)
     identity = document["cgs"][0]["cg_id"]
     shutil.rmtree(directory / "Model")
     assert cg.load_background(document["background_id"])["models"] == []

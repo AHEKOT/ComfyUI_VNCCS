@@ -367,16 +367,6 @@ def load_background(background_id):
         return _locate(background_id)[1]
 
 
-def _save_settings(background_id, model_settings, cg_settings, expected_revision):
-    model_settings = _object(model_settings, "model settings")
-    cg_settings = _object(cg_settings, "CG settings")
-    with background._LOCK:
-        directory, document, previous = _editable(background_id, expected_revision)
-        document["model_settings"] = model_settings
-        document["cg_settings"] = cg_settings
-        return _commit(directory, document, previous)
-
-
 def _image_bytes(image):
     if not isinstance(image, Image.Image):
         raise ValueError("CG Creator requires a PIL image")
@@ -752,9 +742,9 @@ def _characters(value):
     return copy.deepcopy(value)
 
 
-def commit_cg(background_id, name, raw, finished, camera, settings, model_id, expected_revision, characters=None):
+def commit_cg(background_id, name, raw, finished, camera, model_id, expected_revision, characters=None):
     name, model_id = _name(name), _id(model_id)
-    camera, settings = _camera(camera), _object(settings, "CG settings")
+    camera = _camera(camera)
     characters = _characters([] if characters is None else characters)
     finished_bytes = _image_bytes(finished)
     with background._LOCK:
@@ -766,7 +756,7 @@ def commit_cg(background_id, name, raw, finished, camera, settings, model_id, ex
         reserved = [cg[key] for cg in document.get("cgs", []) for key in ("file", "raw_file") if key in cg]
         target = _next_asset_path(directory, "CG", name, extension=".png", reserved=reserved)
         metadata = {"cg_id": cg_id, "name": name, "background_id": background_id,
-                    "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera, "settings": settings,
+                    "model_id": model_id, "source_image_id": model["source_image_id"], "camera": camera,
                     "width": finished.width, "height": finished.height, "characters": characters,
                     "file": target.relative_to(directory).as_posix()}
         variant = _source_variant(model.get("source_variant"))
@@ -1305,7 +1295,7 @@ def _interrupt_types():
 
 
 @contextmanager
-def _report_sampling_progress(draw_id, steps):
+def _report_sampling_progress(draw_id, steps, start=0.35, span=0.5):
     import comfy.utils
     original = getattr(comfy.utils, "PROGRESS_BAR_HOOK", None)
     owner = threading.get_ident()
@@ -1316,9 +1306,9 @@ def _report_sampling_progress(draw_id, steps):
                 return original(current, total, *args, **kwargs)
             return None
         total = max(1, int(total or steps)); current = min(max(int(current), 0), total)
-        _set_progress(draw_id, "sampling", 0.35 + 0.5 * current / total, f"Sampling {current}/{total}")
+        _set_progress(draw_id, "sampling", start + span * current / total, f"Sampling {current}/{total}")
 
-    _set_progress(draw_id, "sampling", 0.35, f"Sampling 0/{steps}")
+    _set_progress(draw_id, "sampling", start, f"Sampling 0/{steps}")
     comfy.utils.PROGRESS_BAR_HOOK = hook
     try:
         yield
@@ -1407,7 +1397,8 @@ def _save_dataset(references, image, prompt):
 
 
 @logged_operation("CGCreator", "refine")
-def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None, *, character_prompt=""):
+def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None, *,
+                   character_prompt="", save_dataset=True, progress_range=(0, 1)):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
@@ -1421,6 +1412,12 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         raise ValueError("Captured frame dimensions must be multiples of 16, between 64 and 4096, and at most 16 MP")
     generation = settings["generation"]
     import torch
+    progress_start, progress_end = progress_range
+    progress_span = progress_end - progress_start
+
+    def stage(name, fraction, message):
+        _stage(draw_id, cancel_event, name, progress_start + progress_span * fraction, message)
+
     megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
     resolution = 32 * round(32 * math.sqrt(megapixels))
     prompt = ANYANGLE_PROMPT
@@ -1431,11 +1428,11 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
             prompt += "\n" + extra_prompt
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
-        _stage(draw_id, cancel_event, "loading", 0.01, "Locating CG LoRA")
+        stage("loading", 0.01, "Locating CG LoRA")
         cg_lora = resolve_cg_lora()
-        _stage(draw_id, cancel_event, "loading", 0.03, "Loading Qwen Image 2.1")
+        stage("loading", 0.03, "Loading Qwen Image 2.1")
         model, clip, vae = _load_assets(generation["diffusion_model_name"])
-        _stage(draw_id, cancel_event, "loading", 0.12, "Applying CG model settings")
+        stage("loading", 0.12, "Applying CG model settings")
         model, _ = apply_generation_lora(model, None, cg_lora, 1.0, clip_strength=0)
         cg_filename = cg_lora.replace("\\", "/").rsplit("/", 1)[-1].casefold()
         for item in generation["lora_stack"]:
@@ -1449,7 +1446,7 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         # The cache provider calls its default device selection "auto".
         cache_device = "auto" if generation["cache_device"] == "default" else generation["cache_device"]
         model = _call_comfy_node("QwenImage21Cache", model=model, device=cache_device, dtype=generation["cache_dtype"])[0]
-        _stage(draw_id, cancel_event, "conditioning", 0.3, "Encoding the original background and camera frame")
+        stage("conditioning", 0.3, "Encoding the original background and camera frame")
         background, reference = background.convert("RGB"), reference.convert("RGB")
         references = [("image_1", "original background", background), ("image_2", "captured camera frame", reference)]
         if character is not None:
@@ -1474,7 +1471,7 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         log_event("latent", job_id=draw_id, width=latent_width, height=latent_height,
                   source="image_2", resolution_mp=megapixels, upscale_method="nearest-exact", resolution_steps=1)
         latent = _call_comfy_node("EmptyLatentImage", width=latent_width, height=latent_height, batch_size=1)[0]
-        _stage(draw_id, cancel_event, "sampling", 0.35, "Rendering the CG frame")
+        stage("sampling", 0.35, "Rendering the CG frame")
         sampler_settings = {
             "seed": generation["seed"], "steps": generation["steps"], "cfg": generation["cfg"],
             "sampler_name": generation["sampler"], "scheduler": generation["scheduler"], "denoise": 1.0,
@@ -1482,14 +1479,17 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         sampler_name = "SamplerCustomAdvanced" if generation["turbo"] else "KSampler"
         log_event("sampling", job_id=draw_id, sampler=sampler_name,
                   model=generation["diffusion_model_name"], settings=sampler_settings)
-        with _report_sampling_progress(draw_id, generation["steps"]):
+        with _report_sampling_progress(draw_id, generation["steps"], start=progress_start + 0.35 * progress_span,
+                                       span=0.5 * progress_span):
             samples = _sample_generation_latent(model, positive, negative, latent, sampler_settings,
                                                 turbo=generation["turbo"])
-        _stage(draw_id, cancel_event, "decoding", 0.9, "Decoding the CG image")
+        stage("decoding", 0.9, "Decoding the CG image")
         image = _tensor_to_pil(_call_comfy_node("VAEDecode", vae=vae, samples=samples)[0])
         _check_cancel(cancel_event)
-        _save_dataset(references, image, prompt)
-        _stage(draw_id, cancel_event, "complete", 1, "CG image ready")
+        if save_dataset:
+            _save_dataset(references, image, prompt)
+        stage("complete" if save_dataset else "refining", 1,
+              "CG image ready" if save_dataset else "Refined camera reference ready")
         return image, {"settings": settings, "prompt": prompt, "width": image.width, "height": image.height,
                        "seed": generation["seed"], "model": "qi2",
                        "cg_lora": {"name": cg_lora, "strength": 1.0}}
@@ -1532,7 +1532,7 @@ class VNCCS_CGCreator:
     FUNCTION = "create_cg"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
-    DESCRIPTION = "Select a saved background, build a TripoSplat or Pixal3D model and compose CG camera views. Workflow execution returns the selected finished CG."
+    DESCRIPTION = "Select a saved background, build a TripoSplat, Pixal3D, WorldMirror or MoGe model and compose CG camera views. Workflow execution returns the selected finished CG."
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1609,11 +1609,8 @@ def public_document(document):
     for key in ("images", "models", "cgs", "generated_sets"):
         value.setdefault(key, [])
     value["cgs"] = [cg for cg in value["cgs"] if not cg.get("archived")]
-    latest = value["models"][-1] if value["models"] else {}
-    value["model_settings"] = model_settings(value.get("model_settings", latest.get("settings", {})))
-    legacy_prompt = value.get("editor", {}).get("cg_prompt")
-    fallback = {"prompt": legacy_prompt} if isinstance(legacy_prompt, str) and legacy_prompt.strip() else {}
-    value["cg_settings"] = normalize_settings(value.get("cg_settings", fallback))
+    value.pop("model_settings", None)
+    value.pop("cg_settings", None)
     for image in value["images"]:
         image["url"] = f"{base}/images/{image['image_id']}"
         if "preview_revision" in image:
@@ -1639,6 +1636,9 @@ def public_model(background_id, model_id):
     scene = model_scene(background_id, model_id)
     for item in scene.get("objects", []):
         kind = "model" if background_storage.model_geometry_key(item) == "model" else "splat"
+        if kind == "splat" and scene.get("background_settings", {}).get("provider") == "worldmirror":
+            # Factory rotates every SPLAT as TripoSplat. Cancel that child rotation in the scene transform.
+            item["transform"] = {**item.get("transform", {}), "rotation": [180, 90, 0]}
         item["urls"] = {kind: f"{API_BASE}/backgrounds/{background_id}/models/{model_id}/objects/{item['object_id']}/{kind}"}
         item["locked"] = True
         item.pop("files", None)
@@ -1646,9 +1646,25 @@ def public_model(background_id, model_id):
 
 
 def model_settings(value):
-    factory = provider()["storage"]
     if not isinstance(value, dict):
         raise ValueError("Background model settings must be an object")
+    if value.get("provider") in ("moge", "worldmirror"):
+        lora = _model_name(value.get("camera_shift_lora", ""), "Camera shift LoRA")
+        refine_views = value.get("moge_refine_views", False)
+        if type(refine_views) is not bool:
+            raise ValueError("Refine views must be a boolean")
+    if value.get("provider") == "moge":
+        return {"provider": "moge", "camera_shift_lora": lora, "moge_refine_views": refine_views}
+    if value.get("provider") == "worldmirror":
+        size = value.get("worldmirror_target_size", 2044)
+        sky_mask = value.get("worldmirror_apply_sky_mask", True)
+        if type(size) is not int or not 252 <= size <= 4088 or size % 14:
+            raise ValueError("WorldMirror resolution must be a multiple of 14 between 252 and 4088")
+        if type(sky_mask) is not bool:
+            raise ValueError("WorldMirror sky mask must be a boolean")
+        return {"provider": "worldmirror", "target_size": size, "apply_sky_mask": sky_mask,
+                "camera_shift_lora": lora, "moge_refine_views": refine_views}
+    factory = provider()["storage"]
     gaussian = factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
     gaussian["pixal_profile"] = "fast" if value.get("pixal_profile", "fast") == "fast" else "standard"
     for key, options in (
@@ -1663,6 +1679,333 @@ def model_settings(value):
         mesh = factory._generation_settings({**value, "remove_background": "0", "refine_textures": "0", "provider": "pixal3d"})
         return {**gaussian, **mesh, "provider": "pixal3d"}
     return gaussian
+
+
+def _worldmirror_camera(poses, intrinsics, height):
+    pose, intrinsic = poses[0, 0], intrinsics[0, 0]
+    focal_y = float(intrinsic[1, 1])
+    if not math.isfinite(focal_y) or focal_y <= 0:
+        raise ValueError("WorldMirror returned an invalid camera focal length")
+    position = pose[:3, 3]
+    # OpenCV cameras look along +Z with +Y down.
+    return _camera({"position": position.tolist(), "target": (position + pose[:3, 2]).tolist(),
+                    "up": (-pose[:3, 1]).tolist(), "fov": math.degrees(2 * math.atan(height / (2 * focal_y)))})
+
+
+def _write_worldmirror_ply(path, splats, cancel_event):
+    import numpy as np
+
+    if not splats:
+        raise ValueError("WorldMirror returned no Gaussian splats")
+    means, sh, opacity, scales, quats = (
+        splats[key][0].detach().float().cpu().numpy()
+        for key in ("means", "sh", "opacities", "scales", "quats")
+    )
+    colors = sh[:, 0, :]
+    valid = (np.isfinite(means).all(axis=1) & np.isfinite(colors).all(axis=1)
+             & np.isfinite(opacity) & np.isfinite(scales).all(axis=1) & (scales > 0).all(axis=1)
+             & np.isfinite(quats).all(axis=1) & (np.linalg.norm(quats, axis=1) > 0))
+    count = int(valid.sum())
+    if not count:
+        raise ValueError("WorldMirror returned no usable Gaussian splats")
+    properties = ("x", "y", "z", "nx", "ny", "nz", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                  "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3")
+    header = f"ply\nformat binary_little_endian 1.0\nelement vertex {count}\n"
+    header += "".join(f"property float {name}\n" for name in properties) + "end_header\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as stream:
+        stream.write(header.encode("ascii"))
+        for start in range(0, len(means), 65536):
+            _check_cancel(cancel_event)
+            section = slice(start, start + 65536)
+            keep = valid[section]
+            size = int(keep.sum())
+            if not size:
+                continue
+            rows = np.zeros((size, len(properties)), dtype="<f4")
+            rows[:, :3] = means[section][keep]
+            rows[:, 6:9] = colors[section][keep]
+            alpha = opacity[section][keep].clip(1e-6, 1 - 1e-6)
+            rows[:, 9] = np.log(alpha / (1 - alpha))
+            rows[:, 10:13] = np.log(scales[section][keep])
+            rows[:, 13:] = quats[section][keep]
+            stream.write(memoryview(rows).cast("B"))
+
+
+def _generate_camera_shift_views(job, source, settings, lora):
+    import torch
+
+    job_id, cancel = job["job_id"], job["cancel_event"]
+    generation = settings["generation"]
+    aspect = max(source.width / source.height, source.height / source.width)
+    resolution = 32 * min(round(32 * math.sqrt(settings["resolution_mp"])), int(128 / math.sqrt(aspect)))
+    images = {"image_1": _pil_to_tensor(source)}
+    prompts = ("make step to the left", "make step to the right", "make step to the up")
+    sampler = {"seed": _resolve_seed(generation), "steps": generation["steps"], "cfg": generation["cfg"],
+               "sampler_name": generation["sampler"], "scheduler": generation["scheduler"], "denoise": 1.0}
+    with _model_session(job_id, cancel), torch.inference_mode():
+        _stage(job_id, cancel, "loading", 0.02, "Loading Qwen Image 2.1 and Camera shift LoRA")
+        model, clip, vae = _load_assets(generation["diffusion_model_name"])
+        model, _ = apply_generation_lora(model, None, lora, 1.0, clip_strength=0)
+        if generation["turbo"]:
+            model = _call_comfy_node("LoraLoaderModelOnly", model=model, lora_name=_asset_name("loras", TURBO_LORA), strength_model=1.0)[0]
+        device = "auto" if generation["cache_device"] == "default" else generation["cache_device"]
+        model = _call_comfy_node("QwenImage21Cache", model=model, device=device, dtype=generation["cache_dtype"])[0]
+        views = []
+        for index, prompt in enumerate(prompts):
+            start = 0.07 + 0.17 * index
+            _stage(job_id, cancel, "conditioning", start, f"Generating camera shift {index + 1}/3")
+            positive, negative, latent = _call_comfy_node("TextEncodeQwenImage21", clip=clip, vae=vae,
+                prompt=prompt, negative_prompt="", resolution=resolution, images=images)
+            with _report_sampling_progress(job_id, generation["steps"], start=start + 0.01, span=0.14):
+                samples = _sample_generation_latent(model, positive, negative, latent, sampler, turbo=generation["turbo"])
+            view = _call_comfy_node("VAEDecode", vae=vae, samples=samples)[0].detach().cpu().float()
+            if (view.ndim != 4 or view.shape[0] != 1 or view.shape[3] != 3
+                    or min(view.shape[1:3]) < 32 or max(view.shape[1:3]) > 4096
+                    or not torch.isfinite(view).all() or views and view.shape != views[0].shape):
+                raise ValueError("QI2 returned inconsistent camera-shift images")
+            views.append(view.clamp_(0, 1))
+            _check_cancel(cancel)
+        height, width = views[0].shape[1:3]
+        original = source if source.size == (width, height) else source.resize((width, height), Image.Resampling.LANCZOS)
+        return torch.cat((_pil_to_tensor(original), *views))
+
+
+def _render_worldmirror_expansion(splats, depth, pose, intrinsics, size, check_cancel):
+    from comfy_api.latest import Types
+    from comfy_extras.nodes_camera import _mat_to_quat
+    from .cg_moge_multiview import expanded_camera_poses, has_expansion_coverage, reference_depth
+
+    height, width = size
+    focal = float(intrinsics[1, 1]) * height / depth.shape[0]
+    if not math.isfinite(focal) or focal <= 0:
+        raise ValueError("WorldMirror returned an invalid camera focal length")
+    fov = math.degrees(2 * math.atan(min(height, width) / (2 * focal)))
+    unit = reference_depth(depth)
+    positions, scales = (splats[key][0].float() / unit for key in ("means", "scales"))
+    radius = 4 * scales.amax(dim=-1)
+    flip = pose.new_tensor([1, -1, -1])
+    bounds = tuple(((positions + sign * radius[:, None]) * unit).cpu().numpy() for sign in (-1, 1))
+    options = expanded_camera_poses(pose, unit, splats["means"][0], bounds, (focal, focal), size, check_cancel)
+
+    def render(camera):
+        check_cancel()
+        center = camera[:3, 3] / unit
+        x, y, z = ((positions - center.to(positions)) @ camera[:3, :3].to(positions)).unbind(-1)
+        # Off-screen depth slabs can trigger RenderSplat's early exit before it reaches visible splats.
+        visible = ((z > 0.01)
+                   & (x.abs() * focal <= z * width / 2 + radius * math.hypot(focal, width / 2))
+                   & (y.abs() * focal <= z * height / 2 + radius * math.hypot(focal, height / 2)))
+        splat = Types.SPLAT(positions=positions[visible][None], scales=scales[visible][None],
+                            rotations=splats["quats"][0][visible][None],
+                            opacities=splats["opacities"][0][visible].reshape(1, -1, 1), sh=splats["sh"][0][visible][None])
+        # RenderSplat takes a three.js camera and converts it back to the splat frame.
+        rotation = flip[:, None] * camera[:3, :3] * flip
+        q = _mat_to_quat(rotation)
+        camera_info = {
+            "position": dict(zip("xyz", (flip * center).tolist())),
+            "target": dict(zip("xyz", (flip * (center + camera[:3, 2])).tolist())),
+            "quaternion": dict(zip("wxyz", q.tolist())),
+            "fov": fov,
+        }
+        frame, coverage = _call_comfy_node("RenderSplat", splat=splat, width=width, height=height, frames=1,
+                                         camera_info=camera_info, splat_scale=1.0, sharpen=1.0,
+                                         headlight_shading=0.0, opacity_threshold=0.0, background="#000000",
+                                         render_style="color")
+        if has_expansion_coverage((coverage[0] > 0.10).cpu().numpy()):
+            return frame.detach().cpu().float()
+
+    return [next((frame for frame in map(render, candidates) if frame is not None), None) for candidates in options]
+
+
+def _generate_worldmirror_scene(job, images, scene, scene_directory, settings, *, refine_captures=None):
+    import torch
+    from .world_mirror_v2 import VNCCS_WorldMirrorV2Loader, VNCCS_WorldMirrorV2Reconstruction
+
+    job_id, cancel = job["job_id"], job["cancel_event"]
+    def reconstruct(batch, progress):
+        _stage(job_id, cancel, "reconstructing", progress, f"Reconstructing {len(batch)} views with WorldMirror V2")
+        ply, depth, _, poses, intrinsics, *_ = VNCCS_WorldMirrorV2Reconstruction().run_inference(
+            model, batch, target_size=settings["target_size"],
+            offload_scheme="none", low_vram_mode=False, splat_camera_source="predicted", debug_log=False,
+            apply_sky_mask=settings["apply_sky_mask"], enable_splat_upsample=False,
+        )
+        return ply, depth.shape[1], poses, intrinsics
+
+    with _model_session(job_id, cancel), torch.inference_mode():
+        _stage(job_id, cancel, "loading", 0.60, "Loading WorldMirror V2")
+        model, = VNCCS_WorldMirrorV2Loader().load_model(precision="bf16")
+        ply, height, poses, intrinsics = reconstruct(images, 0.70)
+        if refine_captures is not None:
+            _stage(job_id, cancel, "rendering", 0.74, "Capturing two expanded views from WorldMirror")
+            splats, source_depth = ply["splats"], ply["depth"][0, 0, ..., 0].clone()
+            del ply
+            frames = _render_worldmirror_expansion(splats, source_depth, poses[0, 0], intrinsics[0, 0],
+                                                  images.shape[1:3], lambda: _check_cancel(cancel))
+            del source_depth
+
+    if refine_captures is not None:
+        added = refine_captures(frames)
+        if added:
+            del splats
+            images = torch.cat((images, *added.values()))
+            with _model_session(job_id, cancel), torch.inference_mode():
+                ply, height, poses, intrinsics = reconstruct(images, 0.86)
+        else:
+            ply = {"splats": splats}
+    _stage(job_id, cancel, "saving", 0.93, "Saving WorldMirror splats and camera")
+    camera = _worldmirror_camera(poses, intrinsics, height)
+    object_id = uuid.uuid4().hex
+    relative = f"objects/{object_id}/model.ply"
+    _write_worldmirror_ply(_contained(scene_directory, relative), ply.get("splats"), cancel)
+    _set_reconstruction_object(scene, object_id, camera, "ply", relative)
+
+
+def _infer_moge(images, fov_x=0.0):
+    from .preview_runtime import _run_preview_job
+
+    model_name = _asset_name("geometry_estimation", "moge_2_vitl_normal_fp16.safetensors")
+    model, = _call_comfy_node("LoadMoGeModel", model_name=model_name)
+    geometry, = _run_preview_job(
+        _call_comfy_node, "MoGeInference", moge_model=model, image=images, resolution_level=9, fov_x_degrees=fov_x,
+        batch_size=min(4, len(images)), force_projection=True, apply_mask=True, refine_steps=3,
+    )
+    return geometry
+
+
+def _generate_refined_moge_views(job, source, settings, diagnostics):
+    import torch
+    from .cg_moge_multiview import REFINED_MOGE_VIEWS, render_shifted_views
+
+    job_id, cancel = job["job_id"], job["cancel_event"]
+    diagnostics.mkdir(parents=True)
+    (diagnostics / "image_1.png").write_bytes(_image_bytes(source))
+    log_event("moge_diagnostics", component="CGCreator", job_id=job_id, directory=str(diagnostics))
+    megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
+    scale = min(math.sqrt(megapixels * 1e6 / (source.width * source.height)), 4000 / max(source.size))
+    size = tuple(max(64, 16 * round(side * scale / 16)) for side in source.size)
+    original = source if source.size == size else source.resize(size, Image.Resampling.LANCZOS)
+    images = _pil_to_tensor(original)
+    with _model_session(job_id, cancel), torch.inference_mode():
+        _stage(job_id, cancel, "reconstructing", 0.03, "Building the initial MoGe scene")
+        geometry = _infer_moge(images)
+        _stage(job_id, cancel, "rendering", 0.08, "Capturing shifted MoGe views")
+        mesh, = _call_comfy_node("MoGePointMapToMesh", moge_geometry=geometry, batch_index=0,
+                                decimation=max(1, math.ceil(max(size) / 1536)), discontinuity_threshold=0.04, texture=True)
+        intrinsics = geometry["intrinsics"][0]
+        frames = render_shifted_views(mesh, intrinsics, lambda: _check_cancel(cancel))
+        focal_length = float(intrinsics[1, 1]) * size[1]
+        del geometry, mesh
+
+    references = _refine_captured_views(job, source, settings, diagnostics,
+        [(name, frame) for (name, _), (frame, _) in zip(REFINED_MOGE_VIEWS, frames, strict=True)],
+        first_index=1, progress_range=(0.12, 0.58))
+    return torch.cat((images, references)), focal_length, {index: holes for index, (_, holes) in enumerate(frames, 1)}
+
+
+def _refine_captured_views(job, source, settings, diagnostics, captures, *, first_index, progress_range):
+    import torch
+
+    job_id, cancel = job["job_id"], job["cancel_event"]
+    raw_views = []
+    for index, (direction, frame) in enumerate(captures, first_index):
+        _check_cancel(cancel)
+        view_dir = diagnostics / f"{index:02}-{direction}"
+        view_dir.mkdir()
+        raw = _tensor_to_pil(frame)
+        (view_dir / "image_2.png").write_bytes(_image_bytes(raw))
+        raw_views.append((view_dir, raw))
+    references = []
+    progress_start, progress_end = progress_range
+    span = (progress_end - progress_start) / len(raw_views)
+    for index, (view_dir, raw) in enumerate(raw_views):
+        start = progress_start + span * index
+        log_event("moge_refine_view", component="CGCreator", job_id=job_id, view=view_dir.name)
+        refined, _ = generate_image(settings, job_id, cancel, raw, source,
+                                    save_dataset=False, progress_range=(start, start + span))
+        (view_dir / "qi2_result.png").write_bytes(_image_bytes(refined))
+        if refined.size != raw.size:
+            refined = refined.resize(raw.size, Image.Resampling.LANCZOS)
+        references.append(_pil_to_tensor(refined))
+    return torch.cat(references)
+
+
+def _generate_moge_scene(job, images, scene, scene_directory, *, diagnostics=None, focal_length=None, capture_holes=None,
+                         refine_captures=None):
+    import numpy as np
+    import torch
+    from .cg_moge_multiview import _depth_scale, merge_moge_views, register_views, render_expanded_mesh_views
+
+    job_id, cancel = job["job_id"], job["cancel_event"]
+    def check_cancel():
+        _check_cancel(cancel)
+
+    _stage(job_id, cancel, "calibrating", 0.60, f"Estimating {len(images)} camera poses with COLMAP")
+    calibration, poses, tracks = register_views(images, check_cancel, diagnostics=diagnostics, focal_length=focal_length,
+                                                capture_holes=capture_holes)
+    height, width = images.shape[1:3]
+    fov_x = math.degrees(2 * math.atan(width / (2 * calibration[0, 0])))
+    fov_y = math.degrees(2 * math.atan(height / (2 * calibration[1, 1])))
+    camera = _camera({"position": [0, 0, 0], "target": [0, 0, -1], "up": [0, 1, 0],
+                      "fov": max(5.0, min(120.0, fov_y))})
+    with _model_session(job_id, cancel), torch.inference_mode():
+        _stage(job_id, cancel, "reconstructing", 0.70, f"Estimating geometry for {len(images)} views with MoGe")
+        geometry = _infer_moge(images, fov_x)
+        _stage(job_id, cancel, "meshing", 0.72 if refine_captures is not None else 0.86, "Aligning and merging the MoGe geometry")
+        mesh = merge_moge_views(geometry, images, calibration, poses, tracks, _call_comfy_node, check_cancel,
+                                capture_holes=capture_holes)
+        if refine_captures is not None:
+            _stage(job_id, cancel, "rendering", 0.74, "Capturing two expanded views from MoGe")
+            source_depths = geometry["depth"].detach().cpu().float()
+            del geometry
+            captures, camera_to_source, anchors = render_expanded_mesh_views(mesh, source_depths[0], calibration, check_cancel)
+    if refine_captures is not None:
+        added = refine_captures([capture[0] if capture is not None else None for capture in captures])
+
+    if refine_captures is not None and added:
+        del mesh
+        count = len(images)
+        scale = _depth_scale(np.asarray(source_depths[0]), tracks[0])
+        # The merged mesh is in the first camera frame, scaled to the original MoGe depth.
+        expanded_poses = np.linalg.inv(np.stack([camera_to_source[index] for index in added]))
+        expanded_poses[:, :3, 3] *= scale
+        poses = np.concatenate((poses, expanded_poses @ poses[0]))
+        tracks = [*tracks, *(anchors[index] * [1, 1, scale] for index in added)]
+        holes = [captures[index][1] for index in added]
+        capture_holes = {**(capture_holes or {}), **dict(enumerate(holes, count))}
+        added_images = torch.cat(tuple(added.values()))
+        images = torch.cat((images, added_images))
+        with _model_session(job_id, cancel), torch.inference_mode():
+            _stage(job_id, cancel, "reconstructing", 0.86, "Estimating depth for the two expanded MoGe views")
+            added_depth = _infer_moge(added_images, fov_x)["depth"].detach().cpu().float()
+            _stage(job_id, cancel, "meshing", 0.90, "Merging expanded views into the MoGe scene")
+            mesh = merge_moge_views({"depth": torch.cat((source_depths, added_depth))}, images, calibration, poses,
+                                    tracks, _call_comfy_node, check_cancel, capture_holes=capture_holes)
+
+    with _model_session(job_id, cancel), torch.inference_mode():
+        _stage(job_id, cancel, "saving", 0.94, "Saving the MoGe mesh and camera")
+        file, = _call_comfy_node("MeshToFile3D", mesh=mesh)
+        payload = file.get_bytes()
+        if not payload.startswith(b"glTF") or len(payload) > MAX_MODEL_BYTES:
+            raise ValueError("MoGe returned an invalid or oversized GLB model")
+        _check_cancel(cancel)
+        object_id = uuid.uuid4().hex
+        relative = f"objects/{object_id}/model.glb"
+        path = _contained(scene_directory, relative)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("xb") as stream:
+            stream.write(payload)
+    _set_reconstruction_object(scene, object_id, camera, "model", relative)
+
+
+def _set_reconstruction_object(scene, object_id, camera, kind, relative):
+    scene["camera"] = camera
+    item = {"object_id": object_id, "name": "Background", "source_camera": camera, "visible": True,
+            "locked": True, "files": {kind: relative},
+            "transform": {"position": [0, 0, 0], "rotation": [0, 0, 0], "scale": 1}}
+    if kind == "model":
+        item.update(asset_kind="mesh", source={"format": "glb"})
+    scene["objects"] = [item]
 
 
 def ensure_idle(background_id):
@@ -1685,16 +2028,6 @@ def _inference_slot(job):
     finally:
         if acquired:
             lock.release()
-
-
-def save_settings(background_id, payload):
-    if not isinstance(payload, dict):
-        raise ValueError("CG settings must be an object")
-    model = model_settings(payload.get("model_settings", {}))
-    settings = normalize_settings(payload.get("cg_settings", {}))
-    with _JOBS_LOCK:
-        ensure_idle(background_id)
-        return public_document(_save_settings(background_id, model, settings, None))
 
 
 def delete_cg(background_id, cg_id, payload):
@@ -1723,6 +2056,15 @@ def start_job(background_id, payload, raw_image=None):
               "settings": normalize_settings(payload.get("settings", {}))}
     if action == "model" and values["model_settings"]["provider"] == "pixal3d" and not callable(getattr(runtime, "_generate_mesh_object", None)):
         raise RuntimeError("Pixal3D requires a 3D Factory version with mesh generation")
+    if action == "model" and values["model_settings"]["provider"] in ("moge", "worldmirror"):
+        if not values["model_settings"].get("moge_refine_views"):
+            lora = values["model_settings"]["camera_shift_lora"]
+            if not lora:
+                raise ValueError("Select the trained Camera shift LoRA in model settings")
+            values["model_settings"]["camera_shift_lora"] = _asset_name("loras", lora)
+        if values["model_settings"]["provider"] == "moge":
+            from .cg_moge_multiview import require_colmap
+            require_colmap()
     if action == "cg":
         values.update(characters=_characters(payload.get("characters", [])), name=_name(payload.get("name")), camera=_camera(payload.get("camera")), model_id=payload.get("model_id", ""))
         scene = model_scene(background_id, values["model_id"])
@@ -1755,6 +2097,8 @@ def start_job(background_id, payload, raw_image=None):
             raise RuntimeError("CG job queue is full. Wait for a job to finish before trying again.")
         job = runtime._new_job(f"cg_creator_{action}")
         job.update(background_id=background_id, action=action, request_id=request_id)
+        if action == "model":
+            job["model_provider"] = values["model_settings"]["provider"]
         _JOBS[job["job_id"]] = job
         _WORKER.submit(runtime._run_job, job, lambda current: _execute(current, values))
     return job_status(job["job_id"])
@@ -1770,7 +2114,7 @@ def _execute(job, values):
                 with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                     background_image = source.convert("RGB")
                 characters = values.get("characters", [])
-                image, settings = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background_image,
+                image, _ = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background_image,
                     character=values.get("character"), character_prompt=characters[0].get("prompt", "") if characters else "")
                 runtime._check_cancel(job)
                 with _JOBS_LOCK:
@@ -1779,42 +2123,87 @@ def _execute(job, values):
                         if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
                             raise BackgroundConflictError("Background source changed while generating CG; the result was not published")
                         document = commit_cg(job["background_id"], values["name"], values["raw"], image, values["camera"],
-                            settings, values["model_id"], None, characters=characters)
+                            values["model_id"], None, characters=characters)
                     job["published"] = True
             else:
                 scene = factory.create_scene("CG Creator")
                 temporary_scene_id = job["scene_id"] = scene["scene_id"]
-                with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
-                    encoded = io.BytesIO()
-                    source.convert("RGB").save(encoded, format="PNG")
+                scene_directory = factory.resolve_scene_dir(scene["scene_id"])
                 settings = values["model_settings"]
-                mesh = settings["provider"] == "pixal3d"
-                if mesh:
-                    settings = settings.copy()
-                    if settings["pixal_profile"] == "fast":
-                        preview = factory._generation_settings({**settings, "quality": "preview"})
-                        settings.update(preview, base_color_only=True)
-                    mesh_resolution = settings["pixal_mesh_resolution"]
-                    texture_resolution = settings["pixal_texture_resolution"]
-                    if mesh_resolution:
-                        settings["target_resolution"] = mesh_resolution
-                    if texture_resolution:
-                        settings["texture_resolution"] = texture_resolution
-                        settings["normal_resolution"] = min(settings["normal_resolution"], texture_resolution)
-                        settings["ao_resolution"] = min(settings["ao_resolution"], texture_resolution)
-                generate = runtime._generate_mesh_object if mesh else runtime._generate_object
-                generate(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**settings, "capture_source_camera": True})
-                runtime._check_cancel(job)
-                scene = factory.load_scene(scene["scene_id"])
-                camera = scene["camera"] if mesh else scene["objects"][0]["source_camera"]
-                scene = factory.update_scene(scene["scene_id"], {"camera": camera, "lighting": {"preset": "off", "background": "#000000"}})
+                lighting = {"preset": "off", "background": "#000000"}
+                with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
+                    source_image = source.convert("RGB")
+                if settings["provider"] in ("moge", "worldmirror"):
+                    diagnostics = None
+                    focal_length = None
+                    capture_holes = None
+                    refine_captures = None
+                    if settings.get("moge_refine_views"):
+                        from .cg_moge_multiview import EXPANDED_VIEWS, expansion_matches_capture
+
+                        diagnostics = _contained(root().parent, "CG_MoGe_Diagnostics", _id(job["job_id"]))
+                        view_settings = values["settings"]
+                        generation = view_settings["generation"]
+                        view_settings = {**view_settings, "generation": {
+                            **generation, "seed": _resolve_seed(generation), "seed_mode": "fixed",
+                        }}
+                        images, focal_length, capture_holes = _generate_refined_moge_views(
+                            job, source_image, view_settings, diagnostics)
+
+                        def refine_captures(frames):
+                            accepted = {}
+                            for index, ((name, _, _), frame) in enumerate(zip(EXPANDED_VIEWS, frames, strict=True)):
+                                if frame is None:
+                                    log_event("expanded_view_skipped", component="CGCreator", job_id=job["job_id"],
+                                              view=name, reason="insufficient_geometry")
+                                    continue
+                                start = 0.75 + index * 0.05
+                                refined = _refine_captured_views(job, source_image, view_settings, diagnostics,
+                                    [(name, frame)], first_index=len(images) + index, progress_range=(start, start + 0.05))
+                                if expansion_matches_capture(frame, refined, images[:1]):
+                                    accepted[index] = refined
+                                else:
+                                    log_event("expanded_view_skipped", component="CGCreator", job_id=job["job_id"],
+                                              view=name, reason="generated_frame_does_not_match_capture")
+                            return accepted
+                    else:
+                        images = _generate_camera_shift_views(job, source_image, values["settings"], settings["camera_shift_lora"])
+                    if settings["provider"] == "worldmirror":
+                        _generate_worldmirror_scene(job, images, scene, scene_directory, settings, refine_captures=refine_captures)
+                    else:
+                        _generate_moge_scene(job, images, scene, scene_directory, diagnostics=diagnostics,
+                                             focal_length=focal_length, capture_holes=capture_holes, refine_captures=refine_captures)
+                    scene["lighting"] = lighting
+                else:
+                    encoded = io.BytesIO()
+                    source_image.save(encoded, format="PNG")
+                    mesh = settings["provider"] == "pixal3d"
+                    if mesh:
+                        settings = settings.copy()
+                        if settings["pixal_profile"] == "fast":
+                            preview = factory._generation_settings({**settings, "quality": "preview"})
+                            settings.update(preview, base_color_only=True)
+                        mesh_resolution = settings["pixal_mesh_resolution"]
+                        texture_resolution = settings["pixal_texture_resolution"]
+                        if mesh_resolution:
+                            settings["target_resolution"] = mesh_resolution
+                        if texture_resolution:
+                            settings["texture_resolution"] = texture_resolution
+                            settings["normal_resolution"] = min(settings["normal_resolution"], texture_resolution)
+                            settings["ao_resolution"] = min(settings["ao_resolution"], texture_resolution)
+                    generate = runtime._generate_mesh_object if mesh else runtime._generate_object
+                    generate(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**settings, "capture_source_camera": True})
+                    runtime._check_cancel(job)
+                    scene = factory.load_scene(scene["scene_id"])
+                    camera = scene["camera"] if mesh else scene["objects"][0]["source_camera"]
+                    scene = factory.update_scene(scene["scene_id"], {"camera": camera, "lighting": lighting})
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
                     with background._LOCK:
                         if background_storage.fingerprint(image_path(job["background_id"], values["image_id"], values["source_variant"])) != values["source_signature"]:
                             raise BackgroundConflictError("Background source changed while building its model; the result was not published")
-                        document = commit_model(job["background_id"], values["image_id"], factory.resolve_scene_dir(scene["scene_id"]),
-                            scene, values["model_settings"], None, source_variant=values["source_variant"])
+                        document = commit_model(job["background_id"], values["image_id"], scene_directory,
+                            scene, {"provider": settings["provider"]}, None, source_variant=values["source_variant"])
                     job["published"] = True
         return {"document": public_document(document)}
     except GenerationCancelled as exc:
@@ -1836,7 +2225,7 @@ def job_status(job_id):
         if job is None:
             raise FileNotFoundError("CG job was not found")
         value = runtime._job_public(job)
-    if job["status"] == "running" and job["action"] == "cg":
+    if job["status"] == "running" and (job["action"] == "cg" or job.get("model_provider") in {"worldmirror", "moge"}):
         snapshot = progress(job_id)
         if snapshot.get("stage") != "unknown":
             value.update(message=snapshot.get("message", value["message"]), progress=100 * snapshot.get("progress", 0))
@@ -1860,7 +2249,7 @@ def cancel_job(job_id):
             raise FileNotFoundError("CG job was not found")
         if not job.get("published") and job["status"] in {"queued", "running"}:
             job["cancel_event"].set()
-            if job["action"] == "cg":
+            if job["action"] == "cg" or job.get("model_provider") in {"worldmirror", "moge"}:
                 interrupt(job_id)
     return job_status(job_id)
 
@@ -1949,11 +2338,6 @@ def register_routes(routes):
     @routes.get(base + "/backgrounds/{background_id}")
     async def background_document(request):
         return await perform(lambda: public_document(load_background(request.match_info["background_id"])))
-
-    @routes.patch(base + "/backgrounds/{background_id}")
-    @respond
-    def save(info, payload, image):
-        return save_settings(info["background_id"], payload)
 
     @routes.post(base + "/backgrounds/{background_id}/jobs")
     @respond

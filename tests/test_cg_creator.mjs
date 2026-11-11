@@ -165,6 +165,7 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         async setScene(value) { this.scene = value; this.loads.push(value); this.camera = { ...camera, position: [99, 99, 99] }; return { failures: [] }; }
         setLighting(settings) { this.lighting = settings; }
         setCaptureSettings(settings) { this.settings = settings; }
+        setZoomSensitivity(value) { this.zoomSensitivity = value; }
         setCameraState(value, { emit = false } = {}) { this.camera = clone(value); this.frames.push(this.camera); if (emit) this.options.onStateChange({ camera: this.camera }); }
         getCameraState() { return clone(this.camera); }
         select() {}
@@ -182,12 +183,6 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
             if (path === `${BASE}/config`) return response(configuration());
             if (path === `${BASE}/backgrounds`) return response({ backgrounds: [...documents.values()] });
             const match = new RegExp(`^${BASE}/backgrounds/([a-f0-9]{32})(/models/[a-f0-9]{32})?$`).exec(path);
-            if (match && !match[2] && options.method === "PATCH") {
-                const document = documents.get(match[1]), values = JSON.parse(options.body);
-                if (values.revision !== document.revision) return response({ error: "Scene was modified elsewhere" }, 409);
-                const saved = { ...document, revision: document.revision + 1, cg_settings: values.cg_settings, model_settings: values.model_settings };
-                documents.set(match[1], saved); return response(saved);
-            }
             if (match && !options.method) {
                 const document = documents.get(match[1]);
                 if (!match[2]) return response(document);
@@ -260,60 +255,67 @@ test("CG state restores nested settings without sharing mutable defaults", () =>
     for (const raw of ["{broken", "[]", "null", '{"schema_version":2}', JSON.stringify(state({ model_id: "../model" })), JSON.stringify(state({ camera: {} }))]) assert.throws(() => readState(raw));
 });
 
-test("legacy workflows inherit missing model fields from the library while explicit workflow fields remain authoritative", async () => {
-    const savedModel = "Local models/custom_checkpoint.safetensors";
-    for (const settings of [undefined, { generation: { steps: 39, cfg: 0 } }, { generation: { diffusion_model_name: "Explicit/workflow.safetensors", steps: 17 } }]) {
-        const raw = JSON.stringify(state({ settings, model_settings: undefined })), h = harness(raw);
-        h.documents.set(A, background(A, { cg_settings: settingsDefaults({ generation: { diffusion_model_name: savedModel, steps: 13, cfg: 2, seed: 918273 } }),
-            model_settings: { ...MODEL_DEFAULTS, steps: 33 } }));
-        for (let index = 0; index < 2; index++) {
-            h.data.value = raw; h.node.onConfigure(); await h.ready();
-            const generation = h.widget.state.settings.generation;
-            assert.equal(generation.diffusion_model_name, settings?.generation?.diffusion_model_name || savedModel);
-            assert.equal(generation.steps, settings?.generation?.steps ?? 13);
-            assert.equal(generation.cfg, settings?.generation?.cfg ?? 2); assert.equal(generation.seed, 918273);
-            assert.equal(h.widget.state.model_settings.steps, 33);
-            assert.equal(JSON.parse(h.data.serializeValue()).settings.generation.diffusion_model_name, generation.diffusion_model_name);
-        }
-    }
+test("the node owns its settings across background and CG selection and refresh", async () => {
+    const settings = settingsDefaults({ aspect: "9:16", resolution_mp: 3, generation: {
+        diffusion_model_name: "Local models/custom_checkpoint.safetensors", steps: 39, cfg: 0, seed: 915,
+    } });
+    const model_settings = { ...MODEL_DEFAULTS, provider: "triposplat", pixal_profile: "standard", steps: 33 };
+    const h = harness(JSON.stringify(state({ settings, model_settings })));
+    const other = background(B, { model_settings: MODEL_DEFAULTS });
+    h.documents.set(B, other);
+    await h.ready();
+    const check = () => {
+        const saved = JSON.parse(h.data.serializeValue());
+        assert.deepEqual(saved.settings, settings);
+        assert.deepEqual(saved.model_settings, model_settings);
+    };
+    check();
+
+    const select = h.control("[data-library]"); select.value = B;
+    const switching = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await switching;
+    assert.equal(h.widget.state.background_id, B);
+    check();
+    await h.control("[data-cg-id]").click();
+    assert.equal(h.widget.state.selected_cg_id, CG);
+    assert.deepEqual(clone(h.widget.state.frame), frameDimensions("9:16", 3));
+    check();
+    await h.window.fire("focus");
+    check();
+    assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
+    assert.deepEqual(h.documents.get(B), other);
 });
 
-test("a restored active model differing from the library remains dirty and is saved before background navigation", { timeout: 5000 }, async () => {
-    const model = "User models/restored_checkpoint.safetensors", raw = JSON.stringify(state({ settings: settingsDefaults({ generation: { diffusion_model_name: model, steps: 19, cfg: 2.5 } }) }));
-    const h = harness(raw); await h.ready();
-    assert.equal(h.widget.unsaved, true);
-    const select = h.control('[data-library]'); select.value = B;
-    const away = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await away;
-    assert.equal(h.documents.get(A).cg_settings.generation.diffusion_model_name, model);
-    select.value = A;
-    const back = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await back;
-    assert.equal(h.widget.state.settings.generation.diffusion_model_name, model);
-    assert.equal(h.widget.state.settings.generation.steps, 19); assert.equal(h.widget.state.settings.generation.cfg, 2.5);
-    assert.equal(JSON.parse(h.data.serializeValue()).settings.generation.diffusion_model_name, model);
+test("missing legacy node fields use initial values without importing background preferences", async () => {
+    const h = harness(JSON.stringify(state({ settings: { generation: { steps: 39, cfg: 0 } }, model_settings: undefined })));
+    h.documents.set(A, background(A, {
+        cg_settings: settingsDefaults({ generation: { diffusion_model_name: "Other.safetensors", steps: 13, cfg: 2 } }),
+        model_settings: { ...MODEL_DEFAULTS, provider: "triposplat", steps: 33 },
+    }));
+    await h.ready();
+    const saved = JSON.parse(h.data.value);
+    assert.deepEqual(saved.settings, settingsDefaults({ generation: { steps: 39, cfg: 0 } }));
+    assert.deepEqual(saved.model_settings, MODEL_DEFAULTS);
 });
 
-test("a manually selected Qwen model survives reload after its draft was acknowledged", async () => {
-    const raw = JSON.stringify(state()), drafts = new Map(), session = new Map();
-    const h = harness(raw, { drafts, session }); await h.ready();
+test("node recovery preserves all edited values after reload and respects newer serialized settings", async () => {
+    const raw = JSON.stringify(state()), drafts = new Map();
+    const h = harness(raw, { drafts }); await h.ready();
     const generation = h.widget.state.settings.generation;
-    const previous = generation.diffusion_model_name, turbo = "qwen_image_2.1_turbo_int8_convrot.safetensors";
-    Object.assign(generation, { diffusion_model_name: turbo, steps: 8 });
-    h.widget.qi2.options.onChange(previous);
-    await h.widget.persist();
-    assert.equal(drafts.has(h.widget.draftKey()), false);
+    Object.assign(generation, { diffusion_model_name: "Custom.safetensors", steps: 37, cfg: 0, seed: 153, cache_dtype: "int4" });
+    h.widget.qi2.options.onChange();
+    const provider = h.control("[data-model-provider]"); provider.value = "triposplat"; await provider.fire("change");
+    const reloaded = harness(raw, { drafts }); await reloaded.ready();
+    assert.deepEqual(clone(reloaded.widget.state.settings), clone(h.widget.state.settings));
+    assert.deepEqual(clone(reloaded.widget.state.model_settings), clone(h.widget.state.model_settings));
 
-    const reloaded = harness(raw, { drafts, session });
-    reloaded.documents.set(A, h.documents.get(A)); await reloaded.ready();
-    assert.equal(reloaded.widget.state.settings.generation.diffusion_model_name, turbo);
-    assert.equal(reloaded.widget.state.settings.generation.steps, 8);
-
-    const authored = "User models/another_checkpoint.safetensors";
-    const separateSelection = harness(JSON.stringify(state({ settings: settingsDefaults({ generation: { diffusion_model_name: authored } }) })), { session });
-    separateSelection.documents.set(A, h.documents.get(A)); await separateSelection.ready();
-    assert.equal(separateSelection.widget.state.settings.generation.diffusion_model_name, authored);
+    const newer = JSON.parse(h.data.value);
+    newer.settings_revision++;
+    newer.settings.generation.steps = 61;
+    const reopened = harness(JSON.stringify(newer), { drafts }); await reopened.ready();
+    assert.equal(reopened.widget.state.settings.generation.steps, 61);
 });
 
-test("CG Creator publishes the complete edited state to ComfyUI before the library save", async () => {
+test("CG Creator publishes the complete edited state to ComfyUI without a library save", async () => {
     const h = harness(JSON.stringify(state()));
     const notifications = [];
     let autosaved;
@@ -336,7 +338,6 @@ test("CG Creator publishes the complete edited state to ComfyUI before the libra
     assert.deepEqual(configured.settings, clone(h.widget.state.settings));
     assert.deepEqual(configured.model_settings, clone(h.widget.state.model_settings));
     assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
-    await h.widget.persist();
     h.widget.beginGesture();
     h.widget.viewer.setCameraState({ ...camera, fov: 67 }, { emit: true });
     assert.deepEqual(notifications, ["before-change", "after-change"]);
@@ -349,55 +350,7 @@ test("CG Creator publishes the complete edited state to ComfyUI before the libra
     assert.equal(reloaded.widget.state.camera.fov, 67);
 });
 
-test("model generation settings stay with the node when switching backgrounds", async () => {
-    const h = harness(JSON.stringify(state()));
-    await h.ready();
-    const model = { ...MODEL_DEFAULTS, provider: "pixal3d", pixal_profile: "fast", seed: 731 };
-    h.widget.state.model_settings = model; h.widget.markEdited();
-    const nextDraft = h.widget.draftKey().replace(A, B);
-    h.drafts.set(nextDraft, JSON.stringify({ settings: settingsDefaults({ prompt: "Second background prompt" }), model_settings: MODEL_DEFAULTS }));
-
-    const select = h.control("[data-library]"); select.value = B;
-    const switching = h.widget.change({ target: select }); await settle(); await h.widget.sourceLoad.onload(); await switching;
-    assert.equal(h.widget.state.background_id, B);
-    assert.deepEqual(clone(h.widget.state.model_settings), model);
-    assert.deepEqual(JSON.parse(h.data.serializeValue()).model_settings, model);
-    assert.equal(h.widget.state.settings.prompt, "Second background prompt");
-    const reloaded = harness(h.data.serializeValue(), { drafts: h.drafts });
-    await reloaded.ready();
-    assert.deepEqual(clone(reloaded.widget.state.model_settings), model);
-    assert.equal(reloaded.widget.state.settings.prompt, "Second background prompt");
-});
-
-test("only manual generator and profile selections override the workflow choice on reload", async () => {
-    const raw = JSON.stringify(state({ model_settings: undefined }));
-    const drafts = new Map(), session = new Map();
-    const h = harness(raw, { drafts, session });
-    const saved = { ...MODEL_DEFAULTS, provider: "triposplat", pixal_profile: "standard" };
-    h.documents.set(A, background(A, { model_settings: saved }));
-    await h.ready();
-    const check = (node, provider, pixal_profile) => {
-        const model = JSON.parse(node.data.serializeValue()).model_settings;
-        assert.deepEqual([model.provider, model.pixal_profile], [provider, pixal_profile]);
-    };
-    check(h, "pixal3d", "fast");
-    drafts.set(h.widget.draftKey(), JSON.stringify({ settings: settingsDefaults(), model_settings: saved }));
-    h.node.onConfigure(); await h.ready();
-    check(h, "pixal3d", "fast");
-
-    const settings = h.control("[data-model-settings]").click(), dialog = h.control('[role="dialog"]');
-    dialog.querySelector("select").value = "standard";
-    dialog.querySelectorAll("button").at(-1).onclick(); await settings;
-    const provider = h.control("[data-model-provider]"); provider.value = "triposplat"; await provider.fire("change");
-    await h.widget.persist();
-    assert.equal(drafts.has(h.widget.draftKey()), false);
-    const reloaded = harness(raw, { drafts, session }); await reloaded.ready();
-    check(reloaded, "triposplat", "standard");
-    const other = harness(raw, { drafts, session, nodeId: 8 }); await other.ready();
-    check(other, "pixal3d", "fast");
-});
-
-test("selecting a background with a TripoSplat model keeps Pixal3D selected", async () => {
+test("opening a saved TripoSplat model keeps Pixal3D selected for generation", async () => {
     for (const firstBackground of [false, true]) {
         const h = firstBackground ? harness() : harness(JSON.stringify(state()));
         const triposplat = background(B, {
@@ -411,15 +364,16 @@ test("selecting a background with a TripoSplat model keeps Pixal3D selected", as
         await h.widget.sourceLoad.onload(); await switching; await settle();
         assert.equal(h.widget.state.model_settings.provider, "pixal3d");
         assert.equal(h.widget.state.model_settings.pixal_profile, "fast");
-        assert.equal(h.widget.state.model_id, "");
+        assert.equal(h.widget.state.model_id, MODEL);
+        assert.equal(h.widget.scene.model_id, MODEL);
         const selectedCG = firstBackground ? CG : "";
         assert.equal(h.widget.state.selected_cg_id, selectedCG);
-        assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), false);
+        assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), true);
 
         const reloaded = harness(h.data.serializeValue());
         reloaded.documents.set(B, triposplat);
         await reloaded.ready();
-        assert.equal(reloaded.widget.state.model_id, "");
+        assert.equal(reloaded.widget.state.model_id, MODEL);
         assert.equal(reloaded.widget.state.selected_cg_id, selectedCG);
         await reloaded.control("[data-cg-id]").click();
         assert.equal(reloaded.control("[data-large-preview]").src, triposplat.cgs[0].url);
@@ -640,6 +594,91 @@ test("source-camera calibration keeps image-plane framing while saved CG cameras
     assert.deepEqual(h.widget.viewer.camera, saved);
 });
 
+test("WorldMirror restores the predicted up direction and recenters to the predicted camera", async () => {
+    const predicted = { position: [1, 2, 3], target: [2, 2, 3], up: [0, -1, 0], fov: 47 };
+    const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: null, model_settings: { provider: "worldmirror" } })));
+    h.documents.set(A, background(A, { cgs: [] }));
+    h.api.handle = path => path.includes(`/models/${MODEL}`) ? response(scene(A, {
+        source_image_id: IMAGE, camera: predicted, background_settings: { provider: "worldmirror" },
+        objects: [{ object_id: B, locked: true, source_camera: predicted }],
+    })) : undefined;
+    await h.ready();
+    assert.deepEqual(h.widget.viewer.camera, predicted);
+    const moved = { ...predicted, target: [2, 2.2, 3], fov: 60 };
+    h.data.value = JSON.stringify(state({ selected_cg_id: "", camera: { ...moved, up: [0, 1, 0] } }));
+    h.node.onConfigure(); await h.ready();
+    assert.deepEqual(h.widget.viewer.camera, moved);
+    h.widget.viewer.camera = { ...predicted, fov: 60 };
+    await h.control("[data-recenter]").click();
+    assert.deepEqual(h.widget.viewer.camera, predicted);
+    assert.deepEqual(JSON.parse(h.data.value).camera, predicted);
+});
+
+test("MoGe restores and recenters its source camera in the imported mesh coordinates", async () => {
+    const source = { position: [0, 0, 0], target: [0, 0, -1], up: [0, 1, 0], fov: 47 };
+    const imported = { ...source, position: [1, 2, 3], target: [1, 2, 2.5] };
+    const h = harness(JSON.stringify(state({ selected_cg_id: "", camera: source, model_settings: { provider: "moge" } })));
+    h.context.Factory3DViewer.prototype.getModelSourceCamera = objectId => {
+        assert.equal(objectId, B);
+        return imported;
+    };
+    h.documents.set(A, background(A, { cgs: [] }));
+    h.api.handle = path => path.includes(`/models/${MODEL}`) ? response(scene(A, {
+        source_image_id: IMAGE, camera: source, background_settings: { provider: "moge" },
+        objects: [{ object_id: B, locked: true, asset_kind: "mesh", source_camera: source }],
+    })) : undefined;
+    await h.ready();
+    assert.equal(h.control("[data-model-provider]").value, "moge");
+    assert.equal(h.control("[data-model-settings]").disabled, false);
+    assert.deepEqual(h.widget.viewer.camera, imported);
+    assert.deepEqual(JSON.parse(h.data.value).camera, imported);
+    h.widget.viewer.objects = new Map([[B, { localBounds: {
+        isEmpty: () => false, min: { x: -1, y: 0, z: -1 }, max: { x: 1, y: 1, z: 1 },
+    } }]]);
+    await h.widget.host.fire("pointerdown");
+    assert.equal(h.widget.viewer.controls.panSpeed, 2);
+    assert.equal(h.widget.viewer.zoomSensitivity, 0.2);
+    assert.equal(h.widget.viewer.options.cameraDragScale, 1.4);
+    assert.deepEqual(h.widget.viewer.camera, imported);
+    const authored = { ...imported, fov: 60 };
+    h.data.value = JSON.stringify({ ...JSON.parse(h.data.value), camera: authored });
+    h.node.onConfigure(); await h.ready();
+    assert.deepEqual(h.widget.viewer.camera, authored);
+    await h.control("[data-recenter]").click();
+    assert.deepEqual(JSON.parse(h.data.value).camera, imported);
+});
+
+test("MoGe and WorldMirror share the saved Refine views choice", async () => {
+    const h = harness(JSON.stringify(state({ model_settings: { provider: "moge" } })));
+    await h.ready();
+    const choice = h.control("[data-moge-refine-views]"), label = h.control("[data-moge-refine-label]");
+    assert.equal(label.hidden, false);
+    assert.equal(choice.checked, false);
+    choice.checked = true; await choice.fire("change");
+    assert.equal(JSON.parse(h.data.value).model_settings.moge_refine_views, true);
+    assert.equal(h.control("[data-model-settings]").disabled, true);
+    const provider = h.control("[data-model-provider]");
+    provider.value = "worldmirror"; await provider.fire("change");
+    assert.equal(label.hidden, false);
+    assert.equal(choice.checked, true);
+    assert.equal(h.control("[data-model-settings]").disabled, false);
+    let keys, jobAction;
+    h.widget.dialog = async (_title, fields) => {
+        keys = Array.from(fields, field => field.key);
+        return null;
+    };
+    await h.control("[data-model-settings]").click();
+    assert.deepEqual(keys, ["worldmirror_target_size", "worldmirror_apply_sky_mask"]);
+    h.widget.dialog = async () => true;
+    h.widget.runJob = async action => { jobAction = action; };
+    await h.control('[data-action="model"]').click();
+    assert.equal(jobAction, "model");
+    provider.value = "pixal3d"; await provider.fire("change");
+    assert.equal(label.hidden, true);
+    provider.value = "moge"; await provider.fire("change");
+    assert.equal(choice.checked, true);
+});
+
 test("frame dimensions support portrait and landscape within renderer limits", () => {
     for (const [aspect, ratio] of [["16:9", 16 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["1:1", 1]]) {
         const size = frameDimensions(aspect, 2);
@@ -733,10 +772,9 @@ test("late restoration cannot replace a newer configured scene or camera", async
 
 test("library navigation publishes the new image before the model finishes loading", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
-    h.widget.state.settings.prompt = "Save before navigation"; h.widget.markEdited();
-    const save = deferred(), load = deferred(), model = deferred();
-    h.api.handle = (path, options) => {
-        if (options.method === "PATCH") return save.promise;
+    h.widget.state.settings.prompt = "Preserve during navigation"; h.widget.markEdited();
+    const load = deferred(), model = deferred();
+    h.api.handle = path => {
         if (path === `${BASE}/backgrounds/${B}`) return load.promise;
         if (path === `${BASE}/backgrounds/${B}/models/${MODEL}`) return model.promise;
     };
@@ -750,7 +788,6 @@ test("library navigation publishes the new image before the model finishes loadi
         assert.throws(() => h.data.beforeQueued(), /operation|busy|generation/i);
     };
     await assertLocked(); await settle();
-    save.resolve(response(background(A, { revision: 4, cg_settings: h.widget.state.settings }))); await settle();
     assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}`), true); await assertLocked();
     load.resolve(response(background(B))); await settle();
     await assertLocked();
@@ -764,6 +801,7 @@ test("library navigation publishes the new image before the model finishes loadi
     assert.equal(h.control("[data-save-view]").disabled, true);
     assert.equal(h.widget.host.hidden, true);
     assert.equal(h.widget.loadingModel, true);
+    assert.equal(h.control("[data-viewer-empty]").textContent, "Loading the saved model…");
     assert.equal(h.calls.some(call => call.path === `${BASE}/backgrounds/${B}/models/${MODEL}`), true);
     model.resolve(response(scene(B))); await settle();
     assert.equal(h.widget.scene.background_id, B);
@@ -827,32 +865,17 @@ test("reconfiguration and removal cancel background transitions without publishi
     }
 });
 
-test("settings edited during a pending disk save survive its acknowledgement and preserve scroll", async () => {
+test("latest edits stay in the node and recovery if the library is unavailable", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
-    h.widget.state.settings.prompt = "First instruction"; h.widget.markEdited(); const pending = deferred();
-    h.api.handle = (_path, options) => options.method === "PATCH" ? pending.promise : undefined;
-    const save = h.widget.persist(); await settle();
+    h.api.handle = () => response({ error: "Library unavailable" }, 503);
+    h.widget.state.settings.prompt = "First instruction"; h.widget.markEdited();
     h.widget.state.settings.prompt = "Latest instruction"; h.widget.markEdited();
     const panel = h.control(".bg-panel"), gallery = h.control(".bg-cg-list"); panel.scrollTop = 180; gallery.scrollTop = 95;
     h.widget.render(); assert.equal(panel.scrollTop, 180); assert.equal(gallery.scrollTop, 95);
-    pending.resolve(response(background(A, { revision: 4, cg_settings: settingsDefaults({ prompt: "First instruction" }) }))); await save;
-    assert.equal(h.widget.state.settings.prompt, "Latest instruction"); assert.equal(h.widget.unsaved, true); assert.equal(h.widget.document.revision, 4);
+    await h.window.fire("focus");
+    assert.equal(JSON.parse(h.data.value).settings.prompt, "Latest instruction");
     assert.equal(JSON.parse(h.drafts.get(h.widget.draftKey())).settings.prompt, "Latest instruction");
-    const patch = h.calls.find(call => call.options.method === "PATCH");
-    assert.equal(JSON.parse(patch.options.body).cg_settings.prompt, "First instruction");
-    assert.ok(JSON.parse(patch.options.body).model_settings);
-    h.api.handle = (_path, options) => options.method === "PATCH" ? response(background(A, { revision: 5, cg_settings: h.widget.state.settings })) : undefined;
-    await h.widget.persist(); assert.equal(h.widget.unsaved, false); assert.equal(h.drafts.has(h.widget.draftKey()), false);
-});
-
-test("disk conflicts retain workflow edits and browser recovery", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready();
-    h.widget.state.settings.prompt = "Retain this instruction"; h.widget.markEdited();
-    h.api.handle = (_path, options) => options.method === "PATCH" ? response({ error: "Scene was modified elsewhere" }, 409) : undefined;
-    await assert.rejects(h.widget.persist(), /modified elsewhere/);
-    assert.equal(h.widget.document.revision, 3); assert.equal(h.widget.unsaved, true);
-    assert.equal(JSON.parse(h.data.value).settings.prompt, "Retain this instruction");
-    assert.equal(JSON.parse(h.drafts.get(h.widget.draftKey())).settings.prompt, "Retain this instruction");
+    assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
 });
 
 test("nodes editing the same scene retain independent recovery drafts across saves and reloads", async () => {
@@ -861,11 +884,10 @@ test("nodes editing the same scene retain independent recovery drafts across sav
     first.widget.state.settings.prompt = "First node instruction"; first.widget.markEdited();
     second.widget.state.settings.prompt = "Second node unsaved instruction"; second.widget.markEdited();
     const firstKey = first.widget.draftKey(), secondKey = second.widget.draftKey(), secondBytes = drafts.get(secondKey);
-    assert.notEqual(firstKey, secondKey); await first.widget.persist();
-    assert.equal(drafts.has(firstKey), false); assert.equal(drafts.get(secondKey), secondBytes);
+    assert.notEqual(firstKey, secondKey);
+    assert.equal(drafts.has(firstKey), true); assert.equal(drafts.get(secondKey), secondBytes);
     const reloaded = harness(JSON.stringify(state()), { nodeId: 8, drafts }); await reloaded.ready();
     assert.equal(reloaded.widget.draftKey(), secondKey); assert.equal(reloaded.widget.state.settings.prompt, "Second node unsaved instruction");
-    assert.equal(reloaded.widget.unsaved, true);
     const unassignedFirst = harness(JSON.stringify(state()), { nodeId: -1, drafts }), unassignedSecond = harness(JSON.stringify(state()), { nodeId: -1, drafts });
     await unassignedFirst.ready(); await unassignedSecond.ready();
     assert.notEqual(unassignedFirst.widget.draftKey(), unassignedSecond.widget.draftKey());
@@ -877,7 +899,6 @@ test("separate workflows and tabs do not inherit the same node's recovery draft"
     for (const scope of ["tab2:workflow1", "tab1:workflow2"]) {
         const other = harness(JSON.stringify(state()), { drafts, scope }); await other.ready();
         assert.notEqual(other.widget.draftKey(), first.widget.draftKey());
-        assert.equal(other.widget.unsaved, false);
         assert.notEqual(other.widget.state.settings.prompt, "Private draft");
     }
 });
@@ -918,34 +939,20 @@ test("an initial source load exposes loading/errors and configure cancels its ob
     await h.control("[data-source-incoming]").onload(); assert.equal(h.control("[data-model-source]").hidden, false);
 });
 
-test("a save acknowledgement cannot remove a changed recovery payload under the same key", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready();
-    h.widget.state.settings.prompt = "Instruction being saved"; h.widget.markEdited(); const pending = deferred();
-    h.api.handle = (_path, options) => options.method === "PATCH" ? pending.promise : undefined;
-    const save = h.widget.persist(); await settle();
-    const key = h.widget.draftKey(), replacement = JSON.stringify({ settings: settingsDefaults({ prompt: "Replacement from another editor" }), model_settings: clone(MODEL_DEFAULTS), revision: 3 });
-    h.drafts.set(key, replacement);
-    pending.resolve(response(background(A, { revision: 4, cg_settings: h.widget.state.settings }))); await save;
-    assert.equal(h.drafts.get(key), replacement); assert.equal(h.widget.unsaved, false);
-});
-
-test("older recovery drafts remain editable and save without a revision confirmation gate", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready(); const key = h.widget.draftKey();
-    const draft = JSON.stringify({ settings: settingsDefaults({ prompt: "Older authored instruction" }), model_settings: { ...MODEL_DEFAULTS, steps: 35 }, revision: 1 });
-    h.drafts.set(key, draft); h.node.onConfigure(); await h.ready();
-    assert.equal(h.widget.state.settings.prompt, "Older authored instruction"); assert.equal(h.widget.state.model_settings.steps, 35);
-    assert.equal(h.widget.unsaved, true); assert.equal(h.drafts.get(key), draft);
-    await h.widget.persist();
-    assert.equal(h.widget.document.revision, 4); assert.equal(h.widget.unsaved, false); assert.equal(h.drafts.has(key), false);
-});
-
-test("recovery drafts without revision metadata remain savable", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready();
-    const key = h.widget.draftKey();
-    h.drafts.set(key, JSON.stringify({ settings: settingsDefaults({ prompt: "Legacy draft" }), model_settings: MODEL_DEFAULTS }));
-    h.node.onConfigure(); await h.ready();
-    assert.equal(h.widget.state.settings.prompt, "Legacy draft");
-    await h.widget.persist(); assert.equal(h.widget.unsaved, false); assert.equal(h.drafts.has(key), false);
+test("legacy browser drafts recover node edits without rewriting the background", async () => {
+    for (const revision of [undefined, 1]) {
+        const h = harness(JSON.stringify(state()));
+        const key = h.widget.draftKey(A);
+        const draft = JSON.stringify({ settings: settingsDefaults({ prompt: "Older authored instruction" }),
+            model_settings: { ...MODEL_DEFAULTS, provider: "triposplat", steps: 35 }, revision });
+        h.drafts.set(key, draft); await h.ready();
+        assert.equal(h.widget.state.settings.prompt, "Older authored instruction");
+        assert.equal(h.widget.state.model_settings.steps, 35);
+        assert.equal(h.widget.state.model_settings.provider, "triposplat");
+        assert.equal(h.drafts.get(key), draft);
+        assert.equal(JSON.parse(h.data.value).settings_revision, 1);
+        assert.equal(h.documents.get(A).revision, 3);
+    }
 });
 
 test("failed restoration can retry without losing the original workflow bytes", async () => {
@@ -975,10 +982,32 @@ test("the shared connection watcher updates the library without a refresh button
     assert.equal(h.control('[data-library]').value, A); assert.equal(h.control('[data-large-preview]'), preview);
     assert.deepEqual(h.widget.viewer.camera, camera);
     assert.equal(h.widget.state.settings.generation.diffusion_model_name, 'User models/keep_selected.safetensors');
-    assert.equal(h.documents.get(A).cg_settings.generation.diffusion_model_name, 'User models/keep_selected.safetensors');
+    assert.equal(h.calls.some(call => call.options.method === 'PATCH'), false);
     const beforeRemoval = h.calls.length; h.node.onRemoved();
     h.emitEvent('reconnected'); await h.window.fire('focus');
     assert.equal(h.calls.length, beforeRemoval); assert.equal(h.events.size, 0);
+});
+
+test("a background check leaves the viewport editable and skips rendering when nothing changed", async () => {
+    const h = harness(JSON.stringify(state())); await h.ready();
+    const catalog = deferred(), viewer = h.widget.viewer, frames = viewer.frames.length;
+    h.api.handle = path => path === `${BASE}/backgrounds` ? catalog.promise : undefined;
+    const renders = [];
+    const render = h.widget.render;
+    h.widget.render = () => { renders.push(true); render.call(h.widget); };
+    const refresh = h.window.fire("focus");
+    assert.equal(h.widget.busy, false);
+    assert.equal(h.widget.host.inert, false);
+    assert.equal(h.control("[data-recenter]").disabled, false);
+    await h.widget.host.fire("pointerdown");
+    const moved = { ...viewer.camera, target: [0.3, 0.2, 0] };
+    viewer.setCameraState(moved, { emit: true });
+    await h.widget.host.fire("pointerup");
+    catalog.resolve(response({ backgrounds: [...h.documents.values()] }));
+    await refresh;
+    assert.equal(renders.length, 0);
+    assert.equal(viewer.frames.length, frames + 1);
+    assert.deepEqual(JSON.parse(h.data.value).camera, moved);
 });
 
 test("automatic library updates ignore active operations and obsolete responses", async () => {
@@ -997,27 +1026,15 @@ test("automatic library updates ignore active operations and obsolete responses"
     assert.equal(h.widget.catalog.length, 2); assert.equal(h.widget.busy, false);
 });
 
-test("a pending save cannot overwrite settings restored by later configuration", async () => {
-    const h = harness(JSON.stringify(state())); await h.ready(); const pending = deferred();
-    h.widget.state.settings.prompt = "Old pending instruction"; h.widget.markEdited();
-    h.api.handle = (_path, options) => options.method === "PATCH" ? pending.promise : undefined;
-    const save = h.widget.persist(); await settle();
-    const replacement = state({ background_id: B, settings: settingsDefaults({ prompt: "New workflow instruction" }) });
-    h.data.value = JSON.stringify(replacement); h.node.onConfigure(); await h.ready();
-    pending.resolve(response(background(A, { revision: 4 }))); await save;
-    assert.equal(h.widget.document.background_id, B); assert.equal(h.widget.state.settings.prompt, "New workflow instruction");
-    assert.equal(JSON.parse(h.data.value).settings.prompt, "New workflow instruction");
-});
-
 test("restoring an empty workflow clears the previous scene while retaining its recovery draft", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     h.widget.state.settings.prompt = "Retain the old scene draft"; h.widget.markEdited(); const key = h.widget.draftKey();
     h.data.value = JSON.stringify(state({ background_id: "", selected_image_id: "", model_id: "", selected_cg_id: "", camera: null }));
     h.node.onConfigure(); await h.ready();
-    assert.equal(h.widget.document, null); assert.equal(h.widget.state.background_id, ""); assert.equal(h.widget.unsaved, false);
+    assert.equal(h.widget.document, null); assert.equal(h.widget.state.background_id, "");;
     assert.equal(h.widget.host.hidden, true); assert.equal(h.control("[data-cgs]").children.length, 0);
     assert.equal(JSON.parse(h.drafts.get(key)).settings.prompt, "Retain the old scene draft");
-    await h.widget.persist(); assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
+    assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
 });
 
 test("read-only backup recovery disables generation while retaining the saved CG", async () => {
@@ -1025,7 +1042,7 @@ test("read-only backup recovery disables generation while retaining the saved CG
     assert.equal(h.widget.restoring, false); assert.match(h.widget.status.textContent, /read-only|read only/i);
     assert.equal(h.control('[data-action="model"]').disabled, true); assert.equal(h.control("[data-save-view]").disabled, true);
     assert.equal(h.control("[data-cgs]").children.length, 1);
-    h.widget.unsaved = true; await h.window.fire('focus');
+    await h.window.fire('focus');
     assert.equal(h.calls.some(call => call.options.method === 'PATCH'), false);
     assert.match(h.widget.status.textContent, /read-only|read only/i);
 });
@@ -1208,6 +1225,9 @@ test("replacing a saved model requires confirmation even when a different genera
     const h = harness(JSON.stringify(state({ model_id: "", selected_cg_id: "" })));
     h.documents.get(A).models[0].settings.provider = "triposplat";
     await h.ready();
+    assert.equal(h.widget.scene.model_id, MODEL);
+    assert.equal(h.control("[data-viewer-empty]").hidden, true);
+    assert.equal(h.widget.state.model_settings.provider, "pixal3d");
     const button = h.control('[data-action="model"]'), posts = () => h.calls.filter(call => call.options.method === "POST");
     const cancelled = button.click();
     await button.click();
@@ -1229,7 +1249,9 @@ test("replacing a saved model requires confirmation even when a different genera
 
 test("first model generation starts directly and uses the calibrated source camera", async () => {
     const h = harness(JSON.stringify(state({ model_id: "", selected_cg_id: "" })));
-    h.documents.set(A, background(A, { models: [], cgs: [] }));
+    const document = background(A, { models: [{ model_id: MODEL, source_image_id: B }], cgs: [] });
+    document.images.push({ ...document.images[0], image_id: B });
+    h.documents.set(A, document);
     await h.ready();
     const modelId = "2".repeat(32), model = { model_id: modelId, source_image_id: IMAGE };
     const completed = background(A, { revision: 4, models: [model], model });
@@ -1240,6 +1262,7 @@ test("first model generation starts directly and uses the calibrated source came
         if (path === `${BASE}/backgrounds/${A}/models/${modelId}`) return response(scene(A, { model_id: modelId, source_image_id: IMAGE }));
     };
     await h.control('[data-action="model"]').click();
+    assert.equal(h.widget.dialogs.size, 0);
     assert.equal(payload.action, "model"); assert.equal(payload.image_id, IMAGE);
     assert.equal(h.widget.state.model_id, modelId); assert.equal(h.widget.viewer.camera.fov, 60);
     assert.equal(h.widget.busy, false); assert.equal(h.control("progress"), null); assert.equal(h.control("[data-stop]"), null); assert.deepEqual(h.queued, []);
@@ -1352,7 +1375,6 @@ test("Generate CG captures its camera and frame then selects the finished CG", a
     h.widget.viewer.camera = savedCamera;
     h.widget.state.settings.aspect = "4:3"; h.widget.state.settings.prompt = "Complete the room and retain the camera."; h.widget.updateFrame(); let payload;
     h.api.handle = (path, options) => {
-        if (options.method === "PATCH") return response(background(A, { revision: 4, cg_settings: h.widget.state.settings }));
         if (path === `${BASE}/backgrounds/${A}/jobs`) { assert.ok(options.body.get("image") instanceof Blob); payload = JSON.parse(options.body.get("data")); return response({ job_id: B }); }
         if (path === `${BASE}/jobs/${B}`) { polled.resolve(); return completion.promise; }
     };
@@ -1404,7 +1426,6 @@ test("completed CGs retain historical model and camera instead of the latest mod
     completed.cgs.push({ cg_id: cgId, name: "Historical view", model_id: historicalModel, source_image_id: IMAGE, camera: savedCamera, ...size, url: "/historical-cg.png" });
     h.widget.viewer.camera = savedCamera; h.widget.state.settings.aspect = "4:3"; h.widget.updateFrame();
     h.api.handle = (path, options) => {
-        if (options.method === "PATCH") return response({ ...original, revision: 4, cg_settings: h.widget.state.settings });
         if (path === `${BASE}/backgrounds/${A}/jobs`) return response({ job_id: B });
         if (path === `${BASE}/jobs/${B}`) return response({ status: "completed", result: { document: completed } });
     };
@@ -1427,7 +1448,7 @@ test("named generated variants preserve exact model, CG, preview and workflow ow
     const setId = "8".repeat(32), variantModel = "9".repeat(32), variantCG = "0".repeat(32), ref = { set_id: setId, index: 1, variant_id: "morning", name: "Morning" };
     const document = background();
     document.generated_sets = [{ set_id: setId, version: "", source_image_id: IMAGE, variants: [{ id: "morning", name: "Morning" }], images: [{ url: "/original-set.png" }, { url: "/morning.png", width: 1280, height: 720 }] }];
-    document.models.push({ model_id: variantModel, source_image_id: IMAGE, source_variant: ref, settings: { provider: "pixal3d" } });
+    document.models.push({ model_id: variantModel, source_image_id: IMAGE, source_variant: ref, settings: { provider: "moge" } });
     document.cgs.push({ cg_id: variantCG, name: "Morning view", model_id: variantModel, source_image_id: IMAGE, source_variant: ref, camera, width: 1280, height: 720, url: "/morning-cg.png" });
     const h = harness(JSON.stringify(state())); h.documents.set(A, document); await h.ready();
     const choices = sourceChoices(document); assert.deepEqual(choices.map(choice => choice.label), ["Original", "Morning"]);
