@@ -154,9 +154,8 @@ export async function verifyCharacters(page, { shot, settle, geometry, scenarios
         input.value = value; input.dispatchEvent(new Event("input", { bubbles: true })); input.dispatchEvent(new Event("change", { bubbles: true }));
     }, value);
     await lightInput("Intensity", "2.4"); await lightInput("Light height", "35");
-    assert.equal(await page.evaluate(() => widget.characters.active.keyLight.intensity), 2.4);
-    assert.equal(await page.evaluate(() => widget.characters.active.keyLight.position.y), 35);
-    assert.ok(await page.evaluate(() => widget.characters.active.keyLight.layers.mask === 2));
+    assert.equal(await page.evaluate(() => widget.characters.active.lightColor.value.r), 2.4);
+    assert.equal(await page.evaluate(() => widget.characters.active.light.y), 35);
     for (const kind of ["light", "x", "y"]) {
         const radar = page.locator(`[data-character-radar="${kind}"]`);
         assert.equal(await radar.evaluate(canvas => canvas.width), kind === "light" ? 100 : 140);
@@ -226,17 +225,24 @@ export async function verifyCharacters(page, { shot, settle, geometry, scenarios
         assert.ok(fit, `Character controls stay inside the node at width ${width}`);
         await shot(`after-characters-${width}`);
     }
-    const legacyCharacters = await page.evaluate(() => {
-        const characters = widget.characters.snapshot();
-        characters.push({ ...structuredClone(characters[0]), id: "a".repeat(32) });
-        widget.characters.restore(characters); widget.sync(); widget.characterPanel.refresh();
-        return widget.characters.snapshot();
-    });
-    await page.getByRole("button", { name: "Delete character", exact: true }).click();
+    await page.locator("[data-character-add]").click();
+    await page.waitForFunction(() => !widget.characterPanel.loading);
+    await choose("character", "Alex");
+    const tabs = page.getByRole("tablist", { name: "Characters" }).getByRole("tab");
+    assert.deepEqual(await tabs.allTextContents(), ["Maya", "Alex"]);
+    assert.equal(await promptField.inputValue(), "");
+    await promptField.fill("Look left.");
+    await tabs.first().click();
+    await page.waitForFunction(() => !widget.characterPanel.loading);
+    assert.equal(await promptField.inputValue(), prompt);
+    const legacyCharacters = await page.evaluate(() => widget.characters.snapshot());
+    assert.deepEqual(legacyCharacters.map(character => character.dummyColor), ["White", "Pink"]);
+    assert.deepEqual(legacyCharacters.map(character => character.prompt), [prompt, "Look left."]);
+    await page.getByRole("button", { name: "Delete character", exact: true }).first().click();
     const deletion = page.getByRole("dialog", { name: "Delete character", exact: true });
     await deletion.getByRole("button", { name: "Cancel", exact: true }).click();
     assert.deepEqual(await page.evaluate(() => widget.characters.snapshot()), legacyCharacters);
-    await page.getByRole("button", { name: "Delete character", exact: true }).click();
+    await page.getByRole("button", { name: "Delete character", exact: true }).first().click();
     await deletion.getByRole("button", { name: "Delete", exact: true }).click();
     assert.deepEqual(await page.evaluate(() => widget.characters.snapshot()), legacyCharacters.slice(1), "Deleting the tab removes only its character");
     await page.evaluate(() => widget.history.undo());

@@ -51,7 +51,7 @@ def test_registered_factory_without_cg_provider_reuses_its_loaded_runtime(monkey
     assert value["runtime"] is package.runtime
     assert value["storage"] is package.storage
     assert bridge.model_operation_lock() is lock
-    assert bridge.model_settings({"seed": 12})["seed"] == 12
+    assert bridge.model_settings({"provider": "pixal3d"})["provider"] == "worldmirror"
     assert bridge.frontend_configuration() == {"version": 1, "module_url": "/extensions/Installed%20Utils/factory3d/viewer.js"}
 
 
@@ -80,7 +80,7 @@ def test_background_regeneration_invalidates_model_and_preserves_independent_cg(
     document = storage.commit_model(document["background_id"], image_id, source, scene, {}, document["revision"])
     model_id = document["models"][0]["model_id"]
     image = Image.new("RGB", (64, 32), "blue")
-    document = storage.commit_cg(document["background_id"], "View", image, image, CAMERA, {}, model_id, document["revision"])
+    document = storage.commit_cg(document["background_id"], "View", image, image, CAMERA, model_id, document["revision"])
     cg_id = document["cgs"][0]["cg_id"]
     document = owner.save_background(document["background_id"], {"description": "New authored settings"})
     document = owner.add_image(document["background_id"], Image.new("RGB", (64, 32), "green"), {})
@@ -99,12 +99,3 @@ def test_cg_reads_recover_the_background_publication_journal(library, monkeypatc
     monkeypatch.setattr(owner, "_recover_set_publication", lambda directory: (calls.append(directory), recover(directory)))
     assert storage.load_background(document["background_id"]) == document
     assert calls == [storage.root() / "Room"]
-
-
-def test_normal_cg_saves_accept_missing_revision_and_preserve_new_background_fields(library):
-    document = owner.create_background("Room", {"description": "First"})
-    owner.save_background(document["background_id"], {"description": "Current"})
-    saved = storage._save_settings(document["background_id"], {}, {"future_profile": [1, 2]}, None)
-    assert saved["editor"] == {"description": "Current"}
-    assert saved["cg_settings"]["future_profile"] == [1, 2]
-    assert saved["revision"] == 3

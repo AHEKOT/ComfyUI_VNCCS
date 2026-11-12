@@ -1,14 +1,21 @@
-import { CHARACTER_PROMPT_LIMIT, validateCharacters } from "./cg_characters.mjs?v=cg-creator-3";
+import { CHARACTER_COLORS, CHARACTER_LIMIT, CHARACTER_PROMPT_LIMIT, validateCharacters } from "./cg_characters.mjs?v=cg-creator-6";
 
 export const CG_CHARACTER_PANEL_CSS = `
 .vnccs-cg-creator .cg-character-panel { gap:12px; overflow:visible; padding:16px; }
 .vnccs-cg-creator .cg-character-panel button { cursor:pointer; }
 .vnccs-cg-creator .cg-character-panel .vnccs-common-creator-btn-secondary { background:var(--bg-surface); color:var(--text-primary); border:1px solid var(--accent-border); }
 .vnccs-cg-creator .cg-character-panel>button { width:100%; min-height:48px; }
-.vnccs-cg-creator .cg-character-tabs { display:flex; border-bottom:1px solid var(--accent-border); }
-.vnccs-cg-creator .cg-character-tab { display:flex; min-width:200px; background:var(--bg-surface); border:1px solid var(--accent-border); border-bottom:3px solid var(--accent); border-radius:10px 10px 0 0; }
-.vnccs-cg-creator .cg-character-tab button { padding:10px 12px; color:var(--text-primary); background:none; border:0; }
-.vnccs-cg-creator .cg-character-tab [role=tab] { flex:1; }
+.vnccs-cg-creator .cg-character-tabs,.vnccs-cg-creator .cg-character-tablist { display:flex; gap:4px; min-width:0; }
+.vnccs-cg-creator .cg-character-tabs { border-bottom:1px solid var(--accent-border); }
+.vnccs-cg-creator .cg-character-tablist { flex-wrap:wrap; }
+.vnccs-cg-creator [data-character-add] { flex-shrink:0; align-self:flex-start; }
+.vnccs-cg-creator .cg-character-tab,.vnccs-cg-creator [data-character-add] { background:var(--bg-surface); border:1px solid var(--accent-border); border-bottom:3px solid transparent; border-radius:10px 10px 0 0; }
+.vnccs-cg-creator .cg-character-tab { display:flex; min-width:0; max-width:220px; }
+.vnccs-cg-creator .cg-character-tab:has([aria-selected=true]) { border-bottom-color:var(--accent); }
+.vnccs-cg-creator .cg-character-tab button,.vnccs-cg-creator [data-character-add] { padding:10px 12px; color:var(--text-primary); white-space:nowrap; }
+.vnccs-cg-creator .cg-character-tab button { background:none; border:0; }
+.vnccs-cg-creator .cg-character-tab [role=tab] { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.vnccs-cg-creator .cg-character-tab [role=tab]::before { content:""; display:inline-block; width:10px; height:10px; margin-right:7px; border-radius:50%; background:var(--dummy-color); }
 .vnccs-cg-creator .cg-character-block { display:flex; flex-direction:column; gap:12px; padding:16px; border:1px solid var(--accent-border); border-radius:var(--radius-md); background:var(--bg-secondary); }
 .vnccs-cg-creator .cg-character-block .vnccs-common-creator-section-title { margin:0; }
 .vnccs-cg-creator .cg-character-field { display:grid; grid-template-columns:110px minmax(0,1fr); align-items:center; gap:12px; font-size:16px; }
@@ -61,7 +68,7 @@ export class CGCharacterPanel {
         this.element = document.createElement("aside");
         this.element.className = "bg-panel cg-character-panel vnccs-common-creator-col"; this.element.hidden = true;
         this.element.innerHTML = `<button type="button" class="${primaryClass}" data-character-back>← Back to CG Creator</button>
-            <div class="cg-character-tabs" role="tablist" aria-label="Characters"><div class="cg-character-tab"><button type="button" role="tab" aria-selected="true">Character 1</button><button type="button" data-character-delete aria-label="Delete character">×</button></div></div>
+            <div class="cg-character-tabs"><div class="cg-character-tablist" role="tablist" aria-label="Characters"></div><button type="button" data-character-add>Add Character</button></div>
             <section class="cg-character-block">${title("Character")}
                 <select class="vnccs-common-creator-select" data-character-source="character" aria-label="Character"></select>
                 ${select("Costume", "costume")}
@@ -107,7 +114,7 @@ export class CGCharacterPanel {
             widget.commitGesture();
         });
     }
-    get core() { return this.widget.characters?.entries.values().next().value; }
+    get core() { return this.widget.characters?.active; }
     editable() { return this.widget.canEditCamera() && !this.widget.document?._recovery && !this.widget.document?.archived && !this.loading; }
     error(error) {
         if (this.disposed) return;
@@ -116,9 +123,9 @@ export class CGCharacterPanel {
     async show() {
         if (!this.core) return;
         this.element.hidden = false; this.widget.container.querySelector(".bg-model-source").hidden = true;
-        this.widget.characters.select(this.widget.characters.entries.keys().next().value);
-        this.refresh(); this.widget.resize();
-        await Promise.all([this.mountRadars(), this.loadCatalog()]);
+        const loading = this.loadCatalog();
+        this.widget.resize();
+        await Promise.all([this.mountRadars(), loading]);
     }
     hide() {
         this.element.hidden = true; this.widget.container.querySelector(".bg-model-source").hidden = false;
@@ -133,12 +140,15 @@ export class CGCharacterPanel {
     async loadCatalog() {
         const request = ++this.serial, core = this.core, source = { ...core?.source }, epoch = this.widget.epoch;
         if (!core) return;
+        const key = JSON.stringify([source.character, source.costume]);
+        if (this.catalogKey !== key) this.catalog = null;
+        this.catalogKey = key;
         this.loading = true; this.refresh();
         try {
             const catalog = await this.widget.request("/characters");
             const data = source.character ? await this.widget.request(`/characters/${encodeURIComponent(source.character)}?${new URLSearchParams({ costume: source.costume || "" })}`) : null;
             if (this.disposed || request !== this.serial || epoch !== this.widget.epoch || this.core !== core) return;
-            this.catalogKey = JSON.stringify([source.character, source.costume]); this.names = catalog.characters; this.catalog = data;
+            this.names = catalog.characters; this.catalog = data;
             this.element.querySelector(".cg-character-error").hidden = true;
         } catch (error) { if (request === this.serial) this.error(error); }
         finally { if (request === this.serial && !this.disposed) { this.loading = false; this.refresh(); } }
@@ -155,13 +165,13 @@ export class CGCharacterPanel {
                 if (this.disposed || request !== this.serial || epoch !== widget.epoch || core !== this.core) return;
                 this.catalog = data; source.costume = data?.costume || "";
                 source.sprite = data?.sprites[0]?.name || ""; source.emotion = source.sprite ? "Neutral" : "";
+                this.catalogKey = JSON.stringify([source.character, source.costume]);
                 this.loading = false;
                 widget.characters.edit(rig => {
                     rig.source = source;
                     if (data) rig.setMesh({ ...rig.mesh, age: Math.max(1, Math.min(90, parseInt(data.age, 10) || 25)),
                         gender: String(data.gender).toLowerCase() === "male" ? 1 : String(data.gender).toLowerCase() === "female" ? 0 : .5 });
                 });
-                this.catalogKey = JSON.stringify([source.character, source.costume]);
                 this.element.querySelector(".cg-character-error").hidden = true;
             } finally { if (request === this.serial) { this.loading = false; this.refresh(); } }
         } else {
@@ -178,9 +188,16 @@ export class CGCharacterPanel {
         const core = this.core;
         if (!core) { if (!this.element.hidden) this.hide(); return; }
         const source = core.source || {};
-        if (!this.element.hidden && !this.loading && this.catalogKey && this.catalogKey !== JSON.stringify([source.character, source.costume])) void this.loadCatalog();
+        if (!this.element.hidden && !this.loading && this.catalogKey !== JSON.stringify([source.character, source.costume])) {
+            void this.loadCatalog(); return;
+        }
+        this.renderTabs();
         const disabled = !this.editable();
         for (const control of this.element.querySelectorAll("button,input,select,textarea")) control.disabled = disabled;
+        const add = this.element.querySelector("[data-character-add]");
+        const atLimit = this.widget.characters.entries.size >= CHARACTER_LIMIT;
+        add.disabled ||= atLimit;
+        add.title = atLimit ? `QI2 supports up to ${CHARACTER_LIMIT} character sprites per CG` : "";
         if (this.prompt.value !== (core.prompt || "")) this.prompt.value = core.prompt || "";
         this.element.querySelector("[data-character-back]").disabled = false;
         this.element.querySelector("[data-character-undo]").disabled = disabled || !this.widget.history?.canUndo;
@@ -218,6 +235,27 @@ export class CGCharacterPanel {
         for (const button of this.element.querySelectorAll("[data-character-mode]")) button.setAttribute("aria-pressed", String(button.dataset.characterMode === this.widget.characters.mode));
         this.refreshRadars();
         this.widget.customSelects.syncSelects();
+    }
+    renderTabs() {
+        const editor = this.widget.characters;
+        const tabs = [...editor.entries].map(([id, core], index) => [id, core.source.character || `Character ${index + 1}`, core.dummyColor]);
+        const key = JSON.stringify([tabs, editor.selected]);
+        if (key === this.tabsKey) return;
+        this.tabsKey = key;
+        const list = this.element.querySelector(".cg-character-tablist");
+        const focused = list.contains(document.activeElement) ? document.activeElement.dataset.characterTab : "";
+        list.replaceChildren(...tabs.map(([id, name, color]) => {
+            const item = document.createElement("div"); item.className = "cg-character-tab";
+            item.style.setProperty("--dummy-color", CHARACTER_COLORS[color]);
+            const tab = document.createElement("button"); tab.type = "button"; tab.dataset.characterTab = id;
+            tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", String(editor.selected === id));
+            tab.textContent = name; tab.title = name;
+            const remove = document.createElement("button"); remove.type = "button"; remove.dataset.characterDelete = id;
+            remove.setAttribute("aria-label", "Delete character"); remove.title = `Delete ${name}`; remove.textContent = "×";
+            item.append(tab, remove);
+            return item;
+        }));
+        if (focused) list.querySelector(`[data-character-tab="${focused}"]`)?.focus({ preventScroll: true });
     }
     input(event) {
         if (event.target === this.prompt) {
@@ -329,11 +367,16 @@ export class CGCharacterPanel {
         const button = event.target.closest("button"); if (!button || button.disabled) return;
         if (button.hasAttribute("data-character-back")) { this.hide(); return; }
         if (!this.editable()) return;
-        if (button.hasAttribute("data-character-delete")) {
-            const widget = this.widget, core = this.core, epoch = widget.epoch;
-            const id = widget.characters.entries.keys().next().value;
+        if (button.hasAttribute("data-character-add")) this.widget.addCharacter();
+        else if (button.dataset.characterTab) {
+            this.widget.commitGesture();
+            this.widget.characters.select(button.dataset.characterTab);
+        }
+        else if (button.dataset.characterDelete) {
+            const widget = this.widget, id = button.dataset.characterDelete, epoch = widget.epoch;
+            const core = widget.characters.entries.get(id);
             const confirmed = await widget.dialog("Delete character", [], "Delete", { message: "Delete this character from the scene?", danger: true });
-            if (!confirmed || this.disposed || epoch !== widget.epoch || core !== this.core || !this.editable()) return;
+            if (!confirmed || this.disposed || epoch !== widget.epoch || core !== widget.characters.entries.get(id) || !this.editable()) return;
             widget.beginGesture();
             widget.characters.restore(widget.characters.snapshot().filter(character => character.id !== id));
             widget.commitGesture(); widget.updateControls();
@@ -371,7 +414,7 @@ export class CGCharacterPanel {
                 const pose = extractActivePoseFromSceneAsset(result.pose) || result.pose;
                 if (!pose || pose.animation || pose.type === "pose_set") throw new Error("Choose a single pose.");
                 const candidate = { bones: pose.bones || {}, bonePositions: pose.bonePositions || {}, modelRotation: pose.modelRotation || [0, 0, 0] };
-                const snapshot = this.widget.characters.snapshot()[0];
+                const snapshot = this.widget.characters.snapshot().find(item => item.id === this.widget.characters.selected);
                 validateCharacters([{ ...snapshot, pose: candidate }]);
                 if (library._disposed || this.disposed || epoch !== this.widget.epoch || core !== this.core) return;
                 this.widget.characters.edit(rig => rig.setPose(candidate, true)); this.widget.commitGesture(); this.closeLibrary(); this.refresh();

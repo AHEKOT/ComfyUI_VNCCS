@@ -135,6 +135,536 @@ def assert_main_fields_preserved(before, after):
     assert {key: after[key] for key in MAIN_FIELDS} == {key: before[key] for key in MAIN_FIELDS}
 
 
+@pytest.mark.parametrize("count", [4, 5])
+def test_multiview_meshing_aligns_depth_scale_and_textures_to_original_camera(count):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    calibration = np.array([[4., 0, 2], [0, 4, 2], [0, 0, 1]])
+    poses = np.repeat(np.eye(4)[None], count, axis=0)
+    poses[:, :3, 3] = [[0, 0, 0], [4, 0, 0], [-4, 0, 0], [0, 4, 0], [0, -4, 0]][:count]
+    tracks = [np.array([[x + 0.5, y + 0.5, 4.] for x in range(4) for y in range(4)])] * count
+    depth = torch.stack([torch.full((4, 4), value) for value in (2., 1., 4., 2., 8.)[:count]])
+    colors = (0., 0.25, 0.5, 0.75, 1.)[:count]
+    images = torch.stack([torch.full((4, 4, 3), value) for value in colors])
+
+    def triangulate(name, *, moge_geometry, **_options):
+        assert name == "MoGePointMapToMesh"
+        points = moge_geometry["points"][:, :2, :2].reshape(1, 4, 3)
+        return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]),
+            faces=torch.tensor([[[0, 2, 1], [1, 2, 3]]]), uvs=torch.tensor([[[0., 0], [1, 0], [0, 1], [1, 1]]])),)
+
+    scales, offsets = np.array([multiview.depth_transform(d.numpy(), t) for d, t in zip(depth, tracks)]).T
+    poses[:, :3, 3] /= scales[0]
+    cameras = {"intrinsics": [calibration] * count, "world_to_camera": poses,
+               "depth_scales": scales / scales[0], "depth_offsets": offsets / scales[0]}
+    mesh = multiview.fuse_moge_views(depth, images, cameras, triangulate, lambda: None)
+    assert torch.all(mesh.vertices[0, :, 2] == -2)
+    assert mesh.vertices[0, ::4, :2].tolist() == [[-0.75, 0.75], [-2.75, 0.75], [1.25, 0.75], [-0.75, 2.75], [-0.75, -1.25]][:count]
+    assert mesh.faces.shape == (1, 2 * count, 3)
+    height, width = mesh.texture.shape[1:3]
+    assert (height, width) == (4 * ((count + 1) // 2), 8)
+    tile_origins = [(4 * (index // 2), 4 * (index % 2)) for index in range(count)]
+    np.testing.assert_allclose(mesh.uvs[0, ::4], [[(x + .5) / width, (y + .5) / height] for y, x in tile_origins])
+    assert [mesh.texture[0, y, x, 0].item() for y, x in tile_origins] == list(colors)
+
+
+def test_moge_overlap_preserves_faces_at_the_boundary():
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    calibration = np.array([[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]])
+    poses = np.repeat(np.eye(4)[None], 3, axis=0)
+    depths = np.full((3, 8, 8), 2., dtype=np.float32)
+    qualities = np.ones_like(depths)
+    interiors = np.ones(depths.shape, dtype=bool)
+    # The same wall continues across the boundary between views 0 and 1.
+    interiors[0, :, 4:] = False
+    interiors[1, :, :4] = False
+    pixels = np.array([[2.5, 2.5], [3.5, 2.5], [2.5, 3.5], [4.5, 2.5]])
+    vertices = np.column_stack(((pixels - 4.) / 4, np.full(len(pixels), 2.)))
+    triangles = np.array([[0, 1, 2], [1, 3, 2]])
+    dropped = multiview._overlap_faces(vertices, triangles, 2, depths, [calibration] * 3,
+                                        poses, poses, qualities, interiors)
+    assert dropped.tolist() == [True, False]
+
+
+def test_moge_overlap_aligns_a_wall_without_crossing_an_occlusion():
+    pytest.importorskip("cv2")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    calibration = np.array([[24., 0., 12.], [0., 24., 12.], [0., 0., 1.]])
+    depths = np.stack([np.full((24, 24), value, dtype=np.float32) for value in (2., 2.1)])
+    depths[1, :, 18:] = 1.
+    poses = np.repeat(np.eye(4)[None], 2, axis=0)
+    poses[1, 0, 3] = 0.2
+    fused = multiview._consensus_depths(depths, [calibration] * 2, poses, lambda: None)
+    assert fused[0, 12, 8] == pytest.approx(2.05)
+    assert fused[1, 12, 10] == pytest.approx(2.05)
+    assert fused[0, 12, 18] == 2.
+    assert fused[1, 12, 20] == 1.
+
+
+def test_moge_depth_registration_fits_a_shift_from_reliable_tracks():
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    depth = np.linspace(1, 4, 32)[None]
+    tracks = np.column_stack((np.arange(32) + .5, np.full(32, .5), 1.3 * depth[0] + .4))
+    tracks[-1, 2] = 100
+    assert multiview.depth_transform(depth, tracks) == pytest.approx((1.3, .4))
+
+
+def test_moge_composite_keeps_observed_pixels_and_leaves_new_geometry_visible():
+    pytest.importorskip("cv2")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    raw = Image.new("RGB", (32, 16), (0, 0, 0))
+    generated = Image.new("RGB", raw.size, (18, 18, 18))
+    depth = np.ones((16, 32))
+    depth[:, 16:] = np.inf
+    result = multiview.composite_capture(raw, generated, depth)
+    assert result.getpixel((4, 8)) == (0, 0, 0)
+    assert result.getpixel((20, 8)) == (18, 18, 18)
+    assert 0 < result.getpixel((13, 8))[0] < 18
+
+
+def test_moge_fusion_uses_closer_view_for_shared_surface(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setattr(multiview, "_restore_reference_coverage", lambda *_args: None)
+    calibration = [[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]]
+    poses = np.repeat(np.eye(4)[None], 2, axis=0)
+    poses[1, 2, 3] = -0.5
+    cameras = {"intrinsics": [calibration] * 2, "world_to_camera": poses, "depth_scales": [1., 1.]}
+    depths = torch.stack((torch.full((8, 8), 2.), torch.full((8, 8), 1.55)))
+    images = torch.stack((torch.zeros((8, 8, 3)), torch.ones((8, 8, 3))))
+
+    def triangulate(_name, *, moge_geometry, **_options):
+        points = moge_geometry["points"][:, 3:5, 3:5].reshape(1, 4, 3)
+        return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]),
+            faces=torch.tensor([[[0, 2, 1], [1, 2, 3]]]), uvs=torch.tensor([[[0., 0], [1, 0], [0, 1], [1, 1]]])),)
+
+    mesh = multiview.fuse_moge_views(depths, images, cameras, triangulate, lambda: None)
+
+    assert mesh.faces.shape == (1, 2, 3)
+    torch.testing.assert_close(mesh.vertices[0, :, 2], torch.full((4,), -2.025))
+    assert torch.all(mesh.uvs[0, :, 0] > 0.5)
+
+
+@pytest.mark.parametrize("upper_view", [False, True])
+def test_moge_fusion_restores_only_faces_that_cover_missing_reference_pixels(monkeypatch, upper_view):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+
+    def rasterize(view, faces, _focal, width, height, depth, owners, visible, shade):
+        assert (height, width) == (2, 4)
+        if upper_view:
+            torch.testing.assert_close(view[0, 0], view.new_tensor(2_000.))
+        pixels = (faces[:, 0] == 4).long()
+        wins = depth[pixels] > 1
+        ids = torch.where(wins)[0]
+        depth[pixels[ids]] = 1
+        owners[pixels[ids]] = shade(ids, None)
+        visible[pixels[ids]] = True
+
+    monkeypatch.setitem(sys.modules, "comfy_extras.sam3d_body.rasterizer",
+                        types.SimpleNamespace(_rasterize_person=rasterize))
+    vertices = torch.ones((8, 3))
+    faces = torch.tensor([[0, 1, 2], [0, 1, 3], [4, 5, 6], [5, 6, 7]])
+    dropped = torch.tensor([False, True, True, True])
+    surfaces = [(vertices, faces, dropped, None)]
+    if upper_view:
+        other = torch.ones(4, dtype=torch.bool)
+        surfaces.insert(0, (vertices, faces, other, None))
+        transform = torch.eye(4)
+        transform[0, 3] = 1.
+        multiview._restore_reference_coverage(surfaces, (1, 2), np.diag([1., 1., 1.]), lambda: None,
+                                              reference_to_camera=transform, source_index=1)
+        assert other.all()
+    else:
+        multiview._restore_reference_coverage(surfaces, (1, 2), np.eye(3), lambda: None)
+    assert dropped.tolist() == [False, True, False, False]
+
+
+def test_moge_mesh_preserves_a_surface_next_to_a_depth_jump():
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    depth = torch.tensor([[[2., 2.], [2., 8.]]])
+    image = torch.zeros(1, 2, 2, 3)
+
+    def triangulate(_name, *, moge_geometry, discontinuity_threshold, **_options):
+        assert discontinuity_threshold == 0.
+        points = moge_geometry["points"].reshape(1, 4, 3)
+        return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]),
+            faces=torch.tensor([[[0, 2, 1], [1, 2, 3]]]), uvs=torch.zeros(1, 4, 2)),)
+
+    cameras = {"intrinsics": [np.eye(3)], "world_to_camera": [np.eye(4)], "depth_scales": [1.]}
+    mesh = multiview.fuse_moge_views(depth, image, cameras, triangulate, lambda: None)
+    assert mesh.faces.tolist() == [[[0, 2, 1]]]
+    assert mesh.vertices[0, :, 2].tolist() == [-2.] * 3
+
+
+def test_moge_fusion_keeps_one_surface_in_observed_overlap():
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    calibration = [[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]]
+    poses = np.repeat(np.eye(4)[None], 2, axis=0)
+    poses[1, 0, 3] = 0.25
+    cameras = {"intrinsics": [calibration] * 2, "world_to_camera": poses, "depth_scales": [1., 1.]}
+    depth = torch.stack([torch.full((8, 8), z) for z in (2., 3.)])
+    images = torch.zeros(2, 8, 8, 3)
+    holes = np.zeros((8, 8), dtype=bool)
+    holes[:, 4:] = True
+
+    def triangulate(_name, *, moge_geometry, **_options):
+        points = moge_geometry["points"][:, 2:4, [1, 2, 5, 6]].reshape(1, 8, 3)
+        return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]), uvs=torch.zeros(1, 8, 2),
+            faces=torch.tensor([[[0, 4, 1], [1, 4, 5], [2, 6, 3], [3, 6, 7]]])),)
+
+    mesh = multiview.fuse_moge_views(depth, images, cameras, triangulate, lambda: None, capture_holes={1: holes})
+    face_depths = mesh.vertices[0, mesh.faces[0], 2]
+    assert face_depths[:, 0].tolist() == [-2.] * 4 + [-3.] * 2
+    assert (mesh.vertices[0, mesh.faces[0, -2:].flatten(), 0] > 0).all()
+
+
+@pytest.mark.parametrize("turn_camera", [True, False])
+def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setitem(sys.modules, "comfy.model_management",
+                        types.SimpleNamespace(get_torch_device=lambda: torch.device("cpu")))
+    rendered = []
+
+    def rasterize(view, _faces, _focal, _width, _height, depth, _colors, visible, _shade):
+        rendered.append(view.clone())
+        depth.fill_(float(view[0, 2]))
+        visible.fill_(True)
+
+    monkeypatch.setitem(sys.modules, "comfy_extras.sam3d_body.rasterizer",
+                        types.SimpleNamespace(_rasterize_person=rasterize))
+    points = torch.tensor([[-1., 0., 2.], [1., 0., 2.], [0., 1., 2.]])
+    mesh = types.SimpleNamespace(texture=torch.ones(1, 8, 8, 3),
+                                vertices=(points * torch.tensor([1., -1., -1.]))[None],
+                                faces=torch.tensor([[[0, 1, 2]]]), uvs=torch.zeros(1, 3, 2))
+    intrinsics = torch.tensor([[1., 0., .5], [0., 1., .5], [0., 0., 1.]])
+    views, _, poses = multiview.render_shifted_views(mesh, intrinsics, lambda: None, turn_camera=turn_camera)
+
+    sine, cosine = np.sin(np.deg2rad(20)), np.cos(np.deg2rad(20))
+    if turn_camera:
+        expected_centers = [[0, -.48, 0], [.24, 0, 0], [-.24, 0, 0]]
+        expected_look = [[0, sine, cosine], [-sine, 0, cosine], [sine, 0, cosine]]
+    else:
+        expected_centers = [[0, -.48, 0], [0, 0, .48], [.24, 0, 0], [-.24, 0, 0]]
+        expected_look = [[0, 0, 1]] * 4
+    np.testing.assert_allclose(np.linalg.inv(poses[1:])[:, :3, 3], expected_centers, atol=1e-8)
+    np.testing.assert_allclose(poses[1:, 2, :3], expected_look)
+    for view, actual, pose in zip(views, rendered, poses[1:], strict=True):
+        expected = points.numpy() @ pose[:3, :3].T + pose[:3, 3]
+        np.testing.assert_allclose(actual.numpy() * 2, expected, atol=1e-7)
+        assert view[2][0, 0] == pytest.approx(expected[0, 2])
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_side_camera_reaches_the_source_edge_and_preserves_overlap(sign):
+    pytest.importorskip("cv2")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    height, width, focal = 108, 192, 115.
+    calibration = np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]])
+    y, x = np.mgrid[:height, :width]
+    points = np.column_stack(((x.ravel() + .5 - width / 2) / focal,
+                              (y.ravel() + .5 - height / 2) / focal, np.ones(height * width))).astype(np.float32)
+    sine, cosine = np.sin(sign * np.deg2rad(20)), np.cos(np.deg2rad(20))
+    rotation = np.array([[cosine, 0, sine], [0, 1, 0], [-sine, 0, cosine]])
+    original = np.array([sign * .12, 0., 0.])
+    fitted = multiview._fit_shifted_camera(points, original, rotation, (height, width), calibration, lambda: None)
+
+    def coverage(center):
+        ids, rows, cols, _ = multiview._project_pixels((points - center) @ rotation.T, None, (height, width), calibration)
+        gaps = np.full(height, width)
+        np.minimum.at(gaps, rows, cols if sign > 0 else width - 1 - cols)
+        return np.median(gaps[height // 4:3 * height // 4]), len(ids)
+
+    old_gap, old_overlap = coverage(original)
+    gap, overlap = coverage(fitted)
+    assert old_gap > width * .15
+    assert gap <= .02 * width and overlap >= .95 * old_overlap
+    assert sign * fitted[0] >= abs(original[0]) and fitted[2] > 0
+
+
+@pytest.mark.parametrize("reject_first_view", [False, True])
+def test_moge_refine_views_publishes_model_without_diagnostics(
+        workspace, monkeypatch, reject_first_view):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
+    multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setattr(multiview, "require_colmap", mock.Mock())
+    calibration = torch.diag(torch.tensor([1., 1.5, 1.]))
+    infer = mock.Mock(side_effect=lambda batch, *_args: {
+        "intrinsics": [calibration], "depth": torch.full(batch.shape[:3], 2.),
+    })
+    monkeypatch.setattr(service, "_infer_moge", infer)
+    mesh = object()
+    export = mock.Mock(return_value=(types.SimpleNamespace(get_bytes=lambda: b"glTF fixture"),))
+    monkeypatch.setattr(service, "_call_comfy_node", lambda name, **kwargs: (
+        (mesh,) if name == "MoGePointMapToMesh" else export(**kwargs)))
+    view_count = 3
+    poses = np.repeat(np.eye(4)[None], view_count + 1, axis=0)
+    poses[1:, :3, 3] = [[0, .48, 0], [-.24, 0, 0], [.24, 0, 0]]
+
+    def capture(*_args):
+        image = infer.call_args.args[0]
+        height, width = image.shape[1:3]
+        holes = np.zeros((height, width), dtype=bool)
+        holes[:, -32:] = True
+        frames = [(torch.full_like(image, value), holes, np.where(holes, np.inf, 6.)) for value in (0.2, 0.4, 0.6)]
+        focal = 1.5 * height
+        return frames, np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]]), poses
+
+    rasterize = mock.Mock(side_effect=capture)
+    monkeypatch.setattr(multiview, "render_shifted_views", rasterize)
+    seen = []
+
+    def refine(settings, _job_id, _cancel, frame, background, *, save_dataset, progress_range, preserve_capture_grid):
+        assert settings["resolution_mp"] == 0.05 and settings["generation"]["cache_device"] == "off"
+        assert not save_dataset and preserve_capture_grid and 0 < progress_range[0] < progress_range[1] < 0.6
+        assert background.size == frame.size and all(side % 32 == 0 for side in frame.size)
+        assert background.getpixel((0, 0)) == (255, 0, 0)
+        pixel = frame.getpixel((0, 0))[0]
+        seen.append(pixel)
+        refined = frame.copy()
+        refined.putpixel((0, 0), (pixel + 8,) * 3)
+        refined.paste((4, 5, 6), (frame.width - 32, 0, frame.width, frame.height))
+        return refined, {}
+
+    monkeypatch.setattr(service, "generate_image", refine)
+    observed = np.array([[i + .5, i + .5, 6.] for i in range(8)])
+    matcher = mock.Mock(side_effect=[np.empty((0, 3)) if reject_first_view else observed, *[observed] * (view_count - 1)])
+    monkeypatch.setattr(multiview, "capture_depth_tracks", matcher)
+    require = mock.Mock(side_effect=AssertionError("Refine views must not require COLMAP"))
+    register = mock.Mock(side_effect=AssertionError("Refine views must use the known cameras"))
+    monkeypatch.setattr(multiview, "require_colmap", require)
+    monkeypatch.setattr(multiview, "register_views", register)
+    merge = mock.Mock(return_value=mesh)
+    monkeypatch.setattr(multiview, "fuse_moge_views", merge)
+    document = workspace.document
+    settings = service.normalize_settings({"resolution_mp": 3, "generation": {"cache_device": "cpu"}})
+    options = {"provider": "moge", "moge_resolution_mp": 0.05, "moge_additional_angles": True}
+    service.start_job(document["background_id"], job_payload(document, "model", settings=settings, model_settings=options))
+    job = workspace.run_pending()
+    assert job["status"] == "completed", job["error"]
+    assert [len(call.args[0]) for call in infer.call_args_list] == [1, view_count]
+    assert rasterize.call_args.args[:2] == (mesh, calibration)
+    assert seen == [51, 102, 153]
+    require.assert_not_called()
+    register.assert_not_called()
+    merge.assert_called_once()
+    depths, images, cameras, *_ = merge.call_args.args
+    retained = [index for index in range(view_count + 1) if index != 1 or not reject_first_view]
+    assert len(depths) == len(images) == len(retained)
+    assert set(merge.call_args.kwargs["capture_holes"]) == set(range(1, len(retained)))
+    height, width = images.shape[1:3]
+    assert (width, height) == (448, 224)
+    assert depths.shape[1:] == (height, width)
+    assert cameras["intrinsics"][0][0][2] == width / 2
+    assert cameras["intrinsics"][0][1][2] == height / 2
+    assert (images[:, 0, 0, 0] * 255).round().tolist() == [[255, *seen][i] for i in retained]
+    assert (images[1:, 0, -1] * 255).round().tolist() == [[4, 5, 6]] * (len(retained) - 1)
+    np.testing.assert_array_equal(cameras["world_to_camera"], poses[retained])
+    assert cameras["depth_scales"] == [1.] + [3.] * (len(retained) - 1)
+    assert cameras["depth_offsets"] == [0.] * len(retained)
+    export.assert_called_once_with(mesh=mesh)
+    saved = library.load_background(document["background_id"])
+    assert len(saved["models"]) == 1 and not saved["cgs"]
+    directory = library._model_directory(library.root() / saved["name"], saved["models"][0]["model_id"], saved)
+    assert len(list((directory / "reconstruction").glob("[0-9]*.png"))) == len(retained)
+    assert not (library.root().parent / "CG_MoGe_Diagnostics").exists()
+    assert not list(factory._factory_root().iterdir())
+
+
+@pytest.mark.parametrize(("provider_name", "camera_source"), [
+    ("moge", "camera_inputs"), ("moge", "colmap"),
+    ("worldmirror", "camera_inputs"), ("worldmirror", "predicted"),
+])
+@pytest.mark.parametrize("save", [True, False, None])
+def test_expansion_keeps_references_and_geometry_private_until_save(workspace, monkeypatch, routes, provider_name, camera_source, save):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setattr(multiview, "require_colmap", mock.Mock())
+    batch = torch.stack([torch.full((64, 128, 3), value) for value in (0., .25, .5, .75, 1.)])
+    calls = []
+    pose = np.eye(4)
+    cameras = {"intrinsics": [[[100., 0., 64.], [0., 100., 32.], [0., 0., 1.]]] * len(batch),
+               "world_to_camera": [pose.tolist()] * len(batch), "depth_scales": [1.] * len(batch)}
+    known_views = (np.array(cameras["intrinsics"][0]), np.repeat(pose[None], len(batch), axis=0), None, None)
+    monkeypatch.setattr(service, "_generate_refined_moge_views", mock.Mock(return_value=(batch, 100., {}, known_views)))
+    inferred = []
+
+    def reconstruct(_job, images, scene, folder, *_args, **_kwargs):
+        calls.append(images)
+        name = "model.glb" if provider_name == "moge" else "model.ply"
+        (folder / name).write_bytes(f"geometry-{len(images)}".encode())
+        service._set_reconstruction_object(scene, f"{len(images):032x}", CAMERA,
+                                           "model" if provider_name == "moge" else "ply", name)
+
+    worldmirror_batches = []
+
+    def reconstruct_worldmirror(job, images, scene, folder, _settings, saved_cameras):
+        reconstruct(job, images, scene, folder)
+        worldmirror_batches.append(saved_cameras)
+        return saved_cameras if saved_cameras is not None else {
+            "intrinsics": [cameras["intrinsics"][0]] * len(images), "world_to_camera": [pose.tolist()] * len(images),
+        }
+
+    monkeypatch.setattr(service, "_generate_worldmirror_scene", reconstruct_worldmirror)
+    if provider_name == "moge":
+        monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
+
+        def register(images, _check_cancel, *, focal_length, capture_holes):
+            tracks = np.column_stack((np.arange(8) + .5, np.arange(8) + .5, np.ones(8)))
+            return np.array(cameras["intrinsics"][0]), np.repeat(pose[None], len(images), axis=0), [tracks] * len(images)
+
+        register = mock.Mock(side_effect=register)
+        monkeypatch.setattr(multiview, "register_views", register)
+        if camera_source == "camera_inputs":
+            def generate(job, images, scene, folder, **_options):
+                reconstruct(job, images, scene, folder)
+                return images, {}, cameras
+            monkeypatch.setattr(service, "_generate_moge_scene", generate)
+
+        def infer(images, _fov):
+            inferred.append(images)
+            return {"depth": torch.ones(images.shape[:3])}
+
+        def fuse(depth, images, calibration, _call_node, _check_cancel, *, capture_holes=None):
+            assert depth.shape == images.shape[:3]
+            expected = [1.] * len(images) if camera_source == "colmap" else [1.] * 5 + [2.]
+            assert calibration["depth_scales"] == expected
+            return images
+
+        monkeypatch.setattr(service, "_infer_moge", infer)
+        align = mock.Mock(return_value=(pose, 2., .1))
+        monkeypatch.setattr(multiview, "rasterize_expansion_depth",
+                            lambda _path, _camera, shape, _focal, _cancel: (np.ones(shape), pose))
+        monkeypatch.setattr(multiview, "align_expansion_depth", align)
+        monkeypatch.setattr(multiview, "fuse_moge_views", fuse)
+        monkeypatch.setattr(service, "_save_moge_mesh",
+                            lambda job, scene, folder, mesh, _camera: reconstruct(job, mesh, scene, folder))
+    document = workspace.document
+    background_id = document["background_id"]
+    service.start_job(background_id, job_payload(document, "model",
+        model_settings={"provider": provider_name, f"{provider_name}_camera_source": camera_source}))
+    first = workspace.run_pending()
+    assert first["status"] == "completed", first["error"]
+    document = library.load_background(background_id)
+    model_id = document["models"][0]["model_id"]
+    directory = library.root() / document["name"]
+    base = library._model_directory(directory, model_id, document)
+    original = {path.name: path.read_bytes() for path in (base / "reconstruction").glob("*.png")}
+    assert len(original) == 5
+    assert service.public_model(background_id, model_id)["reconstruction_size"] == [128, 64]
+    if provider_name == "moge" and camera_source == "camera_inputs":
+        multiview.require_colmap.side_effect = AssertionError("MoGe expansion must reuse the captured camera")
+    service.start_job(background_id, job_payload(document, "expand", model_camera=CAMERA), png(color="yellow"))
+    frame = workspace.run_pending()
+    assert frame["status"] == "completed", frame["error"]
+    assert not (library.root().parent / "CG_MoGe_Diagnostics").exists()
+    frame_id = frame["result"]["expansion_frame_id"]
+    saved_model = service.public_model(background_id, model_id)
+    assert saved_model["expansion_frame_id"] == frame_id
+    assert "expansion_id" not in saved_model
+    assert [len(images) for images in calls] == [5]
+    assert library.load_background(background_id) == document
+    url = "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"
+    frame_info = {"background_id": background_id, "model_id": model_id, "expansion_id": frame_id}
+    for kind, pixel in (("before", (255, 255, 0)), ("after", (0, 0, 255))):
+        response = call(routes, "GET", url + "/frame/{kind}", Request(info={**frame_info, "kind": kind}))
+        assert response.status == 200
+        with Image.open(response.path) as image:
+            assert image.getpixel((0, 0)) == pixel
+    assert not (library.root().parent / "CG_Expansion_Diagnostics").exists()
+    if save is None:
+        response = call(routes, "DELETE", url + "/frame", Request(info=frame_info))
+        assert response.status == 200, response.text
+        assert "expansion_frame_id" not in service.public_model(background_id, model_id)
+        assert [len(images) for images in calls] == [5]
+        assert not (base / ".expansion-frame").exists()
+        assert all((base / "reconstruction" / name).read_bytes() == data for name, data in original.items())
+        return
+    service.start_job(background_id, job_payload(document, "expand", expansion_frame_id=frame_id))
+    expansion = workspace.run_pending()
+    assert expansion["status"] == "completed", expansion["error"]
+    expansion_id = expansion["job_id"]
+    assert [len(images) for images in calls] == [5, 6]
+    assert calls[-1][-1, 0, 0].tolist() == [0., 0., 1.]
+    if provider_name == "moge":
+        if camera_source == "colmap":
+            assert [len(call.args[0]) for call in register.call_args_list] == [5, 6]
+            assert torch.equal(inferred[-1], calls[-1])
+            align.assert_not_called()
+        else:
+            register.assert_not_called()
+            assert torch.equal(torch.cat(inferred), calls[-1])
+            assert align.call_args.args[1] == CAMERA
+    elif camera_source == "camera_inputs":
+        captured = worldmirror_batches[-1]
+        assert captured["world_to_camera"][:5] == cameras["world_to_camera"]
+        capture_pose = np.linalg.inv(captured["world_to_camera"][-1])
+        np.testing.assert_allclose(capture_pose[:3, 3], CAMERA["position"])
+        look = np.subtract(CAMERA["target"], CAMERA["position"])
+        np.testing.assert_allclose(capture_pose[:3, 2], look / np.linalg.norm(look))
+        assert captured["intrinsics"][-1][0][2] == 64
+        assert captured["intrinsics"][-1][1][2] == 32
+        focal_y = captured["intrinsics"][-1][1][1]
+        assert np.rad2deg(2 * np.arctan(32 / focal_y)) == pytest.approx(CAMERA["fov"])
+    else:
+        assert worldmirror_batches == [None, None]
+    workspace.generated.assert_called_once()
+    assert workspace.generated.call_args.args[3].getpixel((0, 0)) == (255, 255, 0)
+    assert library.load_background(background_id) == document
+    assert service.public_model(background_id, model_id)["expansion_id"] == expansion_id
+    assert not (base / ".expansion-frame").exists()
+    info = {"background_id": background_id, "model_id": model_id, "expansion_id": expansion_id}
+    response = call(routes, "GET", url, Request(info=info))
+    assert response.status == 200
+    preview = json.loads(response.text)
+    assert f"/expansion/{expansion_id}/objects/" in next(iter(preview["objects"][0]["urls"].values()))
+    response = call(routes, "POST", url, Request({"save": save}, info=info))
+    assert response.status == 200, response.text
+    updated = json.loads(response.text)
+    updated_model = updated["models"][0]["model_id"]
+    assert (updated_model != model_id) == save
+    assert not (base / ".expansion").exists()
+    assert len(list((base / "reconstruction").glob("*.png"))) == (6 if save else 5)
+    assert all((base / "reconstruction" / name).read_bytes() == data for name, data in original.items())
+    manifest = json.loads((base / "reconstruction" / "settings.json").read_text())
+    assert manifest["camera_source"] == camera_source
+    if provider_name == "moge":
+        expected_scales = [1.] * 5 + ([1. if camera_source == "colmap" else 2.] if save else [])
+        assert manifest["cameras"]["depth_scales"] == expected_scales
+        if save:
+            assert manifest["cameras"]["depth_offsets"] == [0.] * 5 + [0. if camera_source == "colmap" else .1]
+
+
 @pytest.mark.parametrize("name", [None, "", "   "])
 def test_cg_creation_requires_an_explicit_scene_name(workspace, name):
     document = with_model(workspace)
@@ -185,22 +715,6 @@ def test_read_only_scene_fails_before_inference(workspace, condition):
     workspace.worker.submit.assert_not_called()
 
 
-def test_settings_save_changes_only_cg_owned_settings(workspace):
-    document = workspace.document
-    updated = service.save_settings(document["background_id"], {"revision": document["revision"],
-        "model_settings": {"seed": 12, "provider": "trellis2", "remove_background": "1"},
-        "cg_settings": {"prompt": "Repair the captured room", "generation": {"steps": 12}},
-        "editor": {"description": "must not overwrite"}, "images": [], "generated_sets": []})
-    saved = library.load_background(document["background_id"])
-    assert_main_fields_preserved(document, saved)
-    assert saved["revision"] == document["revision"] + 1
-    assert saved["model_settings"]["seed"] == 12
-    assert saved["model_settings"]["provider"] == "triposplat"
-    assert saved["model_settings"]["remove_background"] is False
-    assert saved["cg_settings"]["prompt"] == "Repair the captured room"
-    assert updated["cg_settings"]["generation"]["steps"] == 12
-
-
 def test_main_document_without_model_or_cg_arrays_is_read_without_rewriting(workspace):
     document = copy.deepcopy(workspace.document)
     document.pop("models")
@@ -211,12 +725,7 @@ def test_main_document_without_model_or_cg_arrays_is_read_without_rewriting(work
     assert public["models"] == [] and public["cgs"] == []
     assert "models" not in document and "cgs" not in document
     assert path.read_bytes() == original
-    updated = service.save_settings(document["background_id"], {"revision": document["revision"]})
-    assert updated["models"] == [] and updated["cgs"] == []
-    saved = library.load_background(document["background_id"])
-    assert saved["models"] == [] and saved["cgs"] == []
-    assert_main_fields_preserved(document, saved)
-    status = service.start_job(document["background_id"], job_payload(saved, "model"))
+    status = service.start_job(document["background_id"], job_payload(document, "model"))
     assert status["status"] == "queued"
 
 
@@ -266,6 +775,7 @@ def test_cg_job_captures_settings_camera_and_frame_without_changing_main_variant
     assert_main_fields_preserved(document, saved)
     assert saved["models"] == document["models"]
     cg = saved["cgs"][-1]
+    assert "settings" not in cg and "cg_settings" not in saved and "model_settings" not in saved
     assert cg["camera"] == CAMERA and cg["model_id"] == document["models"][-1]["model_id"]
     assert cg["source_image_id"] == document["models"][-1]["source_image_id"]
     assert cg["source_image_id"] == document["selected_image_id"]
@@ -295,9 +805,9 @@ def test_character_job_captures_selected_costume_sprite_and_emotion(workspace, m
     selected.unlink()
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
-    sprite = workspace.generated.call_args.kwargs["character"]
+    (color, sprite, saved_prompt), = workspace.generated.call_args.kwargs["character_references"]
     assert sprite.size == (64, 128) and sprite.getpixel((0, 0)) == (0, 0, 255, 128)
-    assert workspace.generated.call_args.kwargs["character_prompt"] == prompt
+    assert color == "White" and saved_prompt == prompt
     saved = library.load_background(document["background_id"])
     assert saved["cgs"][-1]["characters"][0]["source"]["emotion"] == "Happy"
     assert saved["cgs"][-1]["characters"][0]["prompt"] == prompt
@@ -382,13 +892,11 @@ def test_invalid_cg_inputs_never_queue_inference(workspace, camera, frame, name)
     workspace.generated.assert_not_called()
 
 
-def test_busy_workspace_rejects_another_job_and_settings_save(workspace):
+def test_busy_workspace_rejects_another_job(workspace):
     document = with_model(workspace)
     service.start_job(document["background_id"], job_payload(document), png())
     with pytest.raises(RuntimeError, match="busy"):
         service.start_job(document["background_id"], job_payload(document), png())
-    with pytest.raises(RuntimeError, match="busy"):
-        service.save_settings(document["background_id"], {"revision": document["revision"]})
     assert workspace.worker.submit.call_count == 1
 
 
@@ -422,7 +930,7 @@ def test_sampling_cancellation_is_translated_to_factory_job_cancellation(workspa
 
 def test_stop_after_sampling_prevents_committing_a_finished_frame(workspace):
     document = with_model(workspace)
-    def generate(_settings, _job_id, event, _reference, _background, character=None, *, character_prompt=""):
+    def generate(_settings, _job_id, event, _reference, _background, *, character_references=()):
         event.set()
         return Image.new("RGB", (128, 64)), {}
     workspace.generated.side_effect = generate
@@ -458,83 +966,161 @@ def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
     assert not (source.parent / "CG").exists()
 
 
-@pytest.mark.parametrize("use_variant", [False, True], ids=["original", "generated-variant"])
-@pytest.mark.parametrize(("generator", "profile", "requested", "effective"), [
-    ("triposplat", "standard", (), None),
-    ("pixal3d", "standard", (), (1536, 2048)),
-    ("pixal3d", None, (), (1024, 1024)),
-    ("pixal3d", "standard", (2048, 512), (2048, 512)),
-    ("pixal3d", "fast", (2048, 256), (2048, 256)),
-    ("pixal3d", "fast", (2048, 4096), (2048, 4096)),
+@pytest.mark.parametrize(("size", "expected_size", "sky", "precision", "max_splats", "camera_source"), [
+    (2048, 2044, True, "convrot4", 2_000_000, "camera_inputs"),
+    (1022, 1022, False, "convrot8", 5_000_000, "predicted"),
 ])
-def test_model_job_copies_snapshot_and_releases_active_factory_scene_before_cleanup(
-    workspace, monkeypatch, use_variant, generator, profile, requested, effective,
-):
-    document = with_generated_set(workspace) if use_variant else workspace.document
-    selected = source_variant(document) if use_variant else None
-    expected_variant = copy.deepcopy(selected)
-    created = factory.create_scene("Temporary CG reconstruction")
-    created["camera"] = CAMERA
-    factory._save_scene(created)
-    monkeypatch.setattr(factory, "create_scene", lambda _name: created)
-    source = factory.resolve_scene_dir(created["scene_id"])
-    mesh = generator == "pixal3d"
-    expected_profile = profile or "fast"
-    kind, filename = ("model", "model.glb") if mesh else ("ply", "model.ply")
-    asset = b"committed geometry fixture"
-    source_camera = {**CAMERA, "position": [0, 0, 1.25]} if mesh else CAMERA
+def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkeypatch, size, expected_size, sky, precision, max_splats,
+                                                             camera_source):
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("cv2")
+    import numpy as np
 
-    def reconstruct(job, encoded, object_id, name, settings):
-        assert name == "Background" and settings["provider"] == generator
-        assert settings["remove_background"] is False and settings["capture_source_camera"] is True
-        if mesh:
-            assert settings["refine_textures"] is False
-            assert settings.get("base_color_only", False) is (expected_profile == "fast")
-            assert settings["quality"] == ("preview" if expected_profile == "fast" else "high")
-            assert (settings["target_resolution"], settings["texture_resolution"]) == effective
-            assert max(settings["normal_resolution"], settings["ao_resolution"]) <= settings["texture_resolution"]
-        assert settings["seed"] == 3
-        selected_image = library.image_path(document["background_id"], document["selected_image_id"], expected_variant)
-        with Image.open(io.BytesIO(encoded)) as image, Image.open(selected_image) as original:
-            assert image.size == original.size and image.tobytes() == original.convert("RGB").tobytes()
-        manifest = factory.load_scene(job["scene_id"])
-        path = source / "objects" / object_id / filename
-        path.parent.mkdir(parents=True)
-        path.write_bytes(asset)
-        item = {"asset_kind": "mesh", "source": {"format": "glb"}} if mesh else {}
-        manifest["objects"] = [{"object_id": object_id, **item, "source_camera": source_camera,
-                                "files": {kind: f"objects/{object_id}/{filename}"}}]
-        factory._save_scene(manifest)
-    monkeypatch.setattr(runtime, "_generate_mesh_object" if mesh else "_generate_object", reconstruct)
-    selected_settings = {"provider": generator, "pixal_profile": profile} if profile else {}
-    resolutions = dict(zip(("pixal_mesh_resolution", "pixal_texture_resolution"), requested))
-    payload = job_payload(document, "model", model_settings={"seed": 3, **selected_settings,
-                          **resolutions, "remove_background": "1", "refine_textures": "1"}, source_variant=selected)
-    service.start_job(document["background_id"], payload)
-    payload["model_settings"]["seed"] = 99
-    if use_variant:
-        payload["source_variant"].update(source_variant(document, 2))
+    mirror = load("nodes.world_mirror_v2")
+    monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
+    batch = torch.zeros(4, 64, 128, 3)
+    model = object()
+    loader = mock.Mock(return_value=(model,))
+    monkeypatch.setattr(mirror.VNCCS_WorldMirrorV2Loader, "load_model", loader)
+    pose = torch.tensor([[0., 0., 1., 1.], [0., 1., 0., 2.], [-1., 0., 0., 3.], [0., 0., 0., 1.]])
+    intrinsics = torch.diag(torch.tensor([16., 16., 1.]))
+    poses = pose.repeat(len(batch), 1, 1)
+    poses[:, 0, 3] += torch.arange(len(batch))
+    world_to_camera = torch.linalg.inv(poses).numpy()
+    calibration = np.diag([32., 32., 1.])
+    refine = mock.Mock(return_value=(batch, 100., {}, (calibration, world_to_camera, None, None)))
+    monkeypatch.setattr(service, "_generate_refined_moge_views", refine)
+    splats = {"means": torch.tensor([[[2., 2., 3.]]]), "sh": torch.tensor([[[[.2, .3, .4]]]]),
+              "opacities": torch.tensor([[.75]]), "scales": torch.tensor([[[.125, .25, .5]]]),
+              "quats": torch.tensor([[[1., 0., 0., 0.]]])}
+    predicted = mock.Mock(return_value=(
+        {"splats": splats}, torch.zeros(len(batch), 32, 64, 3), None, poses[None], intrinsics.repeat(len(batch), 1, 1)[None],
+    ))
+    monkeypatch.setattr(mirror.VNCCS_WorldMirrorV2Reconstruction, "run_inference", predicted)
+    document = with_generated_set(workspace)
+    variant = source_variant(document)
+    settings = {"provider": "worldmirror", "worldmirror_target_size": size, "worldmirror_apply_sky_mask": sky,
+                "worldmirror_precision": precision, "worldmirror_max_splats": max_splats, "worldmirror_resolution_mp": 1.5,
+                "worldmirror_camera_source": camera_source, "worldmirror_additional_angles": True}
+    service.start_job(document["background_id"], job_payload(document, "model", model_settings=settings, source_variant=variant))
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
-    assert job["scene_id"] == "" and not source.exists()
+    assert job["scene_id"] == "" and not list(factory._factory_root().iterdir())
+    loader.assert_called_once_with(precision=precision)
+    (loaded, image), options = predicted.call_args
+    assert predicted.call_count == 1 and loaded is model and image is batch
+    refine.assert_called_once()
+    assert refine.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
+    assert refine.call_args.args[2]["resolution_mp"] == 1.5
+    assert refine.call_args.args[2]["generation"]["cache_device"] == "off"
+    if camera_source == "camera_inputs":
+        torch.testing.assert_close(options.pop("camera_poses"), poses)
+        torch.testing.assert_close(options.pop("camera_intrinsics"),
+                                   torch.tensor(calibration, dtype=torch.float32).repeat(len(batch), 1, 1))
+    assert options == {"target_size": expected_size, "apply_sky_mask": sky, "enable_splat_upsample": False,
+                       "splat_camera_source": camera_source, "low_vram_mode": True, "offload_scheme": "model_cpu_offload",
+                       "debug_log": False, "splat_max_points": max_splats}
     saved = library.load_background(document["background_id"])
-    assert len(saved["models"]) == 1
-    assert saved["models"][0]["settings"]["pixal_profile"] == expected_profile
-    assert all(saved["models"][0]["settings"][key] == value for key, value in resolutions.items())
-    if mesh:
-        assert saved["models"][0]["settings"]["quality"] == "high"
-    model = library.model_scene(document["background_id"], saved["models"][-1]["model_id"])
-    assert model["camera"] == CAMERA and model["lighting"]["preset"] == "off"
-    assert model["source_image_id"] == document["images"][0]["image_id"]
-    assert model.get("source_variant") == saved["models"][-1].get("source_variant") == expected_variant
-    object_id = model["objects"][0]["object_id"]
-    assert library.model_asset_path(document["background_id"], model["model_id"], object_id, kind).read_bytes() == asset
-    public = service.public_model(document["background_id"], model["model_id"])["objects"][0]
-    url_kind = "model" if mesh else "splat"
-    assert public["source_camera"] == source_camera
-    assert list(public["urls"]) == [url_kind] and public["urls"][url_kind].endswith(f"/{object_id}/{url_kind}")
-    assert_main_fields_preserved(document, saved)
-    workspace.generated.assert_not_called()
+    model_id = saved["models"][0]["model_id"]
+    assert saved["models"][0]["settings"] == {"provider": "worldmirror"}
+    directory = library._model_directory(library.root() / saved["name"], model_id, saved)
+    cameras = json.loads((directory / "reconstruction" / "settings.json").read_text())["cameras"]
+    np.testing.assert_allclose(cameras["world_to_camera"], world_to_camera)
+    assert cameras["intrinsics"] == [calibration.tolist()] * len(batch)
+    scene = service.public_model(document["background_id"], model_id)
+    item = scene["objects"][0]
+    assert scene["source_variant"] == variant
+    assert scene["camera"] == item["source_camera"] == {
+        "position": [1, 2, 3], "target": [2, 2, 3], "up": [0, -1, 0], "fov": 90,
+    }
+    assert item["transform"]["rotation"] == [180, 90, 0]
+    assert library.model_scene(document["background_id"], model_id)["objects"][0]["transform"]["rotation"] == [0, 0, 0]
+    assert item["urls"]["splat"].endswith("/splat")
+    path = library.model_asset_path(document["background_id"], model_id, item["object_id"], "ply")
+    header, vertices = path.read_bytes().split(b"end_header\n", 1)
+    assert b"format binary_little_endian 1.0\nelement vertex 1\n" in header
+    np.testing.assert_allclose(np.frombuffer(vertices, "<f4"), [
+        2, 2, 3, 0, 0, 0, .2, .3, .4, np.log(3), *np.log([.125, .25, .5]), 1, 0, 0, 0,
+    ])
+
+
+def test_moge_model_job_uses_native_nodes_and_saves_source_camera(workspace, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
+    utils = sys.modules["comfy.utils"]
+    prompt_server = type("PromptServer", (), {})()
+    workflow_progress = lambda *_args, **_kwargs: prompt_server.last_prompt_id
+    monkeypatch.setattr(utils, "PROGRESS_BAR_HOOK", workflow_progress, raising=False)
+    monkeypatch.setattr(utils, "set_progress_bar_global_hook",
+                        lambda hook: setattr(utils, "PROGRESS_BAR_HOOK", hook), raising=False)
+    check_interrupt = mock.Mock()
+    monkeypatch.setitem(sys.modules, "comfy.model_management",
+                        types.SimpleNamespace(throw_exception_if_processing_interrupted=check_interrupt))
+    checkpoint = "moge_2_vitl_normal_fp16.safetensors"
+    monkeypatch.setattr(service, "_installed", lambda category: {
+        "geometry_estimation": [checkpoint],
+    }.get(category, []))
+    batch = torch.zeros(4, 64, 128, 3)
+    multiview = load("nodes.cg_moge_multiview")
+    focal = 32 / np.tan(np.deg2rad(47 / 2))
+    poses = np.repeat(np.eye(4)[None], len(batch), axis=0)
+    source_depth = torch.ones(batch.shape[1:3])
+    tracks = np.array([[x + 0.5, 0.5, 1.] for x in range(8)])
+    holes = np.zeros(batch.shape[1:3], dtype=bool)
+    frames = [(batch[:1], holes, source_depth.numpy())] * (len(batch) - 1)
+    refine = mock.Mock(return_value=(batch, focal, dict.fromkeys(range(1, len(batch)), holes),
+        (np.diag([focal, focal, 1]), poses, source_depth, frames)))
+    monkeypatch.setattr(service, "_generate_refined_moge_views", refine)
+    monkeypatch.setattr(multiview, "capture_depth_tracks", lambda *_args: tracks)
+    model, geometry, mesh = object(), {"depth": torch.ones(batch[1:].shape[:3])}, types.SimpleNamespace(unlit=True)
+    merge = mock.Mock(return_value=mesh)
+    monkeypatch.setattr(multiview, "fuse_moge_views", merge)
+    asset = b"glTF" + b"fixture payload"
+    calls = []
+
+    def native(name, **inputs):
+        if name == "MoGeInference":
+            assert torch.equal(inputs.pop("image"), batch[1:])
+            utils.PROGRESS_BAR_HOOK(1, 1, None, node_id=None)
+        calls.append((name, inputs))
+        if name == "MeshToFile3D":
+            assert mesh.unlit
+        return {"LoadMoGeModel": (model,), "MoGeInference": (geometry,),
+                "MeshToFile3D": (types.SimpleNamespace(get_bytes=lambda: asset),)}[name]
+
+    monkeypatch.setattr(service, "_call_comfy_node", native)
+    document = with_generated_set(workspace)
+    variant = source_variant(document)
+    service.start_job(document["background_id"], job_payload(document, "model",
+        model_settings={"provider": "moge"}, source_variant=variant))
+    job = workspace.run_pending()
+    assert job["status"] == "completed", job["error"]
+    assert utils.PROGRESS_BAR_HOOK is workflow_progress
+    check_interrupt.assert_called_once_with()
+    assert job["scene_id"] == "" and not list(factory._factory_root().iterdir())
+    assert torch.equal(merge.call_args.args[1], batch)
+    assert refine.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
+    assert calls[0] == ("LoadMoGeModel", {"model_name": checkpoint})
+    assert calls[1][0] == "MoGeInference" and calls[1][1]["batch_size"] == 3
+    assert calls[1][1]["fov_x_degrees"] == pytest.approx(np.rad2deg(2 * np.arctan(64 / focal)))
+    assert calls[2] == ("MeshToFile3D", {"mesh": mesh})
+    saved = library.load_background(document["background_id"])
+    model_id = saved["models"][0]["model_id"]
+    assert saved["models"][0]["settings"] == {"provider": "moge"}
+    directory = library._model_directory(library.root() / saved["name"], model_id, saved)
+    saved_cameras = json.loads((directory / "reconstruction" / "settings.json").read_text())["cameras"]
+    assert saved_cameras["world_to_camera"] == poses.tolist()
+    assert saved_cameras["depth_scales"] == [1.] * len(batch)
+    scene = service.public_model(document["background_id"], model_id)
+    item = scene["objects"][0]
+    assert scene["source_variant"] == variant
+    assert item["asset_kind"] == "mesh" and set(item["urls"]) == {"model"}
+    assert scene["camera"] == item["source_camera"] == {
+        "position": [0, 0, 0], "target": [0, 0, -1], "up": [0, 1, 0], "fov": pytest.approx(47.0),
+    }
+    assert library.model_asset_path(document["background_id"], model_id, item["object_id"], "model").read_bytes() == asset
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
@@ -544,7 +1130,7 @@ def test_failed_or_cancelled_reconstruction_removes_its_temporary_scene(workspac
     source = factory.resolve_scene_dir(created["scene_id"])
     monkeypatch.setattr(factory, "create_scene", lambda _name: created)
     failure = runtime.JobCancelled("Cancelled") if cancelled else RuntimeError("Reconstruction failed")
-    monkeypatch.setattr(runtime, "_generate_object", mock.Mock(side_effect=failure), raising=False)
+    monkeypatch.setattr(service, "_generate_refined_moge_views", mock.Mock(side_effect=failure))
     before = library.load_background(document["background_id"])
     service.start_job(document["background_id"], job_payload(document, "model", model_settings={"provider": "triposplat"}))
     job = workspace.run_pending()
@@ -642,7 +1228,7 @@ def call(routes, method, suffix, request):
 def test_http_cg_deletion_hides_only_the_target_and_keeps_workflow_assets(routes, workspace):
     document = with_model(workspace); image = Image.new("RGB", (128, 64))
     for name in ("Failed", "Keep"):
-        document = library.commit_cg(document["background_id"], name, image, image, CAMERA, {},
+        document = library.commit_cg(document["background_id"], name, image, image, CAMERA,
                                      document["models"][0]["model_id"], document["revision"])
     cg = document["cgs"][0]; info = {"background_id": document["background_id"], "cg_id": cg["cg_id"]}
     response = call(routes, "DELETE", "/backgrounds/{background_id}/cg/{cg_id}", Request({"revision": document["revision"]}, info=info))
@@ -662,7 +1248,7 @@ def test_http_cg_deletion_hides_only_the_target_and_keeps_workflow_assets(routes
 @pytest.mark.parametrize("condition,status", [("missing", 404), ("busy", 409), ("read-only", 400)])
 def test_http_cg_deletion_rejects_unsafe_or_stale_requests(routes, workspace, condition, status):
     document = with_model(workspace); image = Image.new("RGB", (128, 64))
-    document = library.commit_cg(document["background_id"], "Keep", image, image, CAMERA, {},
+    document = library.commit_cg(document["background_id"], "Keep", image, image, CAMERA,
                                  document["models"][0]["model_id"], document["revision"])
     if condition == "read-only":
         document["archived"] = True; write_document(document)
@@ -678,7 +1264,7 @@ def test_http_cg_deletion_rejects_unsafe_or_stale_requests(routes, workspace, co
 def test_http_inventory_has_no_background_authoring_actions(routes):
     expected = {("GET", "/config"), ("GET", "/backgrounds"), ("GET", "/backgrounds/{background_id}"),
         ("GET", "/characters"), ("GET", "/characters/{character}"), ("GET", "/characters/{character}/sprite"),
-        ("PATCH", "/backgrounds/{background_id}"), ("POST", "/backgrounds/{background_id}/jobs"),
+        ("POST", "/backgrounds/{background_id}/jobs"),
         ("GET", "/backgrounds/{background_id}/jobs/{request_id}"),
         ("GET", "/jobs/{job_id}"), ("POST", "/jobs/{job_id}/cancel"),
         ("DELETE", "/backgrounds/{background_id}/cg/{cg_id}"),
@@ -686,6 +1272,11 @@ def test_http_inventory_has_no_background_authoring_actions(routes):
         ("GET", "/backgrounds/{background_id}/sets/{set_id}/{index}"),
         ("GET", "/backgrounds/{background_id}/models/{model_id}"),
         ("GET", "/backgrounds/{background_id}/models/{model_id}/objects/{object_id}/{kind}"),
+        ("GET", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"),
+        ("POST", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}"),
+        ("GET", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}/objects/{object_id}/{kind}"),
+        ("GET", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}/frame/{kind}"),
+        ("DELETE", "/backgrounds/{background_id}/models/{model_id}/expansion/{expansion_id}/frame"),
         ("GET", "/backgrounds/{background_id}/cg/{cg_id}/{kind}")}
     assert set(routes) == {(method, service.API_BASE + path) for method, path in expected}
 
@@ -715,25 +1306,22 @@ def test_generation_request_reference_is_validated_before_work_is_started(worksp
     workspace.worker.submit.assert_not_called()
 
 
-def test_http_config_library_read_and_cg_settings_save(routes, workspace, monkeypatch):
+def test_http_config_and_library_read_without_settings_writes(routes, workspace, monkeypatch):
     monkeypatch.setattr(generation, "configuration", lambda: {"settings": generation.DEFAULT_SETTINGS, "model": "QI2"})
     response = call(routes, "GET", "/config", Request())
     assert response.status == 200 and json.loads(response.text)["model"] == "QI2"
+    document = {**workspace.document, "cg_settings": {"generation": {"steps": 99}}, "model_settings": {"steps": 12}}
+    path = write_document(document)
+    original = path.read_bytes()
     response = call(routes, "GET", "/backgrounds", Request())
     public = json.loads(response.text)["backgrounds"][0]
-    assert public["images"][0]["url"].endswith(f"/{workspace.document['images'][0]['image_id']}?v=4")
-    info = {"background_id": workspace.document["background_id"]}
-    response = call(routes, "PATCH", "/backgrounds/{background_id}", Request({
-        "revision": workspace.document["revision"], "cg_settings": {"prompt": "Keep the camera"},
-        "editor": {"description": "Do not overwrite"}}, info=info))
-    assert response.status == 200
-    saved = library.load_background(info["background_id"])
-    assert_main_fields_preserved(workspace.document, saved)
-    response = call(routes, "PATCH", "/backgrounds/{background_id}",
-        Request({"revision": workspace.document["revision"]}, info=info))
-    assert response.status == 200
+    assert public["images"][0]["url"].endswith(f"/{document['images'][0]['image_id']}?v=4")
+    assert "cg_settings" not in public and "model_settings" not in public
+    info = {"background_id": document["background_id"]}
     response = call(routes, "GET", "/backgrounds/{background_id}", Request(info=info))
-    assert json.loads(response.text)["revision"] == saved["revision"] + 1
+    assert json.loads(response.text)["revision"] == document["revision"]
+    assert ("PATCH", service.API_BASE + "/backgrounds/{background_id}") not in routes
+    assert path.read_bytes() == original
 
 
 def test_http_generated_set_image_uses_the_local_saved_set_resolver(routes, workspace):
@@ -756,7 +1344,7 @@ def test_http_jobs_cannot_author_backgrounds(routes, workspace, action):
 
 @pytest.mark.parametrize("raw", [b"[]", b"null", b"false", b"{invalid"])
 def test_http_invalid_json_is_rejected_before_work(routes, workspace, raw):
-    response = call(routes, "PATCH", "/backgrounds/{background_id}",
+    response = call(routes, "POST", "/backgrounds/{background_id}/jobs",
         Request(raw=raw, info={"background_id": workspace.document["background_id"]}))
     assert response.status == 400 and json.loads(response.text)["error"]
     workspace.worker.submit.assert_not_called()
@@ -766,9 +1354,9 @@ def test_http_invalid_json_is_rejected_before_work(routes, workspace, raw):
 def test_http_request_size_limits_apply_before_work(routes, workspace):
     info = {"background_id": workspace.document["background_id"]}
     with pytest.raises(web.HTTPRequestEntityTooLarge):
-        call(routes, "PATCH", "/backgrounds/{background_id}",
+        call(routes, "POST", "/backgrounds/{background_id}/jobs",
             Request(info=info, headers={"Content-Length": str(service.MAX_REQUEST_BYTES + 1)}))
-    response = call(routes, "PATCH", "/backgrounds/{background_id}", Request(info=info, raw=b" " * (256 * 1024 + 1)))
+    response = call(routes, "POST", "/backgrounds/{background_id}/jobs", Request(info=info, raw=b" " * (256 * 1024 + 1)))
     assert response.status == 400
     workspace.worker.submit.assert_not_called()
 
@@ -794,7 +1382,7 @@ def test_http_owned_assets_are_immutable_and_do_not_expose_model_paths(routes, w
     document = with_model(workspace)
     model = document["models"][-1]
     raw = Image.new("RGB", (128, 64), "red")
-    document = library.commit_cg(document["background_id"], "Window", raw, raw, CAMERA, {}, model["model_id"], document["revision"])
+    document = library.commit_cg(document["background_id"], "Window", raw, raw, CAMERA, model["model_id"], document["revision"])
     info = {"background_id": document["background_id"], "image_id": document["images"][0]["image_id"],
             "model_id": model["model_id"], "object_id": "d" * 32, "kind": "ply", "cg_id": document["cgs"][-1]["cg_id"]}
     response = call(routes, "GET", "/backgrounds/{background_id}/images/{image_id}", Request(info=info))
@@ -815,7 +1403,7 @@ def test_http_cross_origin_mutations_fail_before_parsing_or_work(routes, workspa
     request = Request({"revision": workspace.document["revision"]}, info={"background_id": workspace.document["background_id"]},
                       headers={"Sec-Fetch-Site": "cross-site"})
     request.read = mock.AsyncMock(side_effect=AssertionError("Unsafe body must not be parsed"))
-    response = call(routes, "PATCH", "/backgrounds/{background_id}", request)
+    response = call(routes, "POST", "/backgrounds/{background_id}/jobs", request)
     assert response.status == 403
     request.read.assert_not_called()
     workspace.worker.submit.assert_not_called()

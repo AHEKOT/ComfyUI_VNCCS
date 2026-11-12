@@ -15,5 +15,5 @@ export const stateSource = section("const MODEL_DEFAULTS", "// Resolve Utils ass
 export const runtimeSource = section("async function loadFactoryRuntime", "class CGQi2Controls");
 export const widgetSource = section('const BASE = "/vnccs/cg-creator"', "function hideState");
 export const entrySource = section("function hideState");
-export const { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource } =
-    vm.runInThisContext("(function (validateCharacters) {" + stateSource + "\nreturn { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource }; })")(validateCharacters);
+export const { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, mirrorResolution, sourceChoices, selectedSource, sameSource } =
+    vm.runInThisContext("(function (validateCharacters) {" + stateSource + "\nreturn { clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, mirrorResolution, sourceChoices, selectedSource, sameSource }; })")(validateCharacters);

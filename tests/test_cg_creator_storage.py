@@ -85,7 +85,7 @@ def test_cg_character_snapshot_survives_disk_reload_and_rejects_invalid_pose(sce
                  "source": {"character": "Maya", "costume": "Casual", "sprite": "sprite_pose_1.png", "emotion": "Happy"},
                  "pose": {"bones": {"hand_l": [0, 25, 0]}, "bonePositions": {}, "modelRotation": [0, 45, 0]}}
     raw = Image.new("RGB", (64, 32), "red")
-    document = storage.commit_cg(scene["background_id"], "Character", raw, raw, CAMERA, {},
+    document = storage.commit_cg(scene["background_id"], "Character", raw, raw, CAMERA,
                                  document["models"][0]["model_id"], None, characters=[character])
     assert storage.load_background(scene["background_id"])["cgs"][-1]["characters"] == [character]
     character["pose"]["bones"]["hand_l"][1] = 99
@@ -93,7 +93,7 @@ def test_cg_character_snapshot_survives_disk_reload_and_rejects_invalid_pose(sce
     before = files(storage.root())
     character["position"][0] = float("nan")
     with pytest.raises(ValueError, match="character transform"):
-        storage.commit_cg(scene["background_id"], "Invalid", raw, raw, CAMERA, {},
+        storage.commit_cg(scene["background_id"], "Invalid", raw, raw, CAMERA,
                           document["models"][0]["model_id"], None, characters=[character])
     assert files(storage.root()) == before
 
@@ -103,23 +103,6 @@ def test_no_background_generation_or_document_authoring_api(scene):
         assert not hasattr(storage, name)
     assert storage.list_backgrounds() == [scene]
     assert storage.load_background(scene["background_id"]) == scene
-
-
-def test_save_only_cg_owned_settings_and_preserve_all_main_fields(scene):
-    originals = {image["image_id"]: storage.image_path(scene["background_id"], image["image_id"]).read_bytes()
-                 for image in scene["images"]}
-    model_settings = {"seed": 14, "gaussians": 262144}
-    cg_settings = {"prompt": "Complete the frame", "camera": copy.deepcopy(CAMERA), "resolution": [128, 64]}
-    updated = storage._save_settings(scene["background_id"], model_settings, cg_settings, scene["revision"])
-    assert updated == {**scene, "revision": scene["revision"] + 1,
-                       "model_settings": model_settings, "cg_settings": cg_settings}
-    assert not path_for(scene).with_suffix(".json.backup").exists()
-    model_settings["seed"] = 999
-    cg_settings["camera"]["position"][0] = 999
-    assert storage.load_background(scene["background_id"])["model_settings"]["seed"] == 14
-    assert storage.load_background(scene["background_id"])["cg_settings"]["camera"] == CAMERA
-    for image in scene["images"]:
-        assert storage.image_path(scene["background_id"], image["image_id"]).read_bytes() == originals[image["image_id"]]
 
 
 @pytest.mark.parametrize("preview_revision", [False, 0, -1, 1.5, "2"])
@@ -136,7 +119,7 @@ def test_cg_deletion_preserves_other_data_assets_and_saved_workflow_references(s
     document = add_model(scene, tmp_path)
     raw = Image.new("RGB", (64, 32), "red")
     for name in ("Failed", "Keep"):
-        document = storage.commit_cg(scene["background_id"], name, raw, raw, CAMERA, {},
+        document = storage.commit_cg(scene["background_id"], name, raw, raw, CAMERA,
                                      document["models"][0]["model_id"], document["revision"])
     target = document["cgs"][0]
     before = files(storage.root())
@@ -160,7 +143,7 @@ def test_cg_deletion_preserves_other_data_assets_and_saved_workflow_references(s
 
 def test_failed_cg_deletion_keeps_the_original_document_and_assets(scene, tmp_path, monkeypatch):
     document = add_model(scene, tmp_path); raw = Image.new("RGB", (64, 32))
-    document = storage.commit_cg(scene["background_id"], "Keep", raw, raw, CAMERA, {},
+    document = storage.commit_cg(scene["background_id"], "Keep", raw, raw, CAMERA,
                                  document["models"][0]["model_id"], document["revision"])
     original = path_for(document).read_bytes(); atomic = storage.background._atomic
     def fail(path, data):
@@ -191,7 +174,7 @@ def test_model_regeneration_replaces_only_its_variant_and_preserves_cgs(source_v
     first_bytes = first_model_path.read_bytes()
     raw, finished = Image.new("RGB", (64, 32), "red"), Image.new("RGB", (128, 64), "blue")
     document = storage.commit_cg(document["background_id"], "Window", raw, finished, CAMERA,
-                                 {"seed": 3}, first_model["model_id"], document["revision"])
+                                 first_model["model_id"], document["revision"])
     first_cg = document["cgs"][-1]
     assert (first_cg["width"], first_cg["height"]) == finished.size
     with pytest.raises(FileNotFoundError):
@@ -225,17 +208,16 @@ def test_model_regeneration_replaces_only_its_variant_and_preserves_cgs(source_v
         assert document[key] == original_fields[key]
 
 
-@pytest.mark.parametrize("operation", ["settings", "model", "cg"])
+@pytest.mark.parametrize("operation", ["model", "cg"])
 def test_stale_writes_preserve_every_file_byte(scene, tmp_path, operation):
     document = add_model(scene, tmp_path)
     source, manifest = factory_source(tmp_path)
     before = files(storage.root())
     raw = Image.new("RGB", (64, 32))
     mutations = {
-        "settings": lambda: storage._save_settings(document["background_id"], {}, {}, document["revision"] - 1),
         "model": lambda: storage.commit_model(document["background_id"], document["selected_image_id"],
                                                source, manifest, {}, document["revision"] - 1),
-        "cg": lambda: storage.commit_cg(document["background_id"], "Stale", raw, raw, CAMERA, {},
+        "cg": lambda: storage.commit_cg(document["background_id"], "Stale", raw, raw, CAMERA,
                                          document["models"][-1]["model_id"], document["revision"] - 1),
     }
     with pytest.raises(storage.BackgroundConflictError):
@@ -253,11 +235,11 @@ def test_archived_scene_assets_still_read_but_mutations_are_blocked(scene, tmp_p
     assert storage.model_scene(scene["background_id"], scene["models"][0]["model_id"])["background_id"] == scene["background_id"]
     before = files(storage.root())
     with pytest.raises(ValueError, match="archived"):
-        storage._save_settings(scene["background_id"], {}, {}, scene["revision"])
+        add_model(scene, tmp_path)
     assert files(storage.root()) == before
 
 
-def test_valid_backup_is_read_only_and_damaged_primary_is_preserved(scene):
+def test_valid_backup_is_read_only_and_damaged_primary_is_preserved(scene, tmp_path):
     path = path_for(scene)
     path.with_suffix(".json.backup").write_bytes(path.read_bytes())
     path.write_bytes(b"{damaged")
@@ -266,7 +248,7 @@ def test_valid_backup_is_read_only_and_damaged_primary_is_preserved(scene):
     assert recovered["editor"] == scene["editor"]
     assert recovered["_recovery"]["source"] == f"{scene['name']}_config.json.backup"
     with pytest.raises(storage.BackgroundStorageError, match="read-only"):
-        storage._save_settings(scene["background_id"], {}, {}, scene["revision"])
+        add_model(scene, tmp_path)
     assert files(storage.root()) == before
 
 
@@ -280,7 +262,7 @@ def test_corrupt_metadata_never_becomes_an_empty_scene_library(scene):
     assert files(storage.root()) == before
 
 
-def test_failed_json_replace_keeps_original_and_cleans_temporary_file(scene, monkeypatch):
+def test_failed_json_replace_keeps_original_and_cleans_temporary_file(scene, tmp_path, monkeypatch):
     path = path_for(scene)
     original = path.read_bytes()
     replace = storage.os.replace
@@ -292,7 +274,7 @@ def test_failed_json_replace_keeps_original_and_cleans_temporary_file(scene, mon
 
     monkeypatch.setattr(storage.os, "replace", fail_primary)
     with pytest.raises(OSError, match="Disk unavailable"):
-        storage._save_settings(scene["background_id"], {}, {}, scene["revision"])
+        add_model(scene, tmp_path)
     assert path.read_bytes() == original
     assert not list(path.parent.glob("*.tmp"))
 
@@ -305,7 +287,7 @@ def test_background_owner_is_the_local_authoritative_library(scene):
 
 
 
-def test_shared_main_lock_prevents_cg_overwriting_a_new_main_revision(scene, monkeypatch):
+def test_shared_main_lock_prevents_cg_overwriting_a_new_main_revision(scene, tmp_path, monkeypatch):
     attempted = threading.Event()
     lock = threading.RLock()
 
@@ -320,7 +302,7 @@ def test_shared_main_lock_prevents_cg_overwriting_a_new_main_revision(scene, mon
     monkeypatch.setattr(storage.background, "_LOCK", MainLock())
     with ThreadPoolExecutor(max_workers=1) as pool:
         with lock:
-            pending = pool.submit(storage._save_settings, scene["background_id"], {"seed": 1}, {}, scene["revision"])
+            pending = pool.submit(add_model, scene, tmp_path)
             assert attempted.wait(2), "CG did not acquire the installed owner's lock"
             assert not pending.done()
             newer = copy.deepcopy(scene)
@@ -330,19 +312,6 @@ def test_shared_main_lock_prevents_cg_overwriting_a_new_main_revision(scene, mon
         with pytest.raises(storage.BackgroundConflictError):
             pending.result(timeout=2)
     assert storage.load_background(scene["background_id"]) == newer
-
-
-def test_local_lock_and_revisions_allow_only_one_concurrent_settings_writer(scene):
-    def save(seed):
-        try:
-            return storage._save_settings(scene["background_id"], {"seed": seed}, {}, scene["revision"])
-        except storage.BackgroundConflictError:
-            return None
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(save, [1, 2]))
-    assert sum(result is not None for result in results) == 1
-    assert storage.load_background(scene["background_id"])["revision"] == scene["revision"] + 1
 
 
 def test_source_assets_and_model_paths_reject_symlinks_and_traversal(scene, tmp_path):
@@ -417,7 +386,7 @@ def test_current_main_documents_without_cg_arrays_are_read_without_rewriting(sce
     for key in ("editor", "images", "generated_sets", "generator_settings", "future_owner_data"):
         assert document[key] == scene[key]
     raw = Image.new("RGB", (64, 32))
-    document = storage.commit_cg(scene["background_id"], "First CG", raw, raw, CAMERA, {},
+    document = storage.commit_cg(scene["background_id"], "First CG", raw, raw, CAMERA,
                                  document["models"][0]["model_id"], document["revision"])
     assert len(document["cgs"]) == 1
 
@@ -459,7 +428,7 @@ def test_morning_night_models_and_cgs_keep_exact_variant_references(source_varia
         assert model["source_variant"] == variant
         assert storage.model_scene(scene["background_id"], model["model_id"])["source_variant"] == variant
         raw = Image.new("RGB", (64, 32))
-        document = storage.commit_cg(scene["background_id"], variant["name"], raw, raw, CAMERA, {},
+        document = storage.commit_cg(scene["background_id"], variant["name"], raw, raw, CAMERA,
                                      model["model_id"], document["revision"])
         assert document["cgs"][-1]["source_variant"] == variant
     assert [storage._variant_key(model["source_variant"]) for model in document["models"]] == [
@@ -569,7 +538,7 @@ def test_models_cgs_and_config_use_the_current_background_layout(current_scene, 
     model = document["models"][-1]
     assert storage.model_asset_path(document["background_id"], model["model_id"], "d" * 32, "ply").is_relative_to(current.directory / "Model")
     raw = Image.new("RGB", (64, 32))
-    document = storage.commit_cg(document["background_id"], "Window", raw, raw, CAMERA, {}, model["model_id"], document["revision"])
+    document = storage.commit_cg(document["background_id"], "Window", raw, raw, CAMERA, model["model_id"], document["revision"])
     assert storage.cg_image_path(document["background_id"], document["cgs"][0]["cg_id"]).is_relative_to(current.directory / "CG")
     assert json.loads(current.path.read_bytes()) == storage.background_storage.pack(document)
     assert not (current.directory / f"{document['name']}.json").exists()
@@ -578,7 +547,7 @@ def test_models_cgs_and_config_use_the_current_background_layout(current_scene, 
 
 
 @pytest.mark.parametrize("recoverable", [True, False])
-def test_latest_config_recovery_never_falls_back_to_stale_old_json(current_scene, recoverable):
+def test_latest_config_recovery_never_falls_back_to_stale_old_json(current_scene, recoverable, tmp_path):
     current = current_scene
     (current.directory / f"{current.document['name']}.json").write_text(json.dumps({**current.document, "revision": 99}))
     current.path.write_bytes(b"{damaged")
@@ -590,7 +559,7 @@ def test_latest_config_recovery_never_falls_back_to_stale_old_json(current_scene
         assert document["_recovery"]["source"] == current.path.name + ".backup"
         assert document["revision"] == current.document["revision"]
         with pytest.raises(ValueError, match="read-only"):
-            storage._save_settings(document["background_id"], {}, {}, document["revision"])
+            add_model(document, tmp_path)
     else:
         with pytest.raises(storage.BackgroundStorageError):
             storage.load_background(current.document["background_id"])
@@ -624,7 +593,7 @@ def legacy_assets(document, tmp_path):
     """Keep the pre-migration wire identities and physical layout in one fixture."""
     document = add_model(document, tmp_path)
     raw = Image.new("RGB", (64, 32), "purple")
-    document = storage.commit_cg(document["background_id"], "View 1", raw, raw, CAMERA, {},
+    document = storage.commit_cg(document["background_id"], "View 1", raw, raw, CAMERA,
                                  document["models"][0]["model_id"], document["revision"])
     directory = path_for(document).parent
     model, cg = document["models"][0], document["cgs"][0]
@@ -672,7 +641,7 @@ def test_models_reuse_readable_paths_and_cgs_keep_collision_suffixes(scene, tmp_
     first = document["models"][0]
     raw = Image.new("RGB", (64, 32))
     for name, expected in (("View 1", "View 1"), ("view 1", "view 1 (2)"), ("View 1", "View 1 (3)")):
-        document = storage.commit_cg(document["background_id"], name, raw, raw, CAMERA, {}, first["model_id"], None)
+        document = storage.commit_cg(document["background_id"], name, raw, raw, CAMERA, first["model_id"], None)
         assert document["cgs"][-1]["file"] == f"CG/{expected}.png"
         assert "raw_file" not in document["cgs"][-1]
     assert first_path.read_bytes() == b"immutable Gaussian fixture"
@@ -755,7 +724,7 @@ def test_interrupted_publication_recovers_on_next_load(scene, tmp_path, monkeypa
         if operation == "model":
             return add_model(document, tmp_path)
         raw = Image.new("RGB", (64, 32))
-        return storage.commit_cg(document["background_id"], "View 1", raw, raw, CAMERA, {}, document["models"][0]["model_id"], None)
+        return storage.commit_cg(document["background_id"], "View 1", raw, raw, CAMERA, document["models"][0]["model_id"], None)
     if acknowledged:
         expected = publish()
     else:
@@ -787,7 +756,7 @@ def test_failed_new_publication_leaves_no_assets_or_metadata(scene, tmp_path, mo
             add_model(document, tmp_path)
         else:
             raw = Image.new("RGB", (64, 32))
-            storage.commit_cg(document["background_id"], "View 1", raw, raw, CAMERA, {}, document["models"][0]["model_id"], None)
+            storage.commit_cg(document["background_id"], "View 1", raw, raw, CAMERA, document["models"][0]["model_id"], None)
     assert files(directory) == before
     assert not (directory / ".cg-assets.pending").exists()
 

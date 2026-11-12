@@ -42,8 +42,9 @@ const graphCanvas=document.createElement('canvas');graphCanvas.hidden=true;docum
 window.graphInputs=[];
 window.sourceAnimations=()=>[...(window.widget?.customSelects?._motionAnimations||[])].filter(animation=>['running','paused'].includes(animation.playState)&&animation.effect.target?.matches('[data-model-source],[data-source-incoming]'));
 for(const type of ['pointerdown','mousedown','pointermove','mousemove','pointerup','mouseup','wheel'])graphCanvas.addEventListener(type,event=>graphInputs.push({type:event.type,clientX:event.clientX,clientY:event.clientY,buttons:event.buttons,deltaY:event.deltaY,forwarded:!!event._vnccsForwardedCanvasInput}));
-window.setup=async({width=${LAYOUT_WIDTH},height=950,empty=false,raw=null}={})=>{
+window.setup=async({width=${LAYOUT_WIDTH},height=950,empty=false,raw=null,workflowId=null}={})=>{
  window.widget?.node.onRemoved();const host=document.querySelector('#host');host.replaceChildren();
+ app.graph.extra=workflowId?{vnccs_workflow_id:workflowId}:{};
  const saved=await(await fetch('/fixture')).json();
  class Node{
   constructor(){this.id=7;this.type='VNCCS_CGCreator';this.size=[width,height];this.graph=app.graph;this.properties={};this.widgets=[{name:'cg_data',value:'unconfigured'}];}
@@ -144,11 +145,7 @@ const server = createServer(async (request, response) => {
             job.status = "completed"; job.result = { document: publicDocument() }; content = "{}";
         } else if (url.pathname === `${base}/jobs/${job?.job_id}`) content = JSON.stringify({ job_id: job.job_id, status: job.status, progress: job.progress, message: job.message, result: job.result });
         else if (url.pathname === `${base}/backgrounds/${backgroundId}`) {
-            if (request.method === "PATCH") {
-                let raw = ""; for await (const chunk of request) raw += chunk;
-                const payload = JSON.parse(raw); assert.equal(payload.revision, document.revision);
-                mutations.push(payload); document = { ...document, revision: document.revision + 1, cg_settings: payload.cg_settings, model_settings: payload.model_settings };
-            }
+            assert.equal(request.method, "GET");
             content = JSON.stringify(publicDocument());
         } else if (url.pathname === "/favicon.ico") { response.writeHead(204).end(); return; }
         else { unexpected.push(url.pathname); response.writeHead(404).end(); return; }
@@ -667,6 +664,39 @@ try {
     await page.getByRole("dialog").locator('input[name="guidance_scale"]').fill("2.5");
     await capture("after-model-settings"); await page.getByRole("dialog").getByRole("button", { name: "Save", exact: true }).click();
     assert.equal(await page.evaluate(() => widget.state.model_settings.steps), 12);
+    await chooseSelect(page.locator("[data-model-provider]"), "WorldMirror");
+    const beforeWorldMirror = await geometry();
+    await page.getByRole("button", { name: "WorldMirror settings" }).click();
+    const mirrorSettings = page.getByRole("dialog", { name: "WorldMirror settings" });
+    const mirrorSize = mirrorSettings.getByLabel("Resolution");
+    const skyMask = mirrorSettings.locator('select[name="worldmirror_apply_sky_mask"]');
+    const cameraShiftLoRA = mirrorSettings.locator('select[name="camera_shift_lora"]');
+    assert.equal(await mirrorSettings.locator("input,select").count(), 3);
+    assert.equal(await mirrorSize.inputValue(), "2044");
+    assert.equal(await skyMask.inputValue(), "true");
+    await mirrorSize.fill("1022");
+    await chooseSelect(skyMask, "Off");
+    await chooseSelect(cameraShiftLoRA, manualLora);
+    await mirrorSize.focus();
+    const fit = await mirrorSettings.evaluate(dialog => {
+        const form = dialog.querySelector(".bg-dialog-fields"), bounds = dialog.getBoundingClientRect();
+        return { overflow: form.scrollHeight - form.clientHeight, visible: [...form.querySelectorAll("label")].every(row => {
+            const rect = row.getBoundingClientRect();
+            return rect.top >= bounds.top && rect.bottom <= bounds.bottom && rect.left >= bounds.left && rect.right <= bounds.right;
+        }) };
+    });
+    assert.deepEqual(fit, { overflow: 0, visible: true });
+    const duringWorldMirror = await geometry();
+    for (const key of Object.keys(beforeWorldMirror)) assertBounds(duringWorldMirror[key], beforeWorldMirror[key], key);
+    await capture("after-worldmirror-settings");
+    await mirrorSettings.getByRole("button", { name: "Save", exact: true }).click();
+    const mirrorState = await page.evaluate(() => JSON.parse(widget.node.widgets[0].value).model_settings);
+    assert.equal(mirrorState.provider, "worldmirror");
+    assert.equal(mirrorState.worldmirror_target_size, 1022);
+    assert.equal(mirrorState.worldmirror_apply_sky_mask, false);
+    assert.equal(mirrorState.camera_shift_lora, manualLora);
+    await chooseSelect(page.locator("[data-model-provider]"), "TripoSplat");
+    scenarios.push({ name: "worldmirror-settings-fit-and-persist", geometry: duringWorldMirror });
     await page.getByRole("button", { name: `Select ${sourceVariant.name} background variant`, exact: true }).click(); await page.waitForFunction(() => !widget.busy);
     assert.equal(await page.getByRole("button", { name: `Select ${sourceVariant.name} background variant`, exact: true }).getAttribute("aria-pressed"), "true", "Chosen variant remains selected in its fixed card");
     assert.deepEqual(await page.evaluate(() => widget.state.selected_variant), sourceVariant);
@@ -762,7 +792,10 @@ try {
     assert.equal(await page.locator("[data-pending-cg]").isVisible(), true);
     await page.emulateMedia({ reducedMotion: "no-preference" });
     scenarios.push({ name: "reduced-motion-keeps-pending-result-visible" });
-    assert.equal(await page.getByRole("dialog").count(), 0, "The scene name dialog closes before capture starts");
+    assert.equal(await page.getByRole("dialog", { name: "Generate CG", exact: true }).count(), 0, "The scene name dialog closes before capture starts");
+    const progressPopup = page.locator(".bg-viewport").getByRole("dialog", { name: "Generating CG" });
+    await progressPopup.getByRole("progressbar").waitFor();
+    assert.equal(await progressPopup.getByRole("progressbar").getAttribute("aria-valuenow"), "42");
     assert.equal(await page.locator("[data-fov]").isDisabled(), true);
     assert.equal(await page.locator(".bg-job-feedback,progress,[data-stop]").count(), 0);
     assert.equal(await page.locator(".bg-status,footer").count(), 0);
@@ -846,6 +879,7 @@ try {
     assert.ok(await page.locator(".vnccs-common-creator-model-picker .is-picker-head").count());
     assert.equal(await page.locator(".vnccs-common-creator-lora-stack").count(), 0);
     assert.doesNotMatch(await page.locator(".bg-hint[role=status]").textContent(), /failed to load Control Center/i);
+    const stale = await page.evaluate(() => ({ raw: widget.node.widgets[0].value, workflowId: widget.node.graph.extra.vnccs_workflow_id }));
     await page.locator(".vnccs-common-creator-model-picker .is-picker-head").click();
     assert.equal(await page.locator(".vnccs-common-creator-model-picker-menu .vnccs-common-creator-model-card").count(), 2);
     await page.locator(".vnccs-common-creator-model-picker-menu .vnccs-common-creator-model-card").filter({ hasText: "Qwen Image 2.1 Turbo INT8 ConvRot" }).click();
@@ -853,6 +887,16 @@ try {
     assert.equal(await page.evaluate(() => widget.state.settings.generation.cfg), 1);
     assert.equal(await page.evaluate(() => widget.state.settings.generation.diffusion_model_name), turboModel);
     scenarios.push({ name: "installed-model-catalog-unavailable-fallback" }); catalogAvailable = true;
+    await stepsField.fill("34");
+    await cfgField.fill("0");
+    await page.reload();
+    await page.waitForFunction(() => window.ready);
+    await page.evaluate(stale => setup(stale), stale);
+    assert.equal(await stepsField.inputValue(), "34");
+    assert.equal(await cfgField.inputValue(), "0");
+    assert.equal(await page.evaluate(() => widget.state.settings.generation.diffusion_model_name), turboModel);
+    await capture("after-settings-reload");
+    scenarios.push({ name: "reload-recovers-node-settings-from-stale-autosave" });
     await page.evaluate(() => setup({ empty: true })); await capture("after-empty");
     assert.equal(await page.locator('[data-action="model"]').isDisabled(), true); assert.equal(await page.locator("[data-save-view]").isDisabled(), true);
     readOnly = true; await page.evaluate(() => setup()); await capture("after-read-only");

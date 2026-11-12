@@ -1427,14 +1427,14 @@ const COMMON_CSS = `
 `;
 
 // ── Modal Dialog ──────────────────────────────────────────────────────────────
-// showModal(container, title, contentFunc, buttons)
+// showModal(container, title, contentFunc, buttons, { modeless })
 // buttons: [{ text, class?: "primary"|"danger", autofocus?, action?: async (overlay, btn) => keepOpen? }]
 // Returns { overlay, modal, content, title, actions, buttons }
 let _modalSequence = 0;
 const _modalStack = [];
 const _modalOpeners = new WeakMap();
 
-export function showModal(container, title, contentFunc, buttons) {
+export function showModal(container, title, contentFunc, buttons, { modeless = false } = {}) {
     injectStyles(COMMON_CSS, "vnccs-common");
     const parentModal = _modalStack.at(-1);
     const openers = [document.activeElement, ...(_modalOpeners.get(parentModal) || [])];
@@ -1447,7 +1447,7 @@ export function showModal(container, title, contentFunc, buttons) {
     m.className = "vnccs-common-modal";
     m.tabIndex = -1;
     m.setAttribute("role", "dialog");
-    m.setAttribute("aria-modal", "true");
+    if (!modeless) m.setAttribute("aria-modal", "true");
     _modalOpeners.set(m, openers);
 
     const titleEl = document.createElement("div");
@@ -1552,6 +1552,8 @@ export function showModal(container, title, contentFunc, buttons) {
     overlay.appendChild(m);
     container.appendChild(overlay);
     mountSakuraDialogMotion(motion, overlay, m);
+    const dialog = { overlay, modal: m, content, title: titleEl, actions: row, buttons: buttonEls.map(item => item.button) };
+    if (modeless) return dialog;
     _modalStack.push(m);
     document.addEventListener("focusin", containFocus, true);
     if (typeof MutationObserver !== "undefined") {
@@ -1567,7 +1569,7 @@ export function showModal(container, title, contentFunc, buttons) {
             field.select();
         }
     });
-    return { overlay, modal: m, content, title: titleEl, actions: row, buttons: buttonEls.map(item => item.button) };
+    return dialog;
 }
 
 // ── Info/Error Message ────────────────────────────────────────────────────────
