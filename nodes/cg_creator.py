@@ -1790,12 +1790,8 @@ def model_settings(value, saved=None):
     camera_source = value.get(f"{provider_name}_camera_source", saved.get("camera_source", "camera_inputs"))
     if camera_source not in ("camera_inputs", "colmap" if provider_name == "moge" else "predicted"):
         raise ValueError("Invalid reconstruction camera source")
-    additional_angles = value.get(f"{provider_name}_additional_angles", False)
-    if type(additional_angles) is not bool:
-        raise ValueError("Additional angles must be a boolean")
     if provider_name == "moge":
-        return {"provider": "moge", "resolution_mp": resolution, "camera_source": camera_source,
-                "additional_angles": additional_angles}
+        return {"provider": "moge", "resolution_mp": resolution, "camera_source": camera_source}
     size = value.get("worldmirror_target_size", saved.get("target_size", 2044))
     if type(size) not in (int, float) or not -math.inf < size < math.inf:
         raise ValueError("WorldMirror resolution must be a finite number")
@@ -1810,7 +1806,7 @@ def model_settings(value, saved=None):
                          "Maximum Gaussians", 1, 2**53 - 1, integer=True)
     return {"provider": "worldmirror", "resolution_mp": resolution, "target_size": size,
             "apply_sky_mask": sky_mask, "precision": precision, "max_splats": max_splats,
-            "camera_source": camera_source, "additional_angles": additional_angles}
+            "camera_source": camera_source}
 
 
 def _reconstruction_generation(settings, model_settings):
@@ -1941,9 +1937,9 @@ def _infer_moge(images, fov_x=0.0):
     return geometry
 
 
-def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve_capture=False, additional_angles=False):
+def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve_capture=False):
     import torch
-    from .cg_moge_multiview import composite_capture, refined_moge_views, render_shifted_views
+    from .cg_moge_multiview import REFINED_MOGE_VIEWS, composite_capture, render_shifted_views
 
     job_id, cancel = job["job_id"], job["cancel_event"]
     diagnostics.mkdir(parents=True)
@@ -1961,8 +1957,7 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
         mesh, = _call_comfy_node("MoGePointMapToMesh", moge_geometry=geometry, batch_index=0,
                                 decimation=max(1, math.ceil(max(size) / 1536)), discontinuity_threshold=0.04, texture=True)
         intrinsics = geometry["intrinsics"][0]
-        frames, calibration, poses = render_shifted_views(
-            mesh, intrinsics, lambda: _check_cancel(cancel), additional_angles=additional_angles)
+        frames, calibration, poses = render_shifted_views(mesh, intrinsics, lambda: _check_cancel(cancel))
         source_depth = geometry["depth"][0].detach().cpu().float()
         focal_length = float(intrinsics[1, 1]) * size[1]
         del geometry, mesh
@@ -1974,8 +1969,7 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
     settings = {**settings, "generation": {**generation, "seed": _resolve_seed(generation), "seed_mode": "fixed"}}
     raw_views = []
     capture_holes = {}
-    directions = refined_moge_views(additional_angles)
-    for index, ((direction, _), (frame, holes, observed)) in enumerate(zip(directions, frames, strict=True), 1):
+    for index, ((direction, _), (frame, holes, observed)) in enumerate(zip(REFINED_MOGE_VIEWS, frames, strict=True), 1):
         view_dir = diagnostics / f"{index:02}-{direction}"
         view_dir.mkdir()
         raw = _tensor_to_pil(frame)
@@ -1999,11 +1993,10 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
     return torch.cat(references), focal_length, capture_holes, (calibration, poses, source_depth, frames)
 
 
-def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, known_views=None, colmap_views=None,
-                         additional_angles=False):
+def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, known_views=None, colmap_views=None):
     import numpy as np
     import torch
-    from .cg_moge_multiview import capture_depth_tracks, depth_interior, depth_transform, fuse_moge_views, refined_moge_views
+    from .cg_moge_multiview import REFINED_MOGE_VIEWS, capture_depth_tracks, depth_interior, depth_transform, fuse_moge_views
 
     job_id, cancel = job["job_id"], job["cancel_event"]
     def check_cancel():
@@ -2026,7 +2019,7 @@ def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, 
             retained = [0]
             retained_depths = [source_depth]
             for index, ((name, _), (raw, holes, observed), depth) in enumerate(
-                    zip(refined_moge_views(additional_angles), captures, depths, strict=True), 1):
+                    zip(REFINED_MOGE_VIEWS, captures, depths, strict=True), 1):
                 check_cancel()
                 matches = capture_depth_tracks((raw[0].numpy() * 255).round().astype(np.uint8),
                     (images[index].numpy() * 255).round().astype(np.uint8), observed, ~holes & depth_interior(observed))
@@ -2402,7 +2395,7 @@ def _execute(job, values):
                         source_image = source.convert("RGB")
                     images, focal_length, capture_holes, known_views = _generate_refined_moge_views(
                         job, source_image, _reconstruction_generation(values["settings"], settings), diagnostics,
-                        preserve_capture=settings["provider"] == "moge", additional_angles=settings["additional_angles"])
+                        preserve_capture=settings["provider"] == "moge")
                 if settings["provider"] == "worldmirror":
                     if settings["camera_source"] == "camera_inputs":
                         if expanding:
@@ -2423,7 +2416,7 @@ def _execute(job, values):
                     cameras = _expand_moge_scene(job, values, images, scene, scene_directory)
                 else:
                     images, capture_holes, cameras = _generate_moge_scene(job, images, scene, scene_directory,
-                        capture_holes=capture_holes, known_views=known_views, additional_angles=settings["additional_angles"])
+                        capture_holes=capture_holes, known_views=known_views)
                 _save_reconstruction(scene_directory, images, settings, focal_length, capture_holes, cameras)
                 scene["lighting"] = {"preset": "off", "background": "#000000"}
                 with _JOBS_LOCK:

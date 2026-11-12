@@ -152,7 +152,6 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 
 const MODEL_DEFAULTS = Object.freeze({ provider: "worldmirror", moge_resolution_mp: 1, worldmirror_resolution_mp: 1,
     moge_camera_source: "camera_inputs", worldmirror_camera_source: "camera_inputs",
-    moge_additional_angles: false, worldmirror_additional_angles: false,
     worldmirror_target_size: 2044, worldmirror_apply_sky_mask: true, worldmirror_precision: "convrot4",
     worldmirror_max_splats: 2000000 });
 const mirrorResolution = value => Math.max(252, Math.min(4088, 14 * Math.round(value / 14)));
@@ -1780,16 +1779,12 @@ class CGCreatorWidget {
                 const provider = settings.provider;
                 const scale = `${provider}_resolution_mp`;
                 const cameraSource = `${provider}_camera_source`;
-                const additionalAngles = `${provider}_additional_angles`;
                 const fields = [
                     { key: scale, label: "Resolution scale (MP)", value: settings[scale],
                         type: "number", min: 0.05, max: 16, step: "any", required: true },
                     { key: cameraSource, label: "Camera source", value: settings[cameraSource], options: [
                         { value: "camera_inputs", label: "Cameras" },
                         provider === "moge" ? { value: "colmap", label: "COLMAP" } : { value: "predicted", label: "Predicted" },
-                    ] },
-                    { key: additionalAngles, label: "Additional angles", value: String(settings[additionalAngles]), options: [
-                        { value: "false", label: "Off" }, { value: "true", label: "On" },
                     ] },
                 ];
                 if (provider === "worldmirror") fields.push(
@@ -1807,7 +1802,7 @@ class CGCreatorWidget {
                 const values = await this.dialog(`${MODEL_NAMES[provider]} settings`, fields);
                 if (values && epoch === this.epoch && !this.disposed) {
                     for (const [key, value] of Object.entries(values)) {
-                        if (key === additionalAngles || key === "worldmirror_apply_sky_mask") settings[key] = value === "true";
+                        if (key === "worldmirror_apply_sky_mask") settings[key] = value === "true";
                         else settings[key] = key === cameraSource || key === "worldmirror_precision" ? value : Number(value);
                     }
                     this.markEdited();

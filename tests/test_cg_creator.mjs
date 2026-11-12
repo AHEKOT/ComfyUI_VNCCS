@@ -754,8 +754,10 @@ test("MoGe restores and recenters its source camera in the imported mesh coordin
     assert.deepEqual(JSON.parse(h.data.value).camera, imported);
 });
 
-test("model settings keep separate resolution scales, camera sources and additional angles", async () => {
-    const h = harness(JSON.stringify(state({ model_settings: { provider: "moge" } })));
+test("model settings keep separate resolution scales and camera sources", async () => {
+    const h = harness(JSON.stringify(state({ model_settings: {
+        provider: "moge", moge_additional_angles: true, worldmirror_additional_angles: true,
+    } })));
     await h.ready();
     let opening = h.control("[data-model-settings]").click();
     let dialog = h.control("[role=dialog]");
@@ -766,9 +768,7 @@ test("model settings keep separate resolution scales, camera sources and additio
     const mogeCameras = field("moge_camera_source");
     assert.equal(mogeCameras.value, "camera_inputs");
     mogeCameras.value = "colmap";
-    const mogeAngles = field("moge_additional_angles");
-    assert.equal(mogeAngles.value, "false");
-    mogeAngles.value = "true";
+    assert.equal(field("moge_additional_angles"), undefined);
     dialog.querySelectorAll("button").at(-1).onclick(); await opening;
     const provider = h.control("[data-model-provider]");
     provider.value = "worldmirror"; await provider.fire("change");
@@ -779,9 +779,7 @@ test("model settings keep separate resolution scales, camera sources and additio
     const mirrorCameras = field("worldmirror_camera_source");
     assert.equal(mirrorCameras.value, "camera_inputs");
     mirrorCameras.value = "predicted";
-    const mirrorAngles = field("worldmirror_additional_angles");
-    assert.equal(mirrorAngles.value, "false");
-    mirrorAngles.value = "true";
+    assert.equal(field("worldmirror_additional_angles"), undefined);
     field("worldmirror_target_size").value = "2048";
     const maxGaussians = field("worldmirror_max_splats");
     assert.ok(Number(maxGaussians.max) >= 5000000);
@@ -793,8 +791,8 @@ test("model settings keep separate resolution scales, camera sources and additio
     assert.equal(saved.model_settings.moge_resolution_mp, 1.7);
     assert.equal(saved.model_settings.moge_camera_source, "colmap");
     assert.equal(saved.model_settings.worldmirror_camera_source, "predicted");
-    assert.equal(saved.model_settings.moge_additional_angles, true);
-    assert.equal(saved.model_settings.worldmirror_additional_angles, true);
+    assert.equal(Object.hasOwn(saved.model_settings, "moge_additional_angles"), false);
+    assert.equal(Object.hasOwn(saved.model_settings, "worldmirror_additional_angles"), false);
     assert.equal(saved.settings.resolution_mp, 2);
 });
 

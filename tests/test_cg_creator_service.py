@@ -314,8 +314,8 @@ def test_moge_mesh_preserves_a_surface_next_to_a_depth_jump():
     assert mesh.vertices[0, :, 2].tolist() == [-2.] * 3
 
 
-@pytest.mark.parametrize(("turn_camera", "additional_angles"), [(True, False), (True, True), (False, False)])
-def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera, additional_angles):
+@pytest.mark.parametrize("turn_camera", [True, False])
+def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera):
     torch = pytest.importorskip("torch")
     import numpy as np
 
@@ -336,21 +336,15 @@ def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_ca
                                 vertices=(points * torch.tensor([1., -1., -1.]))[None],
                                 faces=torch.tensor([[[0, 1, 2]]]), uvs=torch.zeros(1, 3, 2))
     intrinsics = torch.tensor([[1., 0., .5], [0., 1., .5], [0., 0., 1.]])
-    views, _, poses = multiview.render_shifted_views(
-        mesh, intrinsics, lambda: None, turn_camera=turn_camera, additional_angles=additional_angles)
+    views, _, poses = multiview.render_shifted_views(mesh, intrinsics, lambda: None, turn_camera=turn_camera)
 
     sine, cosine = np.sin(np.deg2rad(20)), np.cos(np.deg2rad(20))
     if turn_camera:
-        expected_centers = [[0, -.48, 0], [.24, 0, 0], [-.24, 0, 0], [.48, -.72, .24], [-.48, -.72, .24]]
-        down, forward = np.sin(np.deg2rad(24)), np.cos(np.deg2rad(24))
-        expected_look = [[0, sine, cosine], [-sine, 0, cosine], [sine, 0, cosine],
-                         [-forward * sine, down, forward * cosine], [forward * sine, down, forward * cosine]]
+        expected_centers = [[0, -.48, 0], [.24, 0, 0], [-.24, 0, 0]]
+        expected_look = [[0, sine, cosine], [-sine, 0, cosine], [sine, 0, cosine]]
     else:
         expected_centers = [[0, -.48, 0], [0, 0, .48], [.24, 0, 0], [-.24, 0, 0]]
         expected_look = [[0, 0, 1]] * 4
-    if turn_camera and not additional_angles:
-        expected_centers = expected_centers[:3]
-        expected_look = expected_look[:3]
     np.testing.assert_allclose(np.linalg.inv(poses[1:])[:, :3, 3], expected_centers, atol=1e-8)
     np.testing.assert_allclose(poses[1:, 2, :3], expected_look)
     for view, actual, pose in zip(views, rendered, poses[1:], strict=True):
@@ -388,9 +382,9 @@ def test_side_camera_reaches_the_source_edge_and_preserves_overlap(sign):
     assert sign * fitted[0] >= abs(original[0]) and fitted[2] > 0
 
 
-@pytest.mark.parametrize(("reject_first_view", "additional_angles"), [(False, False), (False, True), (True, True)])
+@pytest.mark.parametrize("reject_first_view", [False, True])
 def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
-        workspace, monkeypatch, reject_first_view, additional_angles):
+        workspace, monkeypatch, reject_first_view):
     torch = pytest.importorskip("torch")
     import numpy as np
 
@@ -406,16 +400,15 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     export = mock.Mock(return_value=(types.SimpleNamespace(get_bytes=lambda: b"glTF fixture"),))
     monkeypatch.setattr(service, "_call_comfy_node", lambda name, **kwargs: (
         (mesh,) if name == "MoGePointMapToMesh" else export(**kwargs)))
-    view_count = 5 if additional_angles else 3
+    view_count = 3
     poses = np.repeat(np.eye(4)[None], view_count + 1, axis=0)
-    poses[1:, :3, 3] = [[0, .48, 0], [-.24, 0, 0], [.24, 0, 0], [-.48, .72, -.24], [.48, .72, -.24]][:view_count]
+    poses[1:, :3, 3] = [[0, .48, 0], [-.24, 0, 0], [.24, 0, 0]]
 
-    def capture(*_args, additional_angles):
-        assert additional_angles == (view_count == 5)
+    def capture(*_args):
         image = infer.call_args.args[0]
         height, width = image.shape[1:3]
         frames = [(torch.full_like(image, value), np.zeros((height, width), dtype=bool),
-                   np.full((height, width), 6.)) for value in (0.2, 0.4, 0.6, 0.8, 1.)[:view_count]]
+                   np.full((height, width), 6.)) for value in (0.2, 0.4, 0.6)]
         focal = 1.5 * height
         return frames, np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]]), poses
 
@@ -442,15 +435,13 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     monkeypatch.setattr(multiview, "fuse_moge_views", merge)
     document = workspace.document
     settings = service.normalize_settings({"resolution_mp": 3, "generation": {"cache_device": "cpu"}})
-    options = {"provider": "moge", "moge_resolution_mp": 0.05}
-    if additional_angles:
-        options["moge_additional_angles"] = True
+    options = {"provider": "moge", "moge_resolution_mp": 0.05, "moge_additional_angles": True}
     service.start_job(document["background_id"], job_payload(document, "model", settings=settings, model_settings=options))
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
     assert [len(call.args[0]) for call in infer.call_args_list] == [1, view_count]
     assert rasterize.call_args.args[:2] == (mesh, calibration)
-    assert seen == [51, 102, 153, 204, 255][:view_count]
+    assert seen == [51, 102, 153]
     require.assert_not_called()
     register.assert_not_called()
     merge.assert_called_once()
@@ -469,7 +460,7 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     diagnostics = library.root().parent / "CG_MoGe_Diagnostics" / job["job_id"]
     with Image.open(diagnostics / "image_1.png") as image:
         assert image.getpixel((0, 0)) == (255, 0, 0)
-    views = ("01-up", "02-right", "03-left", "04-up-right", "05-up-left")[:view_count]
+    views = ("01-up", "02-right", "03-left")
     assert {entry.name for entry in diagnostics.iterdir() if entry.is_dir()} == set(views)
     for view, pixel in zip(views, seen, strict=True):
         for file in ("image_2.png", "qi2_result.png", "reconstruction_frame.png"):
@@ -946,19 +937,19 @@ def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
     assert not (source.parent / "CG").exists()
 
 
-@pytest.mark.parametrize(("size", "expected_size", "sky", "precision", "max_splats", "camera_source", "additional_angles"), [
-    (2048, 2044, True, "convrot4", 2_000_000, "camera_inputs", False),
-    (1022, 1022, False, "convrot8", 5_000_000, "predicted", True),
+@pytest.mark.parametrize(("size", "expected_size", "sky", "precision", "max_splats", "camera_source"), [
+    (2048, 2044, True, "convrot4", 2_000_000, "camera_inputs"),
+    (1022, 1022, False, "convrot8", 5_000_000, "predicted"),
 ])
 def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkeypatch, size, expected_size, sky, precision, max_splats,
-                                                             camera_source, additional_angles):
+                                                             camera_source):
     torch = pytest.importorskip("torch")
     pytest.importorskip("cv2")
     import numpy as np
 
     mirror = load("nodes.world_mirror_v2")
     monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
-    batch = torch.zeros(6 if additional_angles else 4, 64, 128, 3)
+    batch = torch.zeros(4, 64, 128, 3)
     model = object()
     loader = mock.Mock(return_value=(model,))
     monkeypatch.setattr(mirror.VNCCS_WorldMirrorV2Loader, "load_model", loader)
@@ -981,9 +972,7 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
     variant = source_variant(document)
     settings = {"provider": "worldmirror", "worldmirror_target_size": size, "worldmirror_apply_sky_mask": sky,
                 "worldmirror_precision": precision, "worldmirror_max_splats": max_splats, "worldmirror_resolution_mp": 1.5,
-                "worldmirror_camera_source": camera_source}
-    if additional_angles:
-        settings["worldmirror_additional_angles"] = True
+                "worldmirror_camera_source": camera_source, "worldmirror_additional_angles": True}
     service.start_job(document["background_id"], job_payload(document, "model", model_settings=settings, source_variant=variant))
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
@@ -992,7 +981,6 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
     (loaded, image), options = predicted.call_args
     assert predicted.call_count == 1 and loaded is model and image is batch
     refine.assert_called_once()
-    assert refine.call_args.kwargs["additional_angles"] is additional_angles
     assert refine.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
     assert refine.call_args.args[2]["resolution_mp"] == 1.5
     assert refine.call_args.args[2]["generation"]["cache_device"] == "off"
