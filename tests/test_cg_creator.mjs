@@ -3,7 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { webcrypto } from "node:crypto";
 import { FactoryCommandHistory } from "./fixtures/factory_history.mjs";
-import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, connectionSource, cleanupSource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
+import { source, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, mirrorResolution, sourceChoices, selectedSource, sameSource, widgetSource, entrySource, connectionSource, cleanupSource, syncDOMWidgetWidth, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT } from "./helpers/cg_frontend.mjs";
 
 const BASE = "/vnccs/cg-creator";
 const A = "a".repeat(32), B = "b".repeat(32), MODEL = "c".repeat(32), IMAGE = "d".repeat(32), CG = "e".repeat(32);
@@ -113,6 +113,7 @@ class Element {
     }
     querySelectorAll(selector) { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    get firstElementChild() { return this.children[0] || null; }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector) || null; }
     contains(element) { return element === this || this.children.some(child => child.contains(element)); }
     appendChild(child) { if (child.parentElement) child.parentElement.children = child.parentElement.children.filter(item => item !== child); child.parentElement = this; this.children.push(child); return child; }
@@ -198,17 +199,21 @@ function harness(raw = JSON.stringify(state({ background_id: "", selected_image_
         document: Object.assign(new Element("document"), { getElementById: () => true, createElement: tag => new Element(tag), head: new Element("head"), activeElement: null }),
         window, storage: localStorage, sessionStore: { getItem: key => session.get(key), setItem: (key, value) => session.set(key, value) },
         STYLE: "", injectStyles() {}, generateRandomSeed: () => 424242, workflowScope: node => scope + ":" + node.id, cacheIdentity: () => Math.random().toString(36).slice(2), crypto: { randomUUID: () => "01234567-89ab-cdef-0123-456789abcdef" },
-        URL, AbortController, FormData, Blob, createImageBitmap: async () => ({ close() { this.closed = true; } }), console, api, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, sourceChoices, selectedSource, sameSource, syncDOMWidgetWidth, syncDOMWidgetWidthSoon() {}, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT,
+        URL, AbortController, FormData, Blob, createImageBitmap: async () => ({ close() { this.closed = true; } }), console, api, clone, readState, settingsDefaults, frameDimensions, sourceCameraView, MODEL_DEFAULTS, mirrorResolution, sourceChoices, selectedSource, sameSource, syncDOMWidgetWidth, syncDOMWidgetWidthSoon() {}, BACKGROUND_CREATOR_ZOOM, LAYOUT_WIDTH, CREATOR_MIN_HEIGHT,
         ResizeObserver: class { constructor(callback) { this.callback = callback; } observe(target) { this.target = target; } disconnect() { this.disconnected = true; } },
         createSakuraInteractions: () => ({ syncSelects() {}, captureView() { return {}; }, restoreView() {}, dispose() { this.disconnected = true; } }),
         playSakuraMotion(_owner, _element, _frames, _duration, finish) { finish?.(); }, stopSakuraMotion() {},
         CGQi2Controls: class { constructor(host, options) { this.options = options; this.host = host; this.els = {}; } render(config) { this.config = config; } setDisabled(value) { this.disabled = value; } dispose() { this.disposed = true; } },
-        showModal: (container, title, createContent, actions) => {
+        showModal: (container, title, createContent, actions, { modeless = false } = {}) => {
             const overlay = new Element("div"), modal = new Element("div"), content = createContent(), buttons = [];
+            const heading = new Element("div"), row = new Element("div");
+            heading.textContent = title;
             for (const element of [overlay, modal]) element.animations = [{ cancel() { this.cancelled = true; } }];
-            modal.setAttribute("role", "dialog"); modal.appendChild(content); overlay.appendChild(modal); container.appendChild(overlay);
-            for (const action of actions) { const button = new Element("button"); button.textContent = action.text; button.onclick = () => { if (action.action?.() !== true) overlay.remove(); }; modal.appendChild(button); buttons.push(button); }
-            return { overlay, modal, content, buttons };
+            modal.setAttribute("role", "dialog");
+            if (!modeless) modal.setAttribute("aria-modal", "true");
+            modal.append(heading, content, row); overlay.appendChild(modal); container.appendChild(overlay);
+            for (const action of actions) { const button = new Element("button"); button.textContent = action.text; button.onclick = () => { if (action.action?.() !== true) overlay.remove(); }; row.appendChild(button); buttons.push(button); }
+            return { overlay, modal, content, title: heading, actions: row, buttons };
         },
         loadFactoryRuntime: async () => ({ Factory3DViewer: Viewer, FactoryCommandHistory }),
         enableMiddleMouseCanvasPan: () => () => {},
@@ -263,7 +268,7 @@ test("the node owns its settings across background and CG selection and refresh"
     const settings = settingsDefaults({ aspect: "9:16", resolution_mp: 3, generation: {
         diffusion_model_name: "Local models/custom_checkpoint.safetensors", steps: 39, cfg: 0, seed: 915,
     } });
-    const model_settings = { ...MODEL_DEFAULTS, provider: "triposplat", pixal_profile: "standard", steps: 33 };
+    const model_settings = { ...MODEL_DEFAULTS, provider: "moge", moge_resolution_mp: 1.8 };
     const h = harness(JSON.stringify(state({ settings, model_settings })));
     const other = background(B, { model_settings: MODEL_DEFAULTS });
     h.documents.set(B, other);
@@ -334,7 +339,7 @@ test("CG Creator publishes the complete edited state to ComfyUI without a librar
     assert.deepEqual(notifications, []);
     Object.assign(h.widget.state.settings.generation, { cache_device: "cpu", cache_dtype: "int4",
         steps: 19, cfg: 0, sampler: "dpmpp_2m", scheduler: "normal", seed: 429, seed_mode: "randomize" });
-    Object.assign(h.widget.state.model_settings, { pixal_mesh_resolution: 2048, pixal_texture_resolution: 512, seed: 735 });
+    Object.assign(h.widget.state.model_settings, { worldmirror_target_size: 2044, worldmirror_precision: "convrot8", worldmirror_max_splats: 750000 });
     h.widget.qi2.options.onChange();
     assert.deepEqual(notifications, ["before-change", "after-change"]);
     assert.equal(autosaved, h.data.value);
@@ -354,7 +359,7 @@ test("CG Creator publishes the complete edited state to ComfyUI without a librar
     assert.equal(reloaded.widget.state.camera.fov, 67);
 });
 
-test("opening a saved TripoSplat model keeps Pixal3D selected for generation", async () => {
+test("opening a saved TripoSplat model keeps WorldMirror selected for generation", async () => {
     for (const firstBackground of [false, true]) {
         const h = firstBackground ? harness() : harness(JSON.stringify(state()));
         const triposplat = background(B, {
@@ -366,8 +371,7 @@ test("opening a saved TripoSplat model keeps Pixal3D selected for generation", a
         const select = h.control("[data-library]"); select.value = B;
         const switching = h.widget.change({ target: select }); await settle();
         await h.widget.sourceLoad.onload(); await switching; await settle();
-        assert.equal(h.widget.state.model_settings.provider, "pixal3d");
-        assert.equal(h.widget.state.model_settings.pixal_profile, "fast");
+        assert.equal(h.widget.state.model_settings.provider, "worldmirror");
         assert.equal(h.widget.state.model_id, MODEL);
         assert.equal(h.widget.scene.model_id, MODEL);
         const selectedCG = firstBackground ? CG : "";
@@ -750,35 +754,40 @@ test("MoGe restores and recenters its source camera in the imported mesh coordin
     assert.deepEqual(JSON.parse(h.data.value).camera, imported);
 });
 
-test("MoGe and WorldMirror share the saved Refine views choice", async () => {
+test("model settings keep separate resolution scales and camera sources", async () => {
     const h = harness(JSON.stringify(state({ model_settings: { provider: "moge" } })));
     await h.ready();
-    const choice = h.control("[data-moge-refine-views]"), label = h.control("[data-moge-refine-label]");
-    assert.equal(label.hidden, false);
-    assert.equal(choice.checked, false);
-    choice.checked = true; await choice.fire("change");
-    assert.equal(JSON.parse(h.data.value).model_settings.moge_refine_views, true);
-    assert.equal(h.control("[data-model-settings]").disabled, true);
+    let opening = h.control("[data-model-settings]").click();
+    let dialog = h.control("[role=dialog]");
+    const field = name => dialog.querySelectorAll("input,select").find(control => control.name === name);
+    const mogeScale = field("moge_resolution_mp");
+    assert.equal(String(mogeScale.value), "1");
+    mogeScale.value = "1.7";
+    const mogeCameras = field("moge_camera_source");
+    assert.equal(mogeCameras.value, "camera_inputs");
+    mogeCameras.value = "colmap";
+    dialog.querySelectorAll("button").at(-1).onclick(); await opening;
     const provider = h.control("[data-model-provider]");
     provider.value = "worldmirror"; await provider.fire("change");
-    assert.equal(label.hidden, false);
-    assert.equal(choice.checked, true);
-    assert.equal(h.control("[data-model-settings]").disabled, false);
-    let keys, jobAction;
-    h.widget.dialog = async (_title, fields) => {
-        keys = Array.from(fields, field => field.key);
-        return null;
-    };
-    await h.control("[data-model-settings]").click();
-    assert.deepEqual(keys, ["worldmirror_target_size", "worldmirror_apply_sky_mask"]);
-    h.widget.dialog = async () => true;
-    h.widget.runJob = async action => { jobAction = action; };
-    await h.control('[data-action="model"]').click();
-    assert.equal(jobAction, "model");
-    provider.value = "pixal3d"; await provider.fire("change");
-    assert.equal(label.hidden, true);
-    provider.value = "moge"; await provider.fire("change");
-    assert.equal(choice.checked, true);
+    opening = h.control("[data-model-settings]").click();
+    dialog = h.control("[role=dialog]");
+    assert.equal(String(field("worldmirror_resolution_mp").value), "1");
+    assert.equal(field("worldmirror_precision").value, "convrot4");
+    const mirrorCameras = field("worldmirror_camera_source");
+    assert.equal(mirrorCameras.value, "camera_inputs");
+    mirrorCameras.value = "predicted";
+    field("worldmirror_target_size").value = "2048";
+    const maxGaussians = field("worldmirror_max_splats");
+    assert.ok(Number(maxGaussians.max) >= 5000000);
+    maxGaussians.value = "5000000";
+    dialog.querySelectorAll("button").at(-1).onclick(); await opening;
+    const saved = JSON.parse(h.data.value);
+    assert.equal(saved.model_settings.worldmirror_target_size, 2044);
+    assert.equal(saved.model_settings.worldmirror_max_splats, 5000000);
+    assert.equal(saved.model_settings.moge_resolution_mp, 1.7);
+    assert.equal(saved.model_settings.moge_camera_source, "colmap");
+    assert.equal(saved.model_settings.worldmirror_camera_source, "predicted");
+    assert.equal(saved.settings.resolution_mp, 2);
 });
 
 test("frame dimensions support portrait and landscape within renderer limits", () => {
@@ -800,7 +809,7 @@ test("standalone CG entry registers its new node and exposes only the model work
     assert.equal(h.node.cgCreator, h.widget); assert.equal(h.node.cgCreatorDOM.options.serialize, false);
     assert.equal(h.node.cgCreatorDOM.name, "cg_ui"); assert.equal(h.data.hidden, true);
     assert.equal(h.node.size[0], LAYOUT_WIDTH);
-    assert.equal(h.control("footer"), null); assert.equal(h.control(".bg-status"), null); assert.equal(h.control("progress"), null); assert.equal(h.control("[data-stop]"), null);
+    assert.equal(h.control("footer"), null); assert.equal(h.control(".bg-status"), null); assert.equal(h.control("[data-job-progress]"), null); assert.equal(h.control("[data-stop]"), null);
     assert.equal(h.control("[data-step]"), null); assert.equal(h.control("[data-upload]"), null);
     assert.equal(h.control("[data-wizard]"), null); assert.equal(h.control('[data-action="background"]'), null);
     assert.ok(h.control("[data-source-choices]")); assert.equal(h.control("[data-image]"), null); assert.ok(h.control(".bg-generation-dock")); assert.ok(h.control('[data-action="model"]')); assert.ok(h.control("[data-qi2]")); assert.ok(h.control("[data-model-settings]")); assert.equal(h.control("[data-settings]"), null); assert.equal(h.control("[data-model-setting]"), null);
@@ -810,7 +819,7 @@ test("standalone CG entry registers its new node and exposes only the model work
     assert.deepEqual(h.queued, []);
 });
 
-test("TripoSplat settings use the copied VNCCS modal while QI2 controls stay inline", async () => {
+test("WorldMirror settings use the copied VNCCS modal while QI2 controls stay inline", async () => {
     const h = harness(JSON.stringify(state({ model_settings: { ...MODEL_DEFAULTS, provider: "triposplat" } }))); await h.ready();
     const opening = h.control("[data-model-settings]").click(); await settle();
     const dialog = h.control("[role=dialog]"); assert.ok(dialog, h.widget.status.textContent);
@@ -1066,11 +1075,11 @@ test("legacy browser drafts recover node edits without rewriting the background"
         const h = harness(JSON.stringify(state()));
         const key = h.widget.draftKey(A);
         const draft = JSON.stringify({ settings: settingsDefaults({ prompt: "Older authored instruction" }),
-            model_settings: { ...MODEL_DEFAULTS, provider: "triposplat", steps: 35 }, revision });
+            model_settings: { ...MODEL_DEFAULTS, provider: "triposplat", worldmirror_resolution_mp: 3.5 }, revision });
         h.drafts.set(key, draft); await h.ready();
         assert.equal(h.widget.state.settings.prompt, "Older authored instruction");
-        assert.equal(h.widget.state.model_settings.steps, 35);
-        assert.equal(h.widget.state.model_settings.provider, "triposplat");
+        assert.equal(h.widget.state.model_settings.worldmirror_resolution_mp, 3.5);
+        assert.equal(h.widget.state.model_settings.provider, "worldmirror");
         assert.equal(h.drafts.get(key), draft);
         assert.equal(JSON.parse(h.data.value).settings_revision, 1);
         assert.equal(h.documents.get(A).revision, 3);
@@ -1349,7 +1358,7 @@ test("replacing a saved model requires confirmation even when a different genera
     await h.ready();
     assert.equal(h.widget.scene.model_id, MODEL);
     assert.equal(h.control("[data-viewer-empty]").hidden, true);
-    assert.equal(h.widget.state.model_settings.provider, "pixal3d");
+    assert.equal(h.widget.state.model_settings.provider, "worldmirror");
     const button = h.control('[data-action="model"]'), posts = () => h.calls.filter(call => call.options.method === "POST");
     const cancelled = button.click();
     await button.click();
@@ -1387,21 +1396,32 @@ test("first model generation starts directly and uses the calibrated source came
     assert.equal(h.widget.dialogs.size, 0);
     assert.equal(payload.action, "model"); assert.equal(payload.image_id, IMAGE);
     assert.equal(h.widget.state.model_id, modelId); assert.equal(h.widget.viewer.camera.fov, 60);
-    assert.equal(h.widget.busy, false); assert.equal(h.control("progress"), null); assert.equal(h.control("[data-stop]"), null); assert.deepEqual(h.queued, []);
+    assert.equal(h.widget.busy, false); assert.equal(h.control("[data-job-progress]"), null); assert.equal(h.control("[data-stop]"), null); assert.deepEqual(h.queued, []);
 });
 
-test("generation has an animated transient CG card and no status panel, progress bar or Stop", async () => {
+test("generation shows progress in the viewport and clears it on failure", async () => {
     for (const action of ["model", "cg"]) {
         const h = harness(JSON.stringify(state())), completion = deferred(), polled = deferred(); await h.ready();
+        let first = true;
         h.api.handle = (path, options) => {
             if (path === `${BASE}/backgrounds/${A}/jobs`) return response({ job_id: B });
-            if (path === `${BASE}/jobs/${B}`) { polled.resolve(); return completion.promise; }
+            if (path === `${BASE}/jobs/${B}`) {
+                if (!first) return completion.promise;
+                first = false; polled.resolve();
+                return response({ status: "running", message: "Sampling", progress: 42 });
+            }
         };
         const savedOutput = h.widget.state.selected_cg_id;
         const running = action === "model" ? h.control('[data-action="model"]').click() : generateCG(h);
         if (action === "model") h.control('[role="dialog"]').querySelectorAll("button").at(-1).onclick();
         await polled.promise; await settle();
-        assert.equal(h.control("progress"), null); assert.equal(h.control("[data-stop]"), null); assert.equal(h.control(".bg-job-feedback"), null); assert.equal(h.control("footer"), null);
+        const popup = h.control("[data-job-progress]");
+        assert.equal(popup.parentElement, h.widget.host.parentElement);
+        assert.equal(popup.querySelector("[role=dialog]").hasAttribute("aria-modal"), false);
+        const progress = popup.querySelector("[role=progressbar]");
+        assert.equal(progress.attributes.get("aria-valuenow"), "42");
+        assert.equal(progress.firstElementChild.style.width, "42%");
+        assert.equal(h.control("[data-job-message]").textContent, "Sampling"); assert.equal(h.control("[data-stop]"), null); assert.equal(h.control(".bg-job-feedback"), null); assert.equal(h.control("footer"), null);
         if (action === "cg") {
             assert.ok(h.control("[data-pending-cg]")); assert.ok(h.control(".vnccs-common-creator-generation-scan"));
             assert.equal(h.widget.pendingCG.url.startsWith("blob:"), true);
@@ -1420,8 +1440,10 @@ test("generation has an animated transient CG card and no status panel, progress
             assert.equal(h.control("[data-pending-cg]"), null);
             assert.equal(h.control("[data-model-status]").textContent, "Creating model…");
         }
+        h.fireTimers(500);
         completion.resolve(response({ status: "failed", error: "Fixture generation failed" })); await running;
         assert.equal(h.widget.busy, false); assert.equal(h.control("[data-pending-cg]"), null); assert.equal(h.widget.pendingCG, null);
+        assert.equal(h.control("[data-job-progress]"), null);
         assert.match(h.widget.status.textContent, /Fixture generation failed/);
     }
 });

@@ -108,13 +108,11 @@ def _colmap_matches(colmap, database):
 
 def register_views(images, check_cancel, *, diagnostics=None, focal_length=None, capture_holes=None):
     colmap = require_colmap()
-    if diagnostics is None:
-        names = [f"{index:02}.png" for index in range(len(images))]
-    else:
+    if diagnostics is not None and len(images) == len(REFINED_MOGE_VIEWS) + 1 and focal_length is not None:
         labels = ["original", *(name for name, _ in REFINED_MOGE_VIEWS)]
-        if len(images) != len(labels):
-            raise ValueError("MoGe diagnostics require the original and four refined views")
         names = [f"{index:02}-{label}.png" for index, label in enumerate(labels)]
+    else:
+        names = [f"{index:02}.png" for index in range(len(images))]
     with TemporaryDirectory(prefix="vnccs-colmap-") as temporary:
         root = Path(temporary)
         image_dir = root / "views" if diagnostics is None else diagnostics / "colmap"

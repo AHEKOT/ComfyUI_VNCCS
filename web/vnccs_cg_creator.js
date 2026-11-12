@@ -56,9 +56,6 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); align-items:start; gap:10px; }
 .vnccs-cg-creator .bg-model-mode { align-items:center; }
 .vnccs-cg-creator .bg-model-mode .vnccs-common-creator-section-title { margin:0; }
-.vnccs-cg-creator .bg-model-mode:has([data-moge-refine-label]:not([hidden])) { grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; }
-.vnccs-cg-creator [data-moge-refine-label]:not([hidden]) { display:inline-flex; align-items:center; gap:5px; white-space:nowrap; font-size:11px; }
-.vnccs-cg-creator [data-moge-refine-views] { margin:0; accent-color:var(--accent); }
 .vnccs-cg-creator .bg-wide { width:100%; flex:none; min-height:40px; }
 /* Source preview rules copied from VNCCS Background Creator; root selector adapted. */
 .vnccs-cg-creator .bg-panel>.bg-preview { flex:0 0 auto; width:100%; height:auto; aspect-ratio:16/9; min-height:100px; }
@@ -67,7 +64,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-preview>[data-empty] { padding:18px; }
 .vnccs-cg-creator .bg-dialog-fields { display:flex; flex-direction:column; gap:12px; }
 .vnccs-cg-creator .vnccs-common-modal { max-height:calc(100% - 32px); overflow:auto; }
-.vnccs-cg-creator .bg-image-preview { position:absolute; inset:0; background:var(--bg-primary); }
+.vnccs-cg-creator .bg-image-preview { position:absolute; inset:0; z-index:9; background:var(--bg-primary); }
 .vnccs-cg-creator .bg-image-preview [data-close-preview] { position:absolute; right:12px; bottom:12px; z-index:1; padding:6px 16px; font-size:13px; cursor:pointer; }
 .vnccs-cg-creator .bg-image-viewport { position:absolute; inset:0; min-height:0; overflow:hidden; touch-action:none; cursor:grab; }
 .vnccs-cg-creator .bg-image-viewport.is-dragging { cursor:grabbing; }
@@ -86,6 +83,15 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-camera-toolbar input[type=number] { width:58px; padding:7px 4px; flex:none; }
 .vnccs-cg-creator .bg-camera-toolbar input[type=range] { width:60px; flex:1; }
 .vnccs-cg-creator .bg-camera-toolbar button { width:auto; flex:0 0 auto; min-height:34px; font-size:11px; padding:7px 9px; }
+.vnccs-cg-creator [data-job-progress] { z-index:8; }
+.vnccs-cg-creator [data-job-progress] [role=status] { color:var(--text-secondary); font-size:12px; line-height:1.45; }
+.vnccs-cg-creator [data-job-progress] [role=progressbar] { height:8px; border-radius:999px; overflow:hidden; background:rgba(255,255,255,.08); border:1px solid var(--accent-border); }
+.vnccs-cg-creator [data-job-progress] [role=progressbar]>div { height:100%; background:linear-gradient(90deg,var(--accent),var(--accent-hover)); transition:width .2s ease; }
+.vnccs-cg-creator [data-job-progress] [role=progressbar]:not([aria-valuenow])>div { width:35%; animation:vnccs-cg-progress 1.2s ease-in-out infinite alternate; }
+@keyframes vnccs-cg-progress { to { transform:translateX(185%); } }
+@media (prefers-reduced-motion:reduce) {
+    .vnccs-cg-creator [data-job-progress] [role=progressbar]>div { animation:none !important; transition:none; }
+}
 .vnccs-cg-creator .bg-expansion-actions:not([hidden]) { position:absolute; z-index:5; bottom:12px; left:50%; transform:translateX(-50%); display:flex; flex-wrap:wrap; justify-content:center; gap:8px; padding:8px; box-sizing:border-box; width:max-content; max-width:calc(100% - 24px); background:var(--bg-primary); border:1px solid var(--accent-border); border-radius:var(--radius-md); }
 .vnccs-cg-creator .bg-expansion-actions > button { flex:0 1 auto; min-width:0; width:auto; height:auto; white-space:normal; overflow-wrap:anywhere; }
 .vnccs-cg-creator .bg-expansion-compare:not([hidden]) { position:absolute; z-index:4; inset:0; display:grid; place-items:center; container-type:size; background:#000; cursor:ew-resize; }
@@ -144,9 +150,11 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 }
 `;
 
-const MODEL_DEFAULTS = Object.freeze({ provider: "pixal3d", num_gaussians: 262144, steps: 20, guidance_scale: 3, seed: -1,
-    pixal_profile: "fast", pixal_mesh_resolution: 0, pixal_texture_resolution: 0,
-    worldmirror_target_size: 2044, worldmirror_apply_sky_mask: true, camera_shift_lora: "", moge_refine_views: false });
+const MODEL_DEFAULTS = Object.freeze({ provider: "worldmirror", moge_resolution_mp: 1, worldmirror_resolution_mp: 1,
+    moge_camera_source: "camera_inputs", worldmirror_camera_source: "camera_inputs",
+    worldmirror_target_size: 2044, worldmirror_apply_sky_mask: true, worldmirror_precision: "convrot4",
+    worldmirror_max_splats: 2000000 });
+const mirrorResolution = value => Math.max(252, Math.min(4088, 14 * Math.round(value / 14)));
 const DEFAULT_SETTINGS = Object.freeze({
     prompt: "Change the camera angle from <image2> to <image1>.",
     aspect: "16:9", resolution_mp: 2,
@@ -185,8 +193,12 @@ function readState(raw) {
     if (value.job != null && (!(value.job.id ? /^[a-f0-9]{32}$/.test(value.job.id) : typeof value.job.request_id === "string" && /^[A-Za-z0-9_-]{1,160}$/.test(value.job.request_id)) || !["model", "cg", "expand"].includes(value.job.action)
         || typeof value.job.name !== "string" || value.job.name.length > 96
         || value.job.node_id != null && (typeof value.job.node_id !== "string" || !value.job.node_id || value.job.node_id.length > 64))) throw new Error("Invalid saved CG generation.");
+    const model = { ...MODEL_DEFAULTS };
+    for (const key of Object.keys(model)) if (Object.hasOwn(value.model_settings || {}, key)) model[key] = value.model_settings[key];
+    if (!["worldmirror", "moge"].includes(model.provider)) model.provider = MODEL_DEFAULTS.provider;
+    model.worldmirror_target_size = mirrorResolution(model.worldmirror_target_size);
     return { schema_version: 1, background_id: "", selected_image_id: "", model_id: "", selected_cg_id: "", ...value,
-        settings: settingsDefaults(value.settings), model_settings: { ...MODEL_DEFAULTS, ...value.model_settings } };
+        settings: settingsDefaults(value.settings), model_settings: model };
 }
 
 function sourceCameraView(source) {
@@ -858,7 +870,7 @@ class CGQi2Controls {
 
 
 const BASE = "/vnccs/cg-creator";
-const MODEL_NAMES = { triposplat: "TripoSplat", pixal3d: "Pixal3D", worldmirror: "WorldMirror", moge: "MoGe" };
+const MODEL_NAMES = { worldmirror: "WorldMirror", moge: "MoGe" };
 const CAMERA_HINT = "Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo";
 const ASPECTS = ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "3:2", "2:3"];
 const latestModel = (doc, state) => doc?.models?.filter(model => sameSource(model, state)).at(-1);
@@ -882,8 +894,8 @@ class CGCreatorWidget {
                         <button class="bg-enlarge" data-enlarge aria-label="Open full-size background preview" hidden></button></div>
                     <div class="vnccs-common-creator-section-title">Variants</div>
                     <div class="bg-variation-strip"><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="-1" aria-label="Scroll variants left"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"/></svg></button><div class="bg-variation-cards" data-source-choices data-sakura-scroll="cg-source-variants" role="group" aria-label="Background variants"></div><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="1" aria-label="Scroll variants right"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button></div>
-                    <div class="bg-row bg-model-mode"><div class="vnccs-common-creator-section-title">Model generation</div><select class="vnccs-common-creator-select" data-model-provider aria-label="Model generator"><option value="triposplat">TripoSplat</option><option value="pixal3d" selected>Pixal3D</option><option value="worldmirror">WorldMirror</option><option value="moge">MoGe</option></select><label data-moge-refine-label hidden title="Refine views captured from an initial MoGe scene with the CG LoRA"><input type="checkbox" data-moge-refine-views>Refine views</label></div>
-                    <button class="vnccs-common-creator-model-card is-installed bg-model-card" data-model-settings aria-label="Pixal3D settings"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">Pixal3D</span><span class="vnccs-common-creator-model-card-status" data-model-status>Model not created</span></span><span class="vnccs-common-creator-model-card-desc">Textured GLB mesh</span></button>
+                    <div class="bg-row bg-model-mode"><div class="vnccs-common-creator-section-title">Model generation</div><select class="vnccs-common-creator-select" data-model-provider aria-label="Model generator"><option value="worldmirror" selected>WorldMirror</option><option value="moge">MoGe</option></select></div>
+                    <button class="vnccs-common-creator-model-card is-installed bg-model-card" data-model-settings aria-label="WorldMirror settings"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">WorldMirror</span><span class="vnccs-common-creator-model-card-status" data-model-status>Model not created</span></span><span class="vnccs-common-creator-model-card-desc">Textured GLB mesh</span></button>
                     <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary bg-wide" data-action="model">Create model</button>
                 </aside>
                 <section class="cg-middle">
@@ -1084,8 +1096,6 @@ class CGCreatorWidget {
         }
         this.container.querySelector('[data-action="model"]').disabled ||= !this.state?.selected_image_id;
         this.container.querySelector("[data-model-provider]").disabled ||= !this.document;
-        const modelSettings = this.state?.model_settings;
-        this.container.querySelector("[data-model-settings]").disabled ||= modelSettings?.provider === "moge" && modelSettings.moge_refine_views === true;
         this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(frameId || this.state?.job || this.document?._recovery || this.document?.archived));
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
@@ -1096,7 +1106,7 @@ class CGCreatorWidget {
             : this.modelError ? "Model unavailable" : !this.state?.model_id ? "Model not created" : this.loadingModel || this.backgroundTransition ? "Loading model…" : "Model ready";
     }
 
-    invalidateRestore() { this.characterPanel?.hide(); this.restoring = true; this.backgroundTransition = false; this.clearSourceLoad(); stopSakuraMotion(this.customSelects); this.clearPendingCG(); this.cgPreviewClose?.(); ++this.epoch; this.restoreFailed = false; this.busy = false; this.jobId = ""; clearTimeout(this.pollTimer); this.pollResolve?.(); this.updateControls(); }
+    invalidateRestore() { this.showJobProgress(); this.characterPanel?.hide(); this.restoring = true; this.backgroundTransition = false; this.clearSourceLoad(); stopSakuraMotion(this.customSelects); this.clearPendingCG(); this.cgPreviewClose?.(); ++this.epoch; this.restoreFailed = false; this.busy = false; this.jobId = ""; clearTimeout(this.pollTimer); this.pollResolve?.(); this.updateControls(); }
     restore() {
         const epoch = ++this.epoch; this.restoring = true; this.restoreFailed = false; this.updateControls(); this.message("Loading saved backgrounds…");
         this.operations = this.operations.catch(() => {}).then(async () => {
@@ -1128,6 +1138,9 @@ class CGCreatorWidget {
                 this.message(this.document?._recovery ? "Recovered backup is read-only. The original data is preserved." : this.catalog.length ? "Set the camera and press Generate CG." : "Create a background in VNCCS Background Creator.", Boolean(this.document?._recovery));
                 this.restorePreview();
                 if (this.state.job && !this.document?._recovery && !this.document?.archived) {
+                    const action = this.state.job.action;
+                    this.showJobProgress(action === "model" ? "Creating model" : action === "cg" ? "Generating CG" : "Expanding scene",
+                        "Reconnecting…");
                     this.jobOperation = this.modelOperation.then(() => {
                         if (!this.disposed && epoch === this.epoch && this.state.job) return this.runJob(this.state.job.action);
                     }).catch(error => { if (!this.disposed && epoch === this.epoch) this.message(error.message, true); });
@@ -1441,15 +1454,12 @@ class CGCreatorWidget {
         } else if (!this.sourceLoad && !image.hidden) enlarge.hidden = false;
         this.renderSourceCards(choices, selected?.key);
         const selectedProvider = this.state.model_settings.provider;
-        const provider = Object.hasOwn(MODEL_NAMES, selectedProvider) ? selectedProvider : "triposplat";
+        const provider = Object.hasOwn(MODEL_NAMES, selectedProvider) ? selectedProvider : MODEL_DEFAULTS.provider;
         this.container.querySelector("[data-model-provider]").value = provider;
-        this.container.querySelector("[data-moge-refine-label]").hidden = provider !== "moge" && provider !== "worldmirror";
-        this.container.querySelector("[data-moge-refine-views]").checked = this.state.model_settings.moge_refine_views === true;
         const card = this.container.querySelector("[data-model-settings]");
         card.setAttribute("aria-label", `${MODEL_NAMES[provider]} settings`);
         card.querySelector(".vnccs-common-creator-model-card-name").textContent = MODEL_NAMES[provider];
-        card.querySelector(".vnccs-common-creator-model-card-desc").textContent = provider === "pixal3d" || provider === "moge" ? "Textured GLB mesh"
-            : provider === "worldmirror" ? "Multi-view Gaussian splat" : "Single-image Gaussian splat";
+        card.querySelector(".vnccs-common-creator-model-card-desc").textContent = provider === "moge" ? "Textured GLB mesh" : "Multi-view Gaussian splat";
         const visible = Boolean(this.selectedScene()); this.host.hidden = !visible; this.container.querySelector("[data-viewer-empty]").hidden = visible;
         const kind = this.container.querySelector("[data-model-kind]");
         kind.hidden = !visible;
@@ -1616,6 +1626,9 @@ class CGCreatorWidget {
                     if (field.required) control.required = true; if (field.multiline) control.rows = 5;
                     for (const key of ["min", "max", "step", "pattern"]) if (field[key] != null) control[key] = field[key];
                     if (field.maxLength) control.maxLength = field.maxLength;
+                    if (field.normalize) control.addEventListener("change", () => {
+                        if (control.value && Number.isFinite(Number(control.value))) control.value = String(field.normalize(Number(control.value)));
+                    });
                     if (field.oninput) for (const type of ["input", "change"]) control.addEventListener(type, () => field.oninput(control.value));
                     label.append(text, control);
                     form.appendChild(label); controls[field.key] = control;
@@ -1623,7 +1636,10 @@ class CGCreatorWidget {
                 return form;
             }, [{ text: "Cancel", action: close }, { text: submitLabel, class: danger ? "danger" : "primary", action: () => {
                 if (!Object.values(controls).every(control => control.reportValidity())) return true;
-                finish(Object.fromEntries(Object.entries(controls).map(([key, control]) => [key, control.value])));
+                finish(Object.fromEntries(fields.map(field => {
+                    const value = controls[field.key].value;
+                    return [field.key, field.normalize ? String(field.normalize(Number(value))) : value];
+                })));
             } }]);
             const remove = modal.overlay.remove;
             modal.overlay.remove = () => { remove.apply(modal.overlay); if (this.dialogs.delete(close)) resolve(null); };
@@ -1759,40 +1775,35 @@ class CGCreatorWidget {
             if (button.hasAttribute("data-recenter")) { this.beginGesture(); this.recenterCamera(this.scene, true); this.commitGesture(); return; }
             if (button.hasAttribute("data-enlarge")) { this.openPreview(); return; }
             if (button.hasAttribute("data-model-settings")) {
-                const provider = this.state.model_settings.provider;
-                const mesh = provider === "pixal3d", worldmirror = provider === "worldmirror", moge = provider === "moge";
-                const profileDefault = { value: 0, label: "Profile default" };
-                const fields = worldmirror ? [
-                    { key: "worldmirror_target_size", label: "Resolution", value: this.state.model_settings.worldmirror_target_size,
-                        type: "number", min: 252, max: 4088, step: 14, required: true },
-                    { key: "worldmirror_apply_sky_mask", label: "Sky mask", value: String(this.state.model_settings.worldmirror_apply_sky_mask), options: [
+                const settings = this.state.model_settings;
+                const provider = settings.provider;
+                const scale = `${provider}_resolution_mp`;
+                const cameraSource = `${provider}_camera_source`;
+                const fields = [
+                    { key: scale, label: "Resolution scale (MP)", value: settings[scale],
+                        type: "number", min: 0.05, max: 16, step: "any", required: true },
+                    { key: cameraSource, label: "Camera source", value: settings[cameraSource], options: [
+                        { value: "camera_inputs", label: "Cameras" },
+                        provider === "moge" ? { value: "colmap", label: "COLMAP" } : { value: "predicted", label: "Predicted" },
+                    ] },
+                ];
+                if (provider === "worldmirror") fields.push(
+                    { key: "worldmirror_target_size", label: "Resolution", value: settings.worldmirror_target_size,
+                        type: "number", step: "any", required: true, normalize: mirrorResolution },
+                    { key: "worldmirror_precision", label: "Model precision", value: settings.worldmirror_precision, options: [
+                        { value: "convrot4", label: "INT4 ConvRot" }, { value: "convrot8", label: "INT8 ConvRot" }, { value: "bf16", label: "BF16" },
+                    ] },
+                    { key: "worldmirror_max_splats", label: "Maximum Gaussians", value: settings.worldmirror_max_splats,
+                        type: "number", min: 1, max: Number.MAX_SAFE_INTEGER, step: 1, required: true },
+                    { key: "worldmirror_apply_sky_mask", label: "Sky mask", value: String(settings.worldmirror_apply_sky_mask), options: [
                         { value: "true", label: "On" }, { value: "false", label: "Off" },
                     ] },
-                ] : mesh ? [
-                    { key: "pixal_profile", label: "Profile", value: this.state.model_settings.pixal_profile, options: [
-                        { value: "standard", label: "Standard" },
-                        { value: "fast", label: "Fast · Base color only" },
-                    ] },
-                    { key: "pixal_mesh_resolution", label: "Mesh resolution", value: this.state.model_settings.pixal_mesh_resolution, options: [profileDefault, 1024, 1536, 2048] },
-                    { key: "pixal_texture_resolution", label: "Texture atlas resolution", value: this.state.model_settings.pixal_texture_resolution, options: [profileDefault, 256, 512, 1024, 2048, 4096] },
-                ] : moge ? [] : [
-                    { key: "num_gaussians", label: "Gaussians", value: this.state.model_settings.num_gaussians, options: [32768, 65536, 131072, 262144, 524288, 1048576] },
-                    { key: "steps", label: "Steps", value: this.state.model_settings.steps, type: "number", min: 1, max: 100, step: 1, required: true },
-                    { key: "guidance_scale", label: "Guidance", value: this.state.model_settings.guidance_scale, type: "number", min: 1, max: 20, step: 0.1, required: true },
-                ];
-                if ((worldmirror || moge) && !this.state.model_settings.moge_refine_views) {
-                    const value = this.state.model_settings.camera_shift_lora;
-                    const loras = [...new Set([...(this.config?.loras || []), value].filter(Boolean))];
-                    fields.unshift({ key: "camera_shift_lora", label: "Camera shift LoRA", value,
-                        options: [{ value: "", label: "Select a LoRA" }, ...loras] });
-                } else if (!worldmirror && !moge) fields.push({ key: "seed", label: "Seed", value: this.state.model_settings.seed, type: "number", min: -1, max: 2147483647, step: 1, required: true });
-                const values = await this.dialog(`${MODEL_NAMES[provider] ?? MODEL_NAMES.triposplat} settings`, fields);
+                );
+                const values = await this.dialog(`${MODEL_NAMES[provider]} settings`, fields);
                 if (values && epoch === this.epoch && !this.disposed) {
                     for (const [key, value] of Object.entries(values)) {
-                        if (key === "worldmirror_apply_sky_mask") this.state.model_settings[key] = value === "true";
-                        else if (key === "camera_shift_lora") this.state.model_settings[key] = value;
-                        else if (key !== "pixal_profile") this.state.model_settings[key] = Number(value);
-                        else if (value === "fast" || value === "standard") this.state.model_settings[key] = value;
+                        if (key === "worldmirror_apply_sky_mask") settings[key] = value === "true";
+                        else settings[key] = key === cameraSource || key === "worldmirror_precision" ? value : Number(value);
                     }
                     this.markEdited();
                 }
@@ -1812,12 +1823,6 @@ class CGCreatorWidget {
             }
             if (button.dataset.action === "model") {
                 if (this.dialogs.size) return;
-                const { provider, camera_shift_lora, moge_refine_views } = this.state.model_settings;
-                const usesShiftLoRA = (provider === "worldmirror" || provider === "moge") && !moge_refine_views;
-                if (usesShiftLoRA && !camera_shift_lora) {
-                    this.message("Select the trained Camera shift LoRA in model settings.", true);
-                    return;
-                }
                 const existing = latestModel(this.document, this.state);
                 if (existing) {
                     const confirmed = await this.dialog("Replace model?", [], "Replace model", {
@@ -1849,9 +1854,6 @@ class CGCreatorWidget {
             } else if (control.hasAttribute("data-model-provider")) {
                 if (control.disabled || !Object.hasOwn(MODEL_NAMES, control.value)) return;
                 this.state.model_settings.provider = control.value; this.markEdited(); this.render();
-            } else if (control.hasAttribute("data-moge-refine-views")) {
-                if (!["moge", "worldmirror"].includes(this.state.model_settings.provider) || control.disabled) return;
-                this.state.model_settings.moge_refine_views = control.checked; this.markEdited(); this.updateControls();
             } else if (control.hasAttribute("data-aspect")) { this.state.settings.aspect = control.value; this.updateFrame(); this.markEdited();
             }
         } catch (error) {
@@ -1863,11 +1865,42 @@ class CGCreatorWidget {
         finally { if (navigating && epoch === this.epoch && !this.disposed) { this.busy = false; this.container.querySelector("[data-library]").value = this.state.background_id; this.updateControls(); } }
     }
 
+    showJobProgress(title, message, value) {
+        if (!title) {
+            this.jobProgress?.overlay.remove();
+            this.jobProgress = null;
+            return;
+        }
+        if (!this.jobProgress) {
+            const dialog = showModal(this.host.parentElement, title, () => {
+                const content = document.createElement("div");
+                content.className = "bg-dialog-fields";
+                content.innerHTML = '<div role="status" data-job-message></div><div role="progressbar" aria-label="Generation progress"><div></div></div>';
+                return content;
+            }, [], { modeless: true });
+            dialog.overlay.setAttribute("data-job-progress", "");
+            dialog.actions.hidden = true;
+            this.jobProgress = dialog;
+        }
+        const { title: heading, content } = this.jobProgress;
+        if (heading.textContent !== title) heading.textContent = title;
+        const status = content.querySelector("[data-job-message]");
+        if (status.textContent !== message) status.textContent = message;
+        const progress = content.querySelector("[role=progressbar]");
+        const percent = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+        if (percent === null) progress.removeAttribute("aria-valuenow");
+        else progress.setAttribute("aria-valuenow", String(percent));
+        progress.firstElementChild.style.width = percent === null ? "" : `${percent}%`;
+    }
+
     async runJob(action, extra = {}, raw = null) {
         if (!this.document) throw new Error("Select a saved background first."); const epoch = this.epoch, id = this.state.background_id;
         const savedJob = this.state.job;
         if (savedJob && savedJob.action !== action) throw new Error("Reconnect to the unfinished generation before starting another action.");
         let terminal = false;
+        const title = action === "model" ? "Creating model" : action === "cg" ? "Generating CG"
+            : extra.expansion_frame_id ? "Rebuilding scene" : savedJob ? "Expanding scene" : "Refining view";
+        this.showJobProgress(title, savedJob ? "Reconnecting…" : "Submitting…");
         this.activeAction = action;
         this.busy = true; this.updateControls();
         this.message(action === "expand" ? "Submitting scene expansion…" : "Preparing " + action + "…", false, action === "expand");
@@ -1907,10 +1940,11 @@ class CGCreatorWidget {
             while (epoch === this.epoch && !this.disposed && id === this.state.background_id) {
                 result = await this.request(`/jobs/${this.jobId}`); if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return;
                 if (["completed", "failed", "cancelled"].includes(result.status)) break;
-                if (action === "expand") this.message(result.message || "Expanding scene…", false, true);
+                this.showJobProgress(title, result.message || title, result.progress);
                 await new Promise(resolve => { this.pollResolve = resolve; this.pollTimer = setTimeout(resolve, 500); });
             }
             if (epoch !== this.epoch || this.disposed || id !== this.state.background_id) return; terminal = true; if (result.status !== "completed") throw new Error(result.error || "Generation stopped.");
+            this.showJobProgress(title, "Opening result…", 100);
             if (action === "expand") {
                 const frameId = result.result?.expansion_frame_id;
                 if (frameId && this.selectedScene()) this.scene.expansion_frame_id = frameId;
@@ -1935,7 +1969,7 @@ class CGCreatorWidget {
                 throw new Error("Generation status is unavailable. Reconnection will retry when the connection returns or this window becomes active. " + error.message);
             }
             throw error;
-        } finally { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); if (terminal) { delete this.state.job; if (this.state.preview?.kind === "pending") delete this.state.preview; } this.jobId = ""; this.activeAction = ""; this.busy = false; this.render(); this.sync(); } }
+        } finally { if (epoch === this.epoch && !this.disposed) { this.clearPendingCG(); if (terminal) { delete this.state.job; if (this.state.preview?.kind === "pending") delete this.state.preview; } this.jobId = ""; this.activeAction = ""; this.showJobProgress(); this.busy = false; this.render(); this.sync(); } }
     }
     updateFrame() {
         if (!this.state || this.restoring || this.busy) return;
@@ -2083,6 +2117,7 @@ class CGCreatorWidget {
     dispose() {
         if (this.disposed) return;
         this.disposed = true;
+        this.showJobProgress();
         this.clearPendingCG();
         ++this.epoch; this.canvasNavigation?.(); this.events.abort(); clearTimeout(this.wheelTimer); clearTimeout(this.pollTimer); this.pollResolve?.();
         this.clearSourceLoad();

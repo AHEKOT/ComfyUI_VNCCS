@@ -567,7 +567,8 @@ def _save_reconstruction(directory, images, settings, focal_length, capture_hole
         if capture_holes and index in capture_holes:
             mask = Image.fromarray(capture_holes[index].astype(np.uint8) * 255)
             mask.save(folder / f"mask-{index:06}.png")
-    stored = {key: settings[key] for key in ("provider", "target_size", "apply_sky_mask") if key in settings}
+    stored = {key: settings[key] for key in ("provider", "target_size", "apply_sky_mask", "resolution_mp",
+                                            "precision", "max_splats", "camera_source") if key in settings}
     if cameras is not None:
         stored["cameras"] = cameras
     height, width = images.shape[1:3]
@@ -1779,40 +1780,38 @@ def finish_expansion(background_id, model_id, expansion_id, save):
     return public_document(document)
 
 
-def model_settings(value):
+def model_settings(value, saved=None):
     if not isinstance(value, dict):
         raise ValueError("Background model settings must be an object")
-    if value.get("provider") in ("moge", "worldmirror"):
-        lora = _model_name(value.get("camera_shift_lora", ""), "Camera shift LoRA")
-        refine_views = value.get("moge_refine_views", False)
-        if type(refine_views) is not bool:
-            raise ValueError("Refine views must be a boolean")
-    if value.get("provider") == "moge":
-        return {"provider": "moge", "camera_shift_lora": lora, "moge_refine_views": refine_views}
-    if value.get("provider") == "worldmirror":
-        size = value.get("worldmirror_target_size", 2044)
-        sky_mask = value.get("worldmirror_apply_sky_mask", True)
-        if type(size) is not int or not 252 <= size <= 4088 or size % 14:
-            raise ValueError("WorldMirror resolution must be a multiple of 14 between 252 and 4088")
-        if type(sky_mask) is not bool:
-            raise ValueError("WorldMirror sky mask must be a boolean")
-        return {"provider": "worldmirror", "target_size": size, "apply_sky_mask": sky_mask,
-                "camera_shift_lora": lora, "moge_refine_views": refine_views}
-    factory = provider()["storage"]
-    gaussian = factory._generation_settings({**value, "remove_background": "0", "provider": "triposplat"})
-    gaussian["pixal_profile"] = "fast" if value.get("pixal_profile", "fast") == "fast" else "standard"
-    for key, options in (
-        ("pixal_mesh_resolution", (0, 1024, 1536, 2048)),
-        ("pixal_texture_resolution", (0, 256, 512, 1024, 2048, 4096)),
-    ):
-        resolution = value.get(key, 0)
-        if type(resolution) is not int or resolution not in options:
-            raise ValueError(f"Invalid {key.replace('_', ' ')}")
-        gaussian[key] = resolution
-    if value.get("provider", "pixal3d") == "pixal3d":
-        mesh = factory._generation_settings({**value, "remove_background": "0", "refine_textures": "0", "provider": "pixal3d"})
-        return {**gaussian, **mesh, "provider": "pixal3d"}
-    return gaussian
+    saved = saved or {}
+    provider_name = "moge" if (saved.get("provider") or value.get("provider")) == "moge" else "worldmirror"
+    resolution = _number(value.get(f"{provider_name}_resolution_mp", saved.get("resolution_mp", 1)),
+                         "Reconstruction resolution", 0.05, 16)
+    camera_source = value.get(f"{provider_name}_camera_source", saved.get("camera_source", "camera_inputs"))
+    if camera_source not in ("camera_inputs", "colmap" if provider_name == "moge" else "predicted"):
+        raise ValueError("Invalid reconstruction camera source")
+    if provider_name == "moge":
+        return {"provider": "moge", "resolution_mp": resolution, "camera_source": camera_source}
+    size = value.get("worldmirror_target_size", saved.get("target_size", 2044))
+    if type(size) not in (int, float) or not -math.inf < size < math.inf:
+        raise ValueError("WorldMirror resolution must be a finite number")
+    size = 14 * math.floor(max(252, min(4088, size)) / 14 + 0.5)
+    sky_mask = value.get("worldmirror_apply_sky_mask", saved.get("apply_sky_mask", True))
+    if type(sky_mask) is not bool:
+        raise ValueError("WorldMirror sky mask must be a boolean")
+    precision = value.get("worldmirror_precision", saved.get("precision", "convrot4"))
+    if precision not in ("convrot4", "convrot8", "bf16"):
+        raise ValueError("Invalid WorldMirror model precision")
+    max_splats = _number(value.get("worldmirror_max_splats", saved.get("max_splats", 2_000_000)),
+                         "Maximum Gaussians", 1, 2**53 - 1, integer=True)
+    return {"provider": "worldmirror", "resolution_mp": resolution, "target_size": size,
+            "apply_sky_mask": sky_mask, "precision": precision, "max_splats": max_splats,
+            "camera_source": camera_source}
+
+
+def _reconstruction_generation(settings, model_settings):
+    return {**settings, "resolution_mp": model_settings.get("resolution_mp", 1),
+            "generation": {**settings["generation"], "cache_device": "off"}}
 
 
 def _worldmirror_camera(poses, intrinsics, height):
@@ -1866,64 +1865,27 @@ def _write_worldmirror_ply(path, splats, cancel_event):
             stream.write(memoryview(rows).cast("B"))
 
 
-def _generate_camera_shift_views(job, source, settings, lora):
-    import torch
-
-    job_id, cancel = job["job_id"], job["cancel_event"]
-    generation = settings["generation"]
-    aspect = max(source.width / source.height, source.height / source.width)
-    resolution = 32 * min(round(32 * math.sqrt(settings["resolution_mp"])), int(128 / math.sqrt(aspect)))
-    images = {"image_1": _pil_to_tensor(source)}
-    prompts = ("make step to the left", "make step to the right", "make step to the up")
-    sampler = {"seed": _resolve_seed(generation), "steps": generation["steps"], "cfg": generation["cfg"],
-               "sampler_name": generation["sampler"], "scheduler": generation["scheduler"], "denoise": 1.0}
-    with _model_session(job_id, cancel), torch.inference_mode():
-        _stage(job_id, cancel, "loading", 0.02, "Loading Qwen Image 2.1 and Camera shift LoRA")
-        model, clip, vae = _load_assets(generation["diffusion_model_name"])
-        model, _ = apply_generation_lora(model, None, lora, 1.0, clip_strength=0)
-        if generation["turbo"]:
-            model = _call_comfy_node("LoraLoaderModelOnly", model=model, lora_name=_asset_name("loras", TURBO_LORA), strength_model=1.0)[0]
-        device = "auto" if generation["cache_device"] == "default" else generation["cache_device"]
-        model = _call_comfy_node("QwenImage21Cache", model=model, device=device, dtype=generation["cache_dtype"])[0]
-        views = []
-        for index, prompt in enumerate(prompts):
-            start = 0.07 + 0.17 * index
-            _stage(job_id, cancel, "conditioning", start, f"Generating camera shift {index + 1}/3")
-            positive, negative, latent = _call_comfy_node("TextEncodeQwenImage21", clip=clip, vae=vae,
-                prompt=prompt, negative_prompt="", resolution=resolution, images=images)
-            with _report_sampling_progress(job_id, generation["steps"], start=start + 0.01, span=0.14):
-                samples = _sample_generation_latent(model, positive, negative, latent, sampler, turbo=generation["turbo"])
-            view = _call_comfy_node("VAEDecode", vae=vae, samples=samples)[0].detach().cpu().float()
-            if (view.ndim != 4 or view.shape[0] != 1 or view.shape[3] != 3
-                    or min(view.shape[1:3]) < 32 or max(view.shape[1:3]) > 4096
-                    or not torch.isfinite(view).all() or views and view.shape != views[0].shape):
-                raise ValueError("QI2 returned inconsistent camera-shift images")
-            views.append(view.clamp_(0, 1))
-            _check_cancel(cancel)
-        height, width = views[0].shape[1:3]
-        original = source if source.size == (width, height) else source.resize((width, height), Image.Resampling.LANCZOS)
-        return torch.cat((_pil_to_tensor(original), *views))
-
-
-def _generate_worldmirror_scene(job, images, scene, scene_directory, settings, cameras=None):
+def _generate_worldmirror_scene(job, images, scene, scene_directory, settings, cameras):
     import torch
     from .world_mirror_v2 import VNCCS_WorldMirrorV2Loader, VNCCS_WorldMirrorV2Reconstruction
 
     job_id, cancel = job["job_id"], job["cancel_event"]
-    camera_options = {"splat_camera_source": "predicted"}
+    camera_options = {"splat_camera_source": settings["camera_source"]}
     if cameras is not None:
         world_to_camera = torch.tensor(cameras["world_to_camera"], dtype=torch.float32)
         camera_to_world = torch.linalg.inv(world_to_camera)
-        camera_options = {"splat_camera_source": "camera_inputs", "camera_poses": camera_to_world,
-                          "camera_intrinsics": torch.tensor(cameras["intrinsics"], dtype=torch.float32)}
+        camera_options.update(camera_poses=camera_to_world,
+                              camera_intrinsics=torch.tensor(cameras["intrinsics"], dtype=torch.float32))
     with _model_session(job_id, cancel), torch.inference_mode():
-        _stage(job_id, cancel, "loading", 0.60, "Loading WorldMirror V2 ConvRot INT4")
-        model, = VNCCS_WorldMirrorV2Loader().load_model(precision="convrot4")
+        precision = settings.get("precision", "convrot4")
+        _stage(job_id, cancel, "loading", 0.60, f"Loading WorldMirror V2 ({precision})")
+        model, = VNCCS_WorldMirrorV2Loader().load_model(precision=precision)
         _stage(job_id, cancel, "reconstructing", 0.70, f"Reconstructing {len(images)} views with WorldMirror V2")
         ply, depth, _, poses, intrinsics, *_ = VNCCS_WorldMirrorV2Reconstruction().run_inference(
             model, images, target_size=settings["target_size"],
             offload_scheme="model_cpu_offload", low_vram_mode=True, debug_log=False,
-            apply_sky_mask=settings["apply_sky_mask"], enable_splat_upsample=False, **camera_options,
+            apply_sky_mask=settings["apply_sky_mask"], enable_splat_upsample=False,
+            splat_max_points=settings.get("max_splats", 2_000_000), **camera_options,
         )
         if cameras is None:
             # Store intrinsics in reconstruction image pixels, before WorldMirror's internal resize.
@@ -1933,33 +1895,11 @@ def _generate_worldmirror_scene(job, images, scene, scene_directory, settings, c
             cameras = {"intrinsics": calibration.tolist(), "world_to_camera": torch.linalg.inv(poses[0]).tolist()}
         elif not torch.allclose(poses[0], camera_to_world):
             raise ValueError("WorldMirror could not align its depth estimates with the supplied cameras")
-        splats = ply.get("splats")
-        if job["action"] == "expand":
-            from .cg_splat_refine import refine_splats
-            from .world_mirror_v2 import _depth_maps_s_h_w
-
-            _stage(job_id, cancel, "refining", 0.82, "Refining WorldMirror geometry across camera views")
-            started = time.perf_counter()
-            stats = {}
-            try:
-                maps = _depth_maps_s_h_w(ply.get("gs_depth"))
-                if maps is None:
-                    maps = _depth_maps_s_h_w(ply.get("depth"))
-                if maps is None:
-                    raise ValueError("WorldMirror returned no metric depth for splat refinement")
-                mask = ply.get("gs_filter_mask")
-                if torch.is_tensor(mask) and mask.numel() == maps.numel():
-                    maps = maps.masked_fill(~mask.reshape(maps.shape).to(device=maps.device, dtype=torch.bool), 0)
-                splats, stats = refine_splats(splats, maps, poses[0], intrinsics[0], lambda: _check_cancel(cancel))
-            finally:
-                log_event("worldmirror_splat_refine", component="CGCreator", job_id=job_id,
-                          status="completed" if stats else "interrupted", elapsed_seconds=round(time.perf_counter() - started, 3),
-                          **stats)
         _stage(job_id, cancel, "saving", 0.90, "Saving WorldMirror splats and camera")
         camera = _worldmirror_camera(poses, intrinsics, depth.shape[1])
         object_id = uuid.uuid4().hex
         relative = f"objects/{object_id}/model.ply"
-        _write_worldmirror_ply(_contained(scene_directory, relative), splats, cancel)
+        _write_worldmirror_ply(_contained(scene_directory, relative), ply.get("splats"), cancel)
     _set_reconstruction_object(scene, object_id, camera, "ply", relative)
     return cameras
 
@@ -2049,22 +1989,19 @@ def _generate_refined_moge_views(job, source, settings, diagnostics):
     return torch.cat(references), focal_length, capture_holes, (calibration, poses, source_depth, frames)
 
 
-def _generate_moge_scene(job, images, scene, scene_directory, *, diagnostics=None, focal_length=None, capture_holes=None,
-                         known_views=None):
+def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, known_views=None, colmap_views=None):
     import numpy as np
     import torch
-    from .cg_moge_multiview import REFINED_MOGE_VIEWS, _depth_scale, capture_depth_tracks, merge_moge_views, register_views
+    from .cg_moge_multiview import REFINED_MOGE_VIEWS, _depth_scale, capture_depth_tracks, fuse_moge_views, merge_moge_views
 
     job_id, cancel = job["job_id"], job["cancel_event"]
     def check_cancel():
         _check_cancel(cancel)
 
-    if known_views is None:
-        _stage(job_id, cancel, "calibrating", 0.60, f"Estimating {len(images)} camera poses with COLMAP")
-        calibration, poses, tracks = register_views(images, check_cancel, diagnostics=diagnostics, focal_length=focal_length,
-                                                    capture_holes=capture_holes)
-    else:
+    if colmap_views is None:
         calibration, poses, source_depth, captures = known_views
+    else:
+        calibration, poses, tracks = colmap_views
     height, width = images.shape[1:3]
     fov_x = math.degrees(2 * math.atan(width / (2 * calibration[0, 0])))
     fov_y = math.degrees(2 * math.atan(height / (2 * calibration[1, 1])))
@@ -2072,9 +2009,7 @@ def _generate_moge_scene(job, images, scene, scene_directory, *, diagnostics=Non
                       "fov": max(5.0, min(120.0, fov_y))})
     with _model_session(job_id, cancel), torch.inference_mode():
         _stage(job_id, cancel, "reconstructing", 0.70, f"Estimating geometry for {len(images)} views with MoGe")
-        if known_views is None:
-            geometry = _infer_moge(images, fov_x)
-        else:
+        if colmap_views is None:
             depths = _infer_moge(images[1:], fov_x)["depth"].detach().cpu().float()
             source = source_depth.numpy()
             y, x = np.nonzero(np.isfinite(source) & (source > 0))
@@ -2101,17 +2036,21 @@ def _generate_moge_scene(job, images, scene, scene_directory, *, diagnostics=Non
                 tracks.append(matches)
             images, poses = images[retained], poses[retained]
             capture_holes = {index: capture_holes[old] for index, old in enumerate(retained) if old}
-            geometry = {"depth": torch.stack(retained_depths)}
-        _stage(job_id, cancel, "meshing", 0.86, "Aligning and merging the MoGe geometry")
-        mesh = merge_moge_views(geometry, images, calibration, poses, tracks, _call_comfy_node, check_cancel,
-                                capture_holes=capture_holes)
-        scales = np.asarray([_depth_scale(view.detach().cpu().numpy(), match)
-                             for view, match in zip(geometry["depth"], tracks, strict=True)])
-        poses = poses.copy()
-        poses[:, :3, 3] /= scales[0]
+            depths = torch.stack(retained_depths)
+        else:
+            depths = _infer_moge(images, fov_x)["depth"].detach().cpu().float()
+        _stage(job_id, cancel, "meshing", 0.86, "Building the MoGe mesh")
+        scales = np.asarray([_depth_scale(view.numpy(), match) for view, match in zip(depths, tracks, strict=True)])
+        normalized = poses.copy()
+        normalized[:, :3, 3] /= scales[0]
         cameras = {"intrinsics": [calibration.tolist()] * len(images),
-                   "world_to_camera": (poses @ np.linalg.inv(poses[0])).tolist(),
+                   "world_to_camera": (normalized @ np.linalg.inv(normalized[0])).tolist(),
                    "depth_scales": (scales / scales[0]).tolist()}
+        if colmap_views is None:
+            mesh = merge_moge_views({"depth": depths}, images, calibration, poses, tracks, _call_comfy_node, check_cancel,
+                                    capture_holes=capture_holes)
+        else:
+            mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
         _save_moge_mesh(job, scene, scene_directory, mesh, camera)
     return images, capture_holes, cameras
 
@@ -2260,17 +2199,6 @@ def start_job(background_id, payload, raw_image=None):
               "source_signature": background_storage.fingerprint(image_path(background_id, image_id, source_variant)),
               "model_settings": model_settings(payload.get("model_settings", {})) if action != "expand" else {},
               "settings": normalize_settings(payload.get("settings", {}))}
-    if action == "model" and values["model_settings"]["provider"] == "pixal3d" and not callable(getattr(runtime, "_generate_mesh_object", None)):
-        raise RuntimeError("Pixal3D requires a 3D Factory version with mesh generation")
-    if action == "model" and values["model_settings"]["provider"] in ("moge", "worldmirror"):
-        if not values["model_settings"].get("moge_refine_views"):
-            lora = values["model_settings"]["camera_shift_lora"]
-            if not lora:
-                raise ValueError("Select the trained Camera shift LoRA in model settings")
-            values["model_settings"]["camera_shift_lora"] = _asset_name("loras", lora)
-        if values["model_settings"]["provider"] == "moge" and not values["model_settings"].get("moge_refine_views"):
-            from .cg_moge_multiview import require_colmap
-            require_colmap()
     if action in {"cg", "expand"}:
         values["model_id"] = _id(payload.get("model_id"))
         if action == "cg":
@@ -2313,7 +2241,8 @@ def start_job(background_id, payload, raw_image=None):
                 raise ValueError("Scene expansion requires a MoGe or WorldMirror model")
             if scene.get("source_signature") != values["source_signature"]:
                 raise BackgroundConflictError("The background source changed. Recreate its model before expanding")
-            if provider_name == "worldmirror" and not settings.get("cameras"):
+            settings.update(model_settings(payload.get("model_settings", {}), settings))
+            if provider_name == "worldmirror" and settings["camera_source"] == "camera_inputs" and not settings.get("cameras"):
                 raise ValueError("This WorldMirror model has no saved reconstruction cameras. Recreate its base model once")
             if "expansion_frame_id" in values:
                 folder, frame = _expansion_frame(model, values["expansion_frame_id"])
@@ -2384,8 +2313,8 @@ def _preview_expansion_frame(job, values):
     model = values["model_directory"]
     with Image.open(_contained(model, "reconstruction", "000000.png")) as stored:
         original = stored.convert("RGB")
-    refined, _ = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], original,
-                                save_dataset=False)
+    settings = _reconstruction_generation(values["settings"], values["model_settings"])
+    refined, _ = generate_image(settings, job["job_id"], job["cancel_event"], values["raw"], original, save_dataset=False)
     (diagnostics / "qi2_result.png").write_bytes(_image_bytes(refined))
     if refined.size != original.size:
         refined = refined.resize(original.size, Image.Resampling.LANCZOS)
@@ -2434,66 +2363,49 @@ def _execute(job, values):
                             values["model_id"], None, characters=characters)
                     job["published"] = True
             else:
+                settings = values["model_settings"]
+                use_colmap = settings["provider"] == "moge" and settings["camera_source"] == "colmap"
+                if use_colmap:
+                    from .cg_moge_multiview import register_views, require_colmap
+
+                    require_colmap()
                 scene = factory.create_scene("CG Creator")
                 temporary_scene_id = job["scene_id"] = scene["scene_id"]
                 scene_directory = factory.resolve_scene_dir(scene["scene_id"])
-                settings = values["model_settings"]
-                lighting = {"preset": "off", "background": "#000000"}
-                with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
-                    source_image = source.convert("RGB")
-                if settings["provider"] in ("moge", "worldmirror"):
-                    diagnostics = None
-                    focal_length = None
-                    capture_holes = None
-                    known_views = None
-                    cameras = None
-                    if job["action"] == "expand":
-                        images, capture_holes = _expand_references(job, values)
-                        focal_length = settings["focal_length"]
-                    elif settings.get("moge_refine_views"):
-                        diagnostics = _contained(root().parent, "CG_MoGe_Diagnostics", _id(job["job_id"]))
-                        images, focal_length, capture_holes, known_views = _generate_refined_moge_views(
-                            job, source_image, values["settings"], diagnostics)
-                    else:
-                        images = _generate_camera_shift_views(job, source_image, values["settings"], settings["camera_shift_lora"])
-                    if settings["provider"] == "worldmirror":
-                        if job["action"] == "expand":
+                expanding = job["action"] == "expand"
+                diagnostics = _contained(root().parent, "CG_MoGe_Diagnostics", _id(job["job_id"]))
+                cameras = None
+                if expanding:
+                    images, capture_holes = _expand_references(job, values)
+                    focal_length = settings["focal_length"]
+                else:
+                    with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
+                        source_image = source.convert("RGB")
+                    images, focal_length, capture_holes, known_views = _generate_refined_moge_views(
+                        job, source_image, _reconstruction_generation(values["settings"], settings), diagnostics)
+                if settings["provider"] == "worldmirror":
+                    if settings["camera_source"] == "camera_inputs":
+                        if expanding:
                             cameras = _worldmirror_expansion_cameras(settings["cameras"], values["model_camera"], images.shape)
-                        elif known_views is not None:
+                        else:
                             calibration, poses, *_ = known_views
                             cameras = {"intrinsics": [calibration.tolist()] * len(images), "world_to_camera": poses.tolist()}
-                        cameras = _generate_worldmirror_scene(job, images, scene, scene_directory, settings, cameras)
-                    elif job["action"] == "expand":
-                        cameras = _expand_moge_scene(job, values, images, scene, scene_directory)
-                    else:
-                        images, capture_holes, cameras = _generate_moge_scene(job, images, scene, scene_directory,
-                            diagnostics=diagnostics, focal_length=focal_length, capture_holes=capture_holes,
-                            known_views=known_views)
-                    _save_reconstruction(scene_directory, images, settings, focal_length, capture_holes, cameras)
-                    scene["lighting"] = lighting
+                    cameras = _generate_worldmirror_scene(job, images, scene, scene_directory, settings, cameras)
+                elif use_colmap:
+                    _stage(job["job_id"], job["cancel_event"], "calibrating", 0.60,
+                           f"Estimating {len(images)} camera poses with COLMAP")
+                    diagnostics.mkdir(parents=True, exist_ok=True)
+                    colmap_views = register_views(images, lambda: runtime._check_cancel(job), diagnostics=diagnostics,
+                                                  focal_length=None if expanding else focal_length, capture_holes=capture_holes)
+                    images, capture_holes, cameras = _generate_moge_scene(job, images, scene, scene_directory,
+                        capture_holes=capture_holes, colmap_views=colmap_views)
+                elif expanding:
+                    cameras = _expand_moge_scene(job, values, images, scene, scene_directory)
                 else:
-                    encoded = io.BytesIO()
-                    source_image.save(encoded, format="PNG")
-                    mesh = settings["provider"] == "pixal3d"
-                    if mesh:
-                        settings = settings.copy()
-                        if settings["pixal_profile"] == "fast":
-                            preview = factory._generation_settings({**settings, "quality": "preview"})
-                            settings.update(preview, base_color_only=True)
-                        mesh_resolution = settings["pixal_mesh_resolution"]
-                        texture_resolution = settings["pixal_texture_resolution"]
-                        if mesh_resolution:
-                            settings["target_resolution"] = mesh_resolution
-                        if texture_resolution:
-                            settings["texture_resolution"] = texture_resolution
-                            settings["normal_resolution"] = min(settings["normal_resolution"], texture_resolution)
-                            settings["ao_resolution"] = min(settings["ao_resolution"], texture_resolution)
-                    generate = runtime._generate_mesh_object if mesh else runtime._generate_object
-                    generate(job, encoded.getvalue(), uuid.uuid4().hex, "Background", {**settings, "capture_source_camera": True})
-                    runtime._check_cancel(job)
-                    scene = factory.load_scene(scene["scene_id"])
-                    camera = scene["camera"] if mesh else scene["objects"][0]["source_camera"]
-                    scene = factory.update_scene(scene["scene_id"], {"camera": camera, "lighting": lighting})
+                    images, capture_holes, cameras = _generate_moge_scene(job, images, scene, scene_directory,
+                        capture_holes=capture_holes, known_views=known_views)
+                _save_reconstruction(scene_directory, images, settings, focal_length, capture_holes, cameras)
+                scene["lighting"] = {"preset": "off", "background": "#000000"}
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)
                     with background._LOCK:

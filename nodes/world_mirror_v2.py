@@ -20,6 +20,7 @@ _MODEL_REPO = "tencent/HY-World-2.0"
 _MODEL_REVISION = "c662dc2e9dea89f57d12c94eb61b0c8a572c6654"
 _PRECISIONS = ("bf16", "convrot8", "convrot4")
 _PATCH_SIZE = 14
+_MAX_SPLATS = 2_000_000
 
 
 class VNCCS_WorldMirrorV2Loader:
@@ -1674,7 +1675,7 @@ class VNCCS_WorldMirrorV2Reconstruction(_WorldMirrorV2Inference):
                     "tooltip": "Voxel size for dense splat compression."
                 }),
                 "splat_upsample_max_points": ("INT", {
-                    "default": 9_000_000, "min": 0, "max": 50_000_000, "step": 100_000,
+                    "default": _MAX_SPLATS, "min": 0, "max": _MAX_SPLATS, "step": 100_000,
                     "tooltip": "Depth/distance-aware cap for dense splats. Lower values reduce file size; higher values preserve distant surfaces."
                 }),
                 "splat_upsample_cap_far_bias": ("FLOAT", {
@@ -1714,9 +1715,11 @@ class VNCCS_WorldMirrorV2Reconstruction(_WorldMirrorV2Inference):
         splat_upsample_scale=0.003, splat_upsample_scale_mode="depth_adaptive",
         splat_upsample_depth_scale_strength=1.0, splat_upsample_depth_scale_max=3.0,
         splat_upsample_voxel_prune=True, splat_upsample_voxel_size=0.0015,
-        splat_upsample_max_points=9_000_000, splat_upsample_cap_far_bias=1.75,
+        splat_upsample_max_points=_MAX_SPLATS, splat_upsample_cap_far_bias=1.75,
         splat_camera_source="predicted", camera_intrinsics=None, camera_poses=None, depth_prior=None,
+        splat_max_points=None,
     ):
+        max_points = _MAX_SPLATS if splat_max_points is None else max(1, int(splat_max_points))
         output = super().run_inference(
             model, images, target_size=target_size, offload_scheme=offload_scheme, low_vram_mode=low_vram_mode,
             head_compute_mode="depth+gs", transformer_mlp_chunk_size=32768,
@@ -1724,17 +1727,31 @@ class VNCCS_WorldMirrorV2Reconstruction(_WorldMirrorV2Inference):
             splat_camera_source=splat_camera_source, camera_poses=camera_poses,
             camera_intrinsics=camera_intrinsics, depth_prior=depth_prior,
         )
-        if not enable_splat_upsample:
+        if enable_splat_upsample:
+            count = images.shape[0]
+            limit = min(splat_upsample_max_points, max_points) if splat_upsample_max_points > 0 else max_points
+            output = self._build_upsampled_splats(
+                output, images, _camera_prior(camera_poses, count, ((3, 4), (4, 4)), "poses"),
+                _camera_prior(camera_intrinsics, count, ((3, 3),), "intrinsics"),
+                max(images.shape[1:3]), "gs_depth", splat_upsample_scale, splat_upsample_scale_mode,
+                splat_upsample_depth_scale_strength, splat_upsample_depth_scale_max, 0.9,
+                splat_upsample_voxel_prune, splat_upsample_voxel_size,
+                limit, splat_upsample_cap_far_bias,
+            )
+        ply, depth, normals, poses, intrinsics, raw, mask, gs_mask = output
+        splats = ply.get("splats")
+        count = _splat_means_count(splats) or 0
+        raw_count = _splat_means_count(raw.get("splats")) or 0
+        if max(count, raw_count) <= max_points:
             return output
-        count = images.shape[0]
-        return self._build_upsampled_splats(
-            output, images, _camera_prior(camera_poses, count, ((3, 4), (4, 4)), "poses"),
-            _camera_prior(camera_intrinsics, count, ((3, 3),), "intrinsics"),
-            max(images.shape[1:3]), "gs_depth", splat_upsample_scale, splat_upsample_scale_mode,
-            splat_upsample_depth_scale_strength, splat_upsample_depth_scale_max, 0.9,
-            splat_upsample_voxel_prune, splat_upsample_voxel_size,
-            splat_upsample_max_points, splat_upsample_cap_far_bias,
-        )
+        if count > max_points:
+            distances = splats["means"][0].detach().cpu().float().norm(dim=-1)
+            indices = self._depth_aware_indices(distances, max_points, far_bias=splat_upsample_cap_far_bias)
+            splats = {key: [value[0][indices.to(value[0].device)]] for key, value in splats.items()
+                      if isinstance(value, (list, torch.Tensor)) and len(value) and len(value[0]) == count}
+            print(f"[WorldMirror V2] Splat limit: {count} -> {len(indices)} gaussians")
+        return ({**ply, "splats": splats}, depth, normals, poses, intrinsics,
+                {**raw, "splats": splats}, mask, gs_mask)
 
     def _depth_aware_indices(self, depth_values, max_points, far_bias=1.75, bins=8):
         depth = depth_values.detach().cpu().float().flatten()

@@ -143,3 +143,32 @@ def test_compact_reconstruction_defaults_and_optional_upsampling(monkeypatch):
     splats = result[0]["splats"]
     assert splats is result[5]["splats"]
     assert all(value[0].shape[0] == 40 for value in splats.values())
+
+
+def test_compact_reconstruction_limits_native_and_upsampled_splats(monkeypatch):
+    node = mirror.VNCCS_WorldMirrorV2Reconstruction()
+    limit = node.INPUT_TYPES()["optional"]["splat_upsample_max_points"][1]
+    assert limit["max"] == limit["default"] == 2_000_000
+    monkeypatch.setattr(mirror, "_MAX_SPLATS", 4)
+    means = torch.arange(24, dtype=torch.float32).reshape(1, 8, 3)
+    splats = {"means": [means[0]], "scales": [means[0] + 100], "residual_sh": [torch.zeros(9, 3)]}
+    native = ({"splats": splats}, None, None, None, None, {"splats": splats}, None, None)
+    monkeypatch.setattr(mirror._WorldMirrorV2Inference, "run_inference", lambda *_args, **_kwargs: native)
+
+    def upsample(*args):
+        assert args[-2] == 4
+        return native
+
+    monkeypatch.setattr(node, "_build_upsampled_splats", upsample)
+    for options in ({}, {"enable_splat_upsample": True, "splat_upsample_max_points": 9_000_000},
+                    {"enable_splat_upsample": True, "splat_upsample_max_points": 0}):
+        result = node.run_inference(None, torch.ones(1, 14, 28, 3), **options)
+        capped = result[0]["splats"]
+        assert capped is result[5]["splats"]
+        assert len(capped["means"][0]) == 4
+        torch.testing.assert_close(capped["scales"][0], capped["means"][0] + 100)
+        assert "residual_sh" not in capped
+    result = node.run_inference(None, torch.ones(1, 14, 28, 3), splat_max_points=2)
+    assert len(result[0]["splats"]["means"][0]) == 2
+    result = node.run_inference(None, torch.ones(1, 14, 28, 3), splat_max_points=6)
+    assert len(result[0]["splats"]["means"][0]) == 6

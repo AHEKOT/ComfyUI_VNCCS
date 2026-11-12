@@ -51,7 +51,7 @@ def test_registered_factory_without_cg_provider_reuses_its_loaded_runtime(monkey
     assert value["runtime"] is package.runtime
     assert value["storage"] is package.storage
     assert bridge.model_operation_lock() is lock
-    assert bridge.model_settings({"seed": 12})["seed"] == 12
+    assert bridge.model_settings({"provider": "pixal3d"})["provider"] == "worldmirror"
     assert bridge.frontend_configuration() == {"version": 1, "module_url": "/extensions/Installed%20Utils/factory3d/viewer.js"}
 
 

@@ -792,7 +792,10 @@ try {
     assert.equal(await page.locator("[data-pending-cg]").isVisible(), true);
     await page.emulateMedia({ reducedMotion: "no-preference" });
     scenarios.push({ name: "reduced-motion-keeps-pending-result-visible" });
-    assert.equal(await page.getByRole("dialog").count(), 0, "The scene name dialog closes before capture starts");
+    assert.equal(await page.getByRole("dialog", { name: "Generate CG", exact: true }).count(), 0, "The scene name dialog closes before capture starts");
+    const progressPopup = page.locator(".bg-viewport").getByRole("dialog", { name: "Generating CG" });
+    await progressPopup.getByRole("progressbar").waitFor();
+    assert.equal(await progressPopup.getByRole("progressbar").getAttribute("aria-valuenow"), "42");
     assert.equal(await page.locator("[data-fov]").isDisabled(), true);
     assert.equal(await page.locator(".bg-job-feedback,progress,[data-stop]").count(), 0);
     assert.equal(await page.locator(".bg-status,footer").count(), 0);
