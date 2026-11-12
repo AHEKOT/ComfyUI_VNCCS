@@ -23,6 +23,65 @@ def require_colmap():
     return pycolmap
 
 
+def _fit_shifted_camera(points, center, rotation, shape, calibration, check_cancel):
+    import cv2
+
+    height, width = shape
+    probe_scale = 96 / max(height, width)
+    probe_height = max(16, round(height * probe_scale))
+    probe_width = max(16, round(width * probe_scale))
+    probe_shape = (probe_height, probe_width)
+    probe_calibration = calibration * np.array([[probe_width / width], [probe_height / height], [1.]])
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    upper_view = center[1] < 0
+    sign = np.sign(center[0])
+    rotation = rotation.astype(np.float32)
+    edge_extent = probe_height if upper_view else probe_width
+    # Distances are in units of the original view's lower-quartile depth.
+    nearby = points[(points[:, 1] > center[1] - 0.08) & (points[:, 1] < 0.08) & (points[:, 2] < 0.5)]
+
+    def measure(candidate):
+        view = (points - candidate) @ rotation.T
+        ids, y, x, _ = _project_pixels(view[view[:, 2] > 0.05], None, probe_shape, probe_calibration)
+        occupied = np.zeros(probe_shape, dtype=np.uint8)
+        occupied[y, x] = 1
+        occupied = cv2.morphologyEx(occupied, cv2.MORPH_CLOSE, kernel)
+        if upper_view:
+            edge = occupied[::-1, probe_width // 5:4 * probe_width // 5].T
+        else:
+            edge = occupied[probe_height // 5:4 * probe_height // 5]
+            if sign < 0:
+                edge = edge[:, ::-1]
+        gaps = np.where(edge.any(axis=1), edge.argmax(axis=1), edge_extent)
+        return np.quantile(gaps, 0.65) / edge_extent, occupied.mean(), len(ids) / len(points)
+
+    edge_margin = 1 / edge_extent
+    initial_gap, initial_coverage, initial_overlap = measure(center.astype(np.float32))
+    if initial_gap <= edge_margin and initial_coverage >= 0.9:
+        return center
+    best_score = initial_coverage - 1.2 * max(0., initial_gap - edge_margin)
+    best_center = center
+    side_steps = (0.,) if upper_view else (0.12, 0.18, 0.24, 0.30, 0.36, 0.42)
+    # Advancing the elevated camera crops more of the original view vertically.
+    min_overlap = (0.75 if upper_view else 0.95) * initial_overlap
+    for side in side_steps:
+        for forward in (0., 0.06, 0.12, 0.18, 0.24, 0.30, 0.36, 0.42):
+            check_cancel()
+            candidate = np.array([sign * side, center[1], forward], dtype=np.float32)
+            if len(nearby):
+                along = ((nearby @ candidate) / (candidate @ candidate)).clip(0, 1)
+                if np.any(np.linalg.norm(nearby - along[:, None] * candidate, axis=1) < 0.08):
+                    continue
+            gap, coverage, overlap = measure(candidate)
+            if coverage < initial_coverage or overlap < min_overlap:
+                continue
+            travel = math.hypot(side - abs(center[0]), forward)
+            score = coverage - 1.2 * max(0., gap - edge_margin) - 0.4 * max(0., initial_overlap - overlap) - 0.14 * travel
+            if score > best_score:
+                best_score, best_center = score, candidate
+    return best_center
+
+
 def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
     import torch
     from torch.nn.functional import grid_sample
@@ -52,6 +111,10 @@ def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
         raise ValueError("MoGe returned invalid camera intrinsics for the shifted views")
     # Each view starts at the source pose in OpenCV coordinates (+X right, +Y down).
     calibration = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+    probe_points = None
+    if turn_camera and len(vertices) >= 512:
+        sample_ids = np.random.default_rng(0).choice(len(vertices), min(24_000, len(vertices)), replace=False)
+        probe_points = vertices[torch.as_tensor(sample_ids, device=device)].cpu().numpy()
     poses = np.repeat(np.eye(4)[None], 1 + len(REFINED_MOGE_VIEWS), axis=0)
     views = []
     sine, cosine = math.sin(math.radians(20)), math.cos(math.radians(20))
@@ -64,6 +127,8 @@ def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
         elif turn_camera and name in ("right", "left"):
             yaw = sine if name == "right" else -sine
             rotation[:] = ((cosine, 0, yaw), (0, 1, 0), (-yaw, 0, cosine))
+        if probe_points is not None and name != "forward":
+            center = _fit_shifted_camera(probe_points, center, rotation, (height, width), calibration, check_cancel)
         view = vertices - vertices.new_tensor(center)
         if turn_camera and name != "forward":
             view = view @ vertices.new_tensor(rotation.T)
@@ -473,6 +538,58 @@ def _overlap_faces(vertices, triangles, index, depths, calibrations, poses, came
     return covered | (contradicted & ~corroborated)[triangles].all(axis=1)
 
 
+def _restore_reference_coverage(surfaces, shape, calibration, check_cancel):
+    import torch
+    from comfy_extras.sam3d_body.rasterizer import _rasterize_person
+
+    height, width = shape
+    # Sample between source pixels, where the viewport can expose narrow seams.
+    sampling = min(2., max(1., math.sqrt(8_000_000 / (height * width))))
+    height, width = round(height * sampling), round(width * sampling)
+    z_buffer = torch.full((height * width,), torch.inf)
+    visible = torch.zeros(height * width, dtype=torch.bool)
+    owners = torch.full((height * width, 3), -1.)
+    reference = surfaces[0][0]
+    sample = reference[::max(1, len(reference) // 4096), 2]
+    unit = max(float(sample.median()) * 0.001, 1e-8) if len(sample) else 1.
+    scale = reference.new_tensor([calibration[0, 0] * width / shape[1], calibration[1, 1] * height / shape[0]])
+    shift = reference.new_tensor([(calibration[0, 2] / shape[1] - 0.5) * width,
+                                  (calibration[1, 2] / shape[0] - 0.5) * height])
+
+    # A replacement must cover the same pixels after meshing and culling.
+    for recover in (False, True):
+        for index, (vertices, faces, dropped, _) in enumerate(surfaces):
+            selected = torch.where(dropped == recover)[0]
+            if not len(selected):
+                continue
+            view = vertices / unit
+            view[:, :2] = view[:, :2] * scale + view[:, 2:] * shift
+
+            def shade(ids, _weights):
+                colors = owners.new_zeros((len(ids), 3))
+                if recover:
+                    colors[:, 0] = chunk[ids]
+                    colors[:, 1] = index
+                return colors
+
+            for chunk in selected.split(250_000):
+                check_cancel()
+                _rasterize_person(view, faces[chunk], 1., width, height, z_buffer, owners, visible, shade)
+        if not recover:
+            if visible.all():
+                return
+            z_buffer[visible] = 0
+            owners.fill_(-1)
+
+    for index, (vertices, faces, dropped, _) in enumerate(surfaces):
+        recovered = owners[owners[:, 1] == index, 0].long()
+        if len(recovered):
+            # Keep one ring of existing triangles around each repair for subpixel cracks.
+            boundary = torch.zeros(len(vertices), dtype=torch.bool)
+            boundary[faces[recovered].flatten()] = True
+            dropped &= ~boundary[faces].any(dim=1)
+
+
 def fuse_moge_views(depth, images, cameras, call_node, check_cancel):
     calibration = np.asarray(cameras["intrinsics"], dtype=np.float64)
     poses = np.asarray(cameras["world_to_camera"], dtype=np.float64)
@@ -515,7 +632,7 @@ def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_can
     texture_size = torch.tensor([2 * width, rows * tile_height])
     texture = images.new_zeros((rows * tile_height, 2 * width, 3))
     vertices, faces, uvs = [], [], []
-    offset = 0
+    surfaces = []
     stride = max(1, math.ceil(max(width, height) / 2048))
     for index, (view_depth, calibration) in enumerate(zip(depth, calibrations, strict=True)):
         check_cancel()
@@ -529,19 +646,26 @@ def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_can
         verts, triangles = mesh.vertices[0] * flip_yz, mesh.faces[0].long()
         covered = _overlap_faces(np.asarray(verts), triangles.numpy(), index, depth_maps, calibrations, poses,
                                  camera_to_world, qualities, interiors)
-        triangles = triangles[~torch.from_numpy(covered)]
+        transform = torch.from_numpy(poses[0] @ camera_to_world[index]).float()
+        surfaces.append((verts @ transform[:3, :3].T + transform[:3, 3], triangles, torch.from_numpy(covered), mesh.uvs[0]))
+
+    if any(dropped.any() for _, _, dropped, _ in surfaces):
+        _restore_reference_coverage(surfaces, (height, width), calibrations[0], check_cancel)
+
+    offset = 0
+    for index, (verts, triangles, dropped, uv) in enumerate(surfaces):
+        triangles = triangles[~dropped]
         if not len(triangles):
             continue
         used = torch.zeros(len(verts), dtype=torch.bool)
         used[triangles.flatten()] = True
-        transform = torch.from_numpy(poses[0] @ camera_to_world[index]).float()
-        vertices.append(verts[used] @ transform[:3, :3].T + transform[:3, 3])
+        vertices.append(verts[used])
         faces.append((used.cumsum(0) - 1)[triangles] + offset)
         offset += len(vertices[-1])
         top, left = index // 2 * tile_height, index % 2 * width
         texture[top:top + tile_height, left:left + width] = images[index]
         tile = torch.tensor([left + 0.5, top + 0.5])
-        uvs.append((mesh.uvs[0, used] * source_pixels + tile) / texture_size)
+        uvs.append((uv[used] * source_pixels + tile) / texture_size)
 
     if not faces:
         raise ValueError("MoGe found no consistent surfaces across the reconstruction views")

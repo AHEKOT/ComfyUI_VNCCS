@@ -232,11 +232,12 @@ def test_moge_composite_keeps_observed_pixels_and_leaves_new_geometry_visible():
     assert 0 < result.getpixel((13, 8))[0] < 18
 
 
-def test_moge_fusion_uses_closer_view_for_shared_surface():
+def test_moge_fusion_uses_closer_view_for_shared_surface(monkeypatch):
     torch = pytest.importorskip("torch")
     import numpy as np
 
     multiview = load("nodes.cg_moge_multiview")
+    monkeypatch.setattr(multiview, "_restore_reference_coverage", lambda *_args: None)
     calibration = [[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]]
     poses = np.repeat(np.eye(4)[None], 2, axis=0)
     poses[1, 2, 3] = -0.5
@@ -254,6 +255,30 @@ def test_moge_fusion_uses_closer_view_for_shared_surface():
     assert mesh.faces.shape == (1, 2, 3)
     torch.testing.assert_close(mesh.vertices[0, :, 2], torch.full((4,), -2.025))
     assert torch.all(mesh.uvs[0, :, 0] > 0.5)
+
+
+def test_moge_fusion_restores_only_faces_that_cover_missing_reference_pixels(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+
+    def rasterize(_view, faces, _focal, width, height, depth, owners, visible, shade):
+        assert (height, width) == (2, 4)
+        pixels = (faces[:, 0] == 4).long()
+        wins = depth[pixels] > 1
+        ids = torch.where(wins)[0]
+        depth[pixels[ids]] = 1
+        owners[pixels[ids]] = shade(ids, None)
+        visible[pixels[ids]] = True
+
+    monkeypatch.setitem(sys.modules, "comfy_extras.sam3d_body.rasterizer",
+                        types.SimpleNamespace(_rasterize_person=rasterize))
+    vertices = torch.ones((8, 3))
+    faces = torch.tensor([[0, 1, 2], [0, 1, 3], [4, 5, 6], [5, 6, 7]])
+    dropped = torch.tensor([False, True, True, True])
+    multiview._restore_reference_coverage([(vertices, faces, dropped, None)], (1, 2), np.eye(3), lambda: None)
+    assert dropped.tolist() == [False, True, False, False]
 
 
 @pytest.mark.parametrize("turn_camera", [True, False])
@@ -291,6 +316,35 @@ def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_ca
         expected = points.numpy() @ pose[:3, :3].T + pose[:3, 3]
         np.testing.assert_allclose(actual.numpy() * 2, expected, atol=1e-7)
         assert view[2][0, 0] == pytest.approx(expected[0, 2])
+
+
+@pytest.mark.parametrize("sign", [1, -1])
+def test_side_camera_reaches_the_source_edge_and_preserves_overlap(sign):
+    pytest.importorskip("cv2")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    height, width, focal = 108, 192, 115.
+    calibration = np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]])
+    y, x = np.mgrid[:height, :width]
+    points = np.column_stack(((x.ravel() + .5 - width / 2) / focal,
+                              (y.ravel() + .5 - height / 2) / focal, np.ones(height * width))).astype(np.float32)
+    sine, cosine = np.sin(sign * np.deg2rad(20)), np.cos(np.deg2rad(20))
+    rotation = np.array([[cosine, 0, sine], [0, 1, 0], [-sine, 0, cosine]])
+    original = np.array([sign * .12, 0., 0.])
+    fitted = multiview._fit_shifted_camera(points, original, rotation, (height, width), calibration, lambda: None)
+
+    def coverage(center):
+        ids, rows, cols, _ = multiview._project_pixels((points - center) @ rotation.T, None, (height, width), calibration)
+        gaps = np.full(height, width)
+        np.minimum.at(gaps, rows, cols if sign > 0 else width - 1 - cols)
+        return np.median(gaps[height // 4:3 * height // 4]), len(ids)
+
+    old_gap, old_overlap = coverage(original)
+    gap, overlap = coverage(fitted)
+    assert old_gap > width * .15
+    assert gap <= .02 * width and overlap >= .95 * old_overlap
+    assert sign * fitted[0] >= abs(original[0]) and fitted[2] > 0
 
 
 @pytest.mark.parametrize("reject_first_view", [False, True])
