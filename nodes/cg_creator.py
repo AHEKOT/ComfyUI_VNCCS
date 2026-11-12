@@ -1937,9 +1937,9 @@ def _infer_moge(images, fov_x=0.0):
     return geometry
 
 
-def _generate_refined_moge_views(job, source, settings, diagnostics):
+def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve_capture=False):
     import torch
-    from .cg_moge_multiview import REFINED_MOGE_VIEWS, render_shifted_views
+    from .cg_moge_multiview import REFINED_MOGE_VIEWS, composite_capture, render_shifted_views
 
     job_id, cancel = job["job_id"], job["cancel_event"]
     diagnostics.mkdir(parents=True)
@@ -1969,15 +1969,15 @@ def _generate_refined_moge_views(job, source, settings, diagnostics):
     settings = {**settings, "generation": {**generation, "seed": _resolve_seed(generation), "seed_mode": "fixed"}}
     raw_views = []
     capture_holes = {}
-    for index, ((direction, _), (frame, holes, _)) in enumerate(zip(REFINED_MOGE_VIEWS, frames, strict=True), 1):
+    for index, ((direction, _), (frame, holes, observed)) in enumerate(zip(REFINED_MOGE_VIEWS, frames, strict=True), 1):
         view_dir = diagnostics / f"{index:02}-{direction}"
         view_dir.mkdir()
         raw = _tensor_to_pil(frame)
         (view_dir / "image_2.png").write_bytes(_image_bytes(raw))
-        raw_views.append((view_dir, raw))
+        raw_views.append((view_dir, raw, observed))
         capture_holes[index] = holes
     references = [images]
-    for index, (view_dir, raw) in enumerate(raw_views):
+    for index, (view_dir, raw, observed) in enumerate(raw_views):
         start = 0.12 + 0.115 * index
         log_event("moge_refine_view", component="CGCreator", job_id=job_id, view=view_dir.name)
         refined, _ = generate_image(settings, job_id, cancel, raw, source,
@@ -1985,6 +1985,9 @@ def _generate_refined_moge_views(job, source, settings, diagnostics):
         (view_dir / "qi2_result.png").write_bytes(_image_bytes(refined))
         if refined.size != size:
             refined = refined.resize(size, Image.Resampling.LANCZOS)
+        if preserve_capture:
+            refined = composite_capture(raw, refined, observed)
+            (view_dir / "reconstruction_frame.png").write_bytes(_image_bytes(refined))
         references.append(_pil_to_tensor(refined))
     return torch.cat(references), focal_length, capture_holes, (calibration, poses, source_depth, frames)
 
@@ -1992,7 +1995,7 @@ def _generate_refined_moge_views(job, source, settings, diagnostics):
 def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, known_views=None, colmap_views=None):
     import numpy as np
     import torch
-    from .cg_moge_multiview import REFINED_MOGE_VIEWS, _depth_scale, capture_depth_tracks, fuse_moge_views, merge_moge_views
+    from .cg_moge_multiview import REFINED_MOGE_VIEWS, capture_depth_tracks, depth_interior, depth_transform, fuse_moge_views
 
     job_id, cancel = job["job_id"], job["cancel_event"]
     def check_cancel():
@@ -2011,46 +2014,39 @@ def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, 
         _stage(job_id, cancel, "reconstructing", 0.70, f"Estimating geometry for {len(images)} views with MoGe")
         if colmap_views is None:
             depths = _infer_moge(images[1:], fov_x)["depth"].detach().cpu().float()
-            source = source_depth.numpy()
-            y, x = np.nonzero(np.isfinite(source) & (source > 0))
-            stride = max(1, len(x) // 4096)
-            y, x = y[::stride], x[::stride]
-            tracks = [np.column_stack((x + 0.5, y + 0.5, source[y, x]))]
+            transforms = [(1., 0.)]
             retained = [0]
             retained_depths = [source_depth]
             for index, ((name, _), (raw, holes, observed), depth) in enumerate(
                     zip(REFINED_MOGE_VIEWS, captures, depths, strict=True), 1):
                 check_cancel()
                 matches = capture_depth_tracks((raw[0].numpy() * 255).round().astype(np.uint8),
-                    (images[index].numpy() * 255).round().astype(np.uint8), observed, ~holes)
+                    (images[index].numpy() * 255).round().astype(np.uint8), observed, ~holes & depth_interior(observed))
                 try:
-                    scale = _depth_scale(depth.numpy(), matches)
+                    scale, offset = depth_transform(depth.numpy(), matches)
                 except ValueError:
                     log_event("moge_view_skipped", component="CGCreator", job_id=job_id, view=name,
                               matches=len(matches), reason="depth_could_not_be_aligned_to_capture")
                     continue
                 log_event("moge_view_aligned", component="CGCreator", job_id=job_id, view=name, matches=len(matches),
-                          depth_scale=scale)
+                          depth_scale=scale, depth_offset=offset)
                 retained.append(index)
                 retained_depths.append(depth)
-                tracks.append(matches)
+                transforms.append((scale, offset))
             images, poses = images[retained], poses[retained]
             capture_holes = {index: capture_holes[old] for index, old in enumerate(retained) if old}
             depths = torch.stack(retained_depths)
         else:
             depths = _infer_moge(images, fov_x)["depth"].detach().cpu().float()
-        _stage(job_id, cancel, "meshing", 0.86, "Building the MoGe mesh")
-        scales = np.asarray([_depth_scale(view.numpy(), match) for view, match in zip(depths, tracks, strict=True)])
+            transforms = [depth_transform(view.numpy(), match) for view, match in zip(depths, tracks, strict=True)]
+        _stage(job_id, cancel, "meshing", 0.86, "Fusing all calibrated MoGe views")
+        scales, offsets = np.asarray(transforms).T
         normalized = poses.copy()
         normalized[:, :3, 3] /= scales[0]
         cameras = {"intrinsics": [calibration.tolist()] * len(images),
                    "world_to_camera": (normalized @ np.linalg.inv(normalized[0])).tolist(),
-                   "depth_scales": (scales / scales[0]).tolist()}
-        if colmap_views is None:
-            mesh = merge_moge_views({"depth": depths}, images, calibration, poses, tracks, _call_comfy_node, check_cancel,
-                                    capture_holes=capture_holes)
-        else:
-            mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
+                   "depth_scales": (scales / scales[0]).tolist(), "depth_offsets": (offsets / scales[0]).tolist()}
+        mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
         _save_moge_mesh(job, scene, scene_directory, mesh, camera)
     return images, capture_holes, cameras
 
@@ -2074,7 +2070,7 @@ def _save_moge_mesh(job, scene, scene_directory, mesh, camera):
 
 def _recover_initial_moge_cameras(images, depths, geometry, check_cancel):
     import numpy as np
-    from .cg_moge_multiview import _depth_scale, capture_depth_tracks, render_shifted_views
+    from .cg_moge_multiview import capture_depth_tracks, depth_transform, render_shifted_views
 
     size = images.shape[1:3]
     mesh, = _call_comfy_node("MoGePointMapToMesh", moge_geometry=geometry, batch_index=0,
@@ -2082,15 +2078,19 @@ def _recover_initial_moge_cameras(images, depths, geometry, check_cancel):
     # Reconstructions saved before the camera turns used parallel shifted views.
     captures, calibration, poses = render_shifted_views(mesh, geometry["intrinsics"][0], check_cancel, turn_camera=False)
     scales = [1.]
+    offsets = [0.]
     for index, (raw, holes, observed) in enumerate(captures, 1):
         check_cancel()
         tracks = capture_depth_tracks((raw[0].numpy() * 255).round().astype(np.uint8),
             (images[index].numpy() * 255).round().astype(np.uint8), observed, ~holes)
         try:
-            scales.append(_depth_scale(depths[index].numpy(), tracks))
+            scale, offset = depth_transform(depths[index].numpy(), tracks)
+            scales.append(scale)
+            offsets.append(offset)
         except ValueError as error:
             raise ValueError("An older reconstruction frame cannot be aligned. Recreate the base model with Refine views") from error
-    return {"intrinsics": [calibration.tolist()] * len(poses), "world_to_camera": poses.tolist(), "depth_scales": scales}
+    return {"intrinsics": [calibration.tolist()] * len(poses), "world_to_camera": poses.tolist(),
+            "depth_scales": scales, "depth_offsets": offsets}
 
 
 def _expand_moge_scene(job, values, images, scene, scene_directory):
@@ -2132,10 +2132,11 @@ def _expand_moge_scene(job, values, images, scene, scene_directory):
             cameras = _recover_initial_moge_cameras(images, depths, seed, check_cancel)
         _stage(job_id, cancel, "meshing", 0.86, "Fusing all calibrated MoGe views")
         try:
-            pose, scale = align_expansion_depth(path, camera, values["raw"], images[-1], depths[-1], focal, check_cancel)
+            pose, scale, offset = align_expansion_depth(path, camera, values["raw"], images[-1], depths[-1], focal, check_cancel)
             cameras["intrinsics"].append(calibration)
             cameras["world_to_camera"].append(pose.tolist())
             cameras["depth_scales"].append(scale)
+            cameras.setdefault("depth_offsets", [0.] * (len(images) - 1)).append(offset)
             mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
         except ValueError as error:
             raise ValueError(f"{error}. See {values['expansion_diagnostics']}.") from error
@@ -2318,6 +2319,16 @@ def _preview_expansion_frame(job, values):
     (diagnostics / "qi2_result.png").write_bytes(_image_bytes(refined))
     if refined.size != original.size:
         refined = refined.resize(original.size, Image.Resampling.LANCZOS)
+    if values["model_settings"]["provider"] == "moge":
+        from .cg_moge_multiview import composite_capture, rasterize_expansion_depth
+
+        base = model_scene(job["background_id"], values["model_id"])
+        path = _contained(model, base["objects"][0]["files"]["model"])
+        camera = values["model_camera"]
+        focal = refined.height / (2 * math.tan(math.radians(camera["fov"]) / 2))
+        depth, _ = rasterize_expansion_depth(path, camera, (refined.height, refined.width), focal,
+                                            lambda: _check_cancel(job["cancel_event"]))
+        refined = composite_capture(values["raw"], refined, depth)
     with _JOBS_LOCK, background._LOCK:
         provider()["runtime"]._check_cancel(job)
         directory, document, _ = _editable(job["background_id"], None)
@@ -2382,7 +2393,8 @@ def _execute(job, values):
                     with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                         source_image = source.convert("RGB")
                     images, focal_length, capture_holes, known_views = _generate_refined_moge_views(
-                        job, source_image, _reconstruction_generation(values["settings"], settings), diagnostics)
+                        job, source_image, _reconstruction_generation(values["settings"], settings), diagnostics,
+                        preserve_capture=settings["provider"] == "moge")
                 if settings["provider"] == "worldmirror":
                     if settings["camera_source"] == "camera_inputs":
                         if expanding:

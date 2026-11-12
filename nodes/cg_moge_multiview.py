@@ -206,20 +206,35 @@ def register_views(images, check_cancel, *, diagnostics=None, focal_length=None,
     return calibration, np.stack(poses), tracks
 
 
-def _depth_scale(depth, tracks):
+def depth_transform(depth, tracks):
     height, width = depth.shape
     x, y, observed = tracks.T
     valid = np.isfinite(tracks).all(axis=1) & (x >= 0) & (x < width) & (y >= 0) & (y < height) & (observed > 0)
     x, y, observed = x[valid].astype(np.intp), y[valid].astype(np.intp), observed[valid]
     predicted = depth[y, x]
     valid = np.isfinite(predicted) & (predicted > 0)
-    ratios = observed[valid] / predicted[valid]
-    if ratios.size >= 8:
-        median = np.median(ratios)
-        inliers = ratios[np.abs(ratios - median) <= 0.25 * median]
-        if inliers.size >= max(8, math.ceil(ratios.size / 2)):
-            return float(np.median(inliers))
-    raise ValueError("MoGe depths could not be aligned with the COLMAP tracks")
+    predicted, observed = predicted[valid], observed[valid]
+    ratios = observed / predicted
+    if ratios.size < 8:
+        raise ValueError("MoGe depths could not be aligned with the reference observations")
+    median = np.median(ratios)
+    robust = np.abs(ratios - median) <= 0.25 * median
+    inliers = ratios[robust]
+    if inliers.size < max(8, math.ceil(ratios.size / 2)):
+        raise ValueError("MoGe depths could not be aligned with the reference observations")
+    scale = float(np.median(inliers))
+    # A shift is unstable when the shared observations are all at similar depths.
+    if inliers.size < 12 or np.ptp(np.percentile(predicted[robust], [10, 90])) < 0.25 * np.median(predicted[robust]):
+        return scale, 0.
+    samples, target = predicted[robust], observed[robust]
+    affine_scale, offset = np.linalg.lstsq(np.column_stack((samples, np.ones_like(samples))) / target[:, None],
+                                          np.ones_like(target), rcond=None)[0]
+    error = np.abs(scale * samples - target) / target
+    affine_error = np.abs(affine_scale * samples + offset - target) / target
+    if (0.5 * scale <= affine_scale <= 1.5 * scale and abs(offset) <= 0.35 * np.median(target)
+            and np.percentile(affine_error, 75) < 0.8 * np.percentile(error, 75)):
+        return float(affine_scale), float(offset)
+    return scale, 0.
 
 
 def capture_depth_tracks(raw_rgb, generated, existing, anchors):
@@ -230,7 +245,13 @@ def capture_depth_tracks(raw_rgb, generated, existing, anchors):
     mask = cv2.erode(anchors.astype(np.uint8), np.ones((5, 5), dtype=np.uint8))
     first, desc = sift.detectAndCompute(cv2.cvtColor(raw_rgb, cv2.COLOR_RGB2GRAY), mask)
     second, candidate = sift.detectAndCompute(cv2.cvtColor(generated, cv2.COLOR_RGB2GRAY), mask)
-    tracks = []
+    # The composite preserves pixels in reliable overlap, including areas without SIFT features.
+    step = max(1, math.ceil(math.sqrt(height * width / 4096)))
+    matching = np.abs(raw_rgb[::step, ::step].astype(np.int16) - generated[::step, ::step]).max(axis=-1) <= 8
+    ys, xs = np.nonzero(anchors[::step, ::step] & matching)
+    ys, xs = ys * step, xs * step
+    tracks = np.column_stack((xs + 0.5, ys + 0.5, existing[ys, xs]))
+    feature_tracks = []
     if desc is not None and candidate is not None and len(candidate) >= 2:
         for match, alternative in cv2.BFMatcher().knnMatch(desc, candidate, k=2):
             x, y = first[match.queryIdx].pt
@@ -238,11 +259,11 @@ def capture_depth_tracks(raw_rgb, generated, existing, anchors):
             if match.distance < 0.78 * alternative.distance and math.dist((x, y), point) <= 0.01 * max(width, height):
                 z = existing[int(y), int(x)]
                 if np.isfinite(z):
-                    tracks.append((*point, z))
-    return np.asarray(tracks, dtype=np.float64).reshape(-1, 3)
+                    feature_tracks.append((*point, z))
+    return np.concatenate((tracks, np.asarray(feature_tracks, dtype=np.float64).reshape(-1, 3)))
 
 
-def align_expansion_depth(path, camera, raw, refined, depth, focal, check_cancel):
+def rasterize_expansion_depth(path, camera, shape, focal, check_cancel):
     import struct
 
     import torch
@@ -281,7 +302,7 @@ def align_expansion_depth(path, camera, raw, refined, depth, focal, check_cancel
     right = torch.nn.functional.normalize(right, dim=0)
     basis = torch.stack((right, torch.linalg.cross(forward, right), forward), dim=1)
     view = (vertices - position) @ basis
-    height, width = depth.shape
+    height, width = shape
     device = get_torch_device()
     check_cancel()
     z_buffer = torch.full((height * width,), float("inf"), device=device)
@@ -296,23 +317,51 @@ def align_expansion_depth(path, camera, raw, refined, depth, focal, check_cancel
     _rasterize_person((view / unit).to(device), faces.to(device), focal, width, height, z_buffer, dummy, visible,
                       lambda ids, _weights: dummy.new_zeros((len(ids), 3)))
     existing = z_buffer.reshape(height, width).cpu().numpy() * unit
-    raw_rgb = np.asarray(raw.resize((width, height), Image.Resampling.LANCZOS))
-    generated = (refined.numpy() * 255).round().astype(np.uint8)
-    raw_visible = raw_rgb.any(axis=-1)
-    anchors = np.isfinite(existing) & raw_visible
-
-    tracks = capture_depth_tracks(raw_rgb, generated, existing, anchors)
-    if len(tracks) < 12:
-        raise ValueError("QI2 changed too much of the captured geometry to align the expanded MoGe view")
-    try:
-        scale = _depth_scale(depth.numpy(), tracks)
-    except ValueError as error:
-        raise ValueError("The expanded view's MoGe depth disagrees with the saved scene") from error
     pose = np.eye(4)
     flip = vertices.new_tensor([1, -1, -1])
     pose[:3, :3] = (basis.T * flip).numpy()
     pose[:3, 3] = (-basis.T @ position).numpy()
-    return pose, scale
+    return existing, pose
+
+
+def align_expansion_depth(path, camera, raw, refined, depth, focal, check_cancel):
+    height, width = depth.shape
+    existing, pose = rasterize_expansion_depth(path, camera, depth.shape, focal, check_cancel)
+    raw_rgb = np.asarray(raw.resize((width, height), Image.Resampling.LANCZOS))
+    generated = (refined.numpy() * 255).round().astype(np.uint8)
+    tracks = capture_depth_tracks(raw_rgb, generated, existing, depth_interior(existing))
+    if len(tracks) < 12:
+        raise ValueError("QI2 changed too much of the captured geometry to align the expanded MoGe view")
+    try:
+        scale, offset = depth_transform(depth.numpy(), tracks)
+    except ValueError as error:
+        raise ValueError("The expanded view's MoGe depth disagrees with the saved scene") from error
+    return pose, scale, offset
+
+
+def depth_interior(depth):
+    import cv2
+
+    valid = np.isfinite(depth) & (depth > 0)
+    finite = np.where(valid, depth, 0).astype(np.float32)
+    kernel = np.ones((3, 3), dtype=np.uint8)
+    near, far = cv2.erode(finite, kernel), cv2.dilate(finite, kernel)
+    return valid & (near > 0) & (far - near <= 0.04 * finite)
+
+
+def composite_capture(raw, generated, depth):
+    import cv2
+
+    raw_rgb = np.asarray(raw.resize(generated.size, Image.Resampling.LANCZOS), dtype=np.float32)
+    generated_rgb = np.asarray(generated, dtype=np.float32)
+    agreement = cv2.blur(np.abs(raw_rgb - generated_rgb).mean(axis=-1), (5, 5)) <= 32
+    reliable = depth_interior(depth) & agreement
+    if reliable.all():
+        return Image.fromarray(raw_rgb.astype(np.uint8))
+    distance = cv2.distanceTransform(reliable.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
+    weight = (distance / 3).clip(0, 1)[..., None]
+    pixels = generated_rgb + (raw_rgb - generated_rgb) * weight
+    return Image.fromarray(pixels.round().astype(np.uint8))
 
 
 def _project_pixels(vertices, transform, shape, calibration):
@@ -324,48 +373,6 @@ def _project_pixels(vertices, transform, shape, calibration):
     u, v = fx * x / z + cx, fy * y / z + cy
     inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
     return indices[inside], v[inside].astype(np.intp), u[inside].astype(np.intp), z[inside]
-
-
-def _additional_surface_vertices(vertices, index, depth, poses, camera_to_world, calibration, accepted, stride,
-                                 capture_holes=None):
-    import cv2
-
-    shape = depth.shape[1:]
-    coverage = np.zeros(shape, dtype=np.uint8)
-    from_source = poses[index] @ camera_to_world[0]
-    for surface in accepted:
-        _, y, x, _ = _project_pixels(surface, from_source, shape, calibration)
-        coverage[y, x] = 1
-    # Fill pixel gaps between projected vertices, including decimated meshes.
-    coverage = cv2.dilate(coverage, np.ones((2 * stride + 1, 2 * stride + 1), dtype=np.uint8))
-    indices, y, x, _ = _project_pixels(vertices, None, shape, calibration)
-    uncovered = coverage[y, x] == 0
-    holes = capture_holes[y[uncovered], x[uncovered]] if capture_holes is not None else None
-    indices = indices[uncovered]
-    candidates = vertices[indices]
-
-    source_idx, y, x, z = _project_pixels(candidates, poses[0] @ camera_to_world[index], shape, calibration)
-    source_depth = depth[0, y, x]
-    known = np.isfinite(source_depth)
-    tolerance = 0.08
-    # A seed render can prove a disocclusion even when no other shifted view sees it.
-    valid = np.ones(len(candidates), dtype=bool)
-    valid[source_idx[known]] = np.abs(z[known] - source_depth[known]) <= tolerance * source_depth[known]
-    hidden = source_idx[known & (z > (1 + tolerance) * source_depth)]
-    if holes is not None:
-        valid[hidden[holes[hidden]]] = True
-        hidden = hidden[~valid[hidden]]
-    for other in range(1, len(depth)):
-        if other == index or not len(hidden):
-            continue
-        seen, y, x, z = _project_pixels(candidates[hidden], poses[other] @ camera_to_world[index], shape, calibration)
-        expected = depth[other, y, x]
-        agrees = np.isfinite(expected) & (np.abs(z - expected) <= tolerance * expected)
-        valid[hidden[seen[agrees]]] = True
-        hidden = hidden[~valid[hidden]]
-    keep = np.zeros(len(vertices), dtype=bool)
-    keep[indices[valid]] = True
-    return keep
 
 
 def _surface_quality(depth, calibration):
@@ -383,42 +390,86 @@ def _surface_quality(depth, calibration):
     return np.where(valid, quality, 0)
 
 
-def _best_surface_vertices(vertices, index, depths, calibrations, poses, camera_to_world, qualities):
+def _consensus_depths(depths, calibrations, poses, check_cancel):
+    import cv2
+
+    height, width = depths.shape[1:]
+    step = max(1, math.ceil(math.sqrt(height * width / 300_000)))
+    y, x = np.mgrid[:height:step, :width:step]
+    interiors = [depth_interior(depth) for depth in depths]
+    camera_to_world = np.linalg.inv(poses)
+    aligned = []
+    for index, (depth, calibration) in enumerate(zip(depths, calibrations, strict=True)):
+        check_cancel()
+        grid = interiors[index][::step, ::step]
+        ys, xs = y[grid], x[grid]
+        values = depth[ys, xs]
+        rays = np.column_stack(((xs + 0.5 - calibration[0, 2]) / calibration[0, 0],
+                                (ys + 0.5 - calibration[1, 2]) / calibration[1, 1], np.ones_like(values)))
+        points = rays * values[:, None]
+        correction = np.zeros(len(points), dtype=np.float32)
+        support = np.ones_like(correction)
+        for other, target in enumerate(calibrations):
+            if other == index:
+                continue
+            check_cancel()
+            transform = poses[other] @ camera_to_world[index]
+            ids, py, px, projected = _project_pixels(points, transform, (height, width), target)
+            visible = interiors[other][py, px]
+            ids, py, px, projected = ids[visible], py[visible], px[visible], projected[visible]
+            slope = rays[ids] @ transform[2, :3]
+            # Use only nearby surfaces that agree in the overlap. Never pull a point across an occlusion.
+            error = depths[other, py, px] - projected
+            delta = np.divide(error, slope, out=np.zeros_like(error), where=slope > 0.25)
+            agrees = (slope > 0.25) & (np.abs(delta) <= 0.08 * np.minimum(values[ids], values[ids] + delta))
+            ids, delta, slope = ids[agrees], delta[agrees], slope[agrees]
+            refined = rays[ids] * (values[ids] + delta)[:, None]
+            checked, py, px, projected = _project_pixels(refined, transform, (height, width), target)
+            stable = interiors[other][py, px] & (np.abs(depths[other, py, px] - projected) <= 0.02 * projected)
+            checked = checked[stable]
+            # A grazing observation gives a weaker constraint along the current ray.
+            weight = slope[checked].clip(max=1)
+            correction[ids[checked]] += weight * delta[checked]
+            support[ids[checked]] += weight
+        field = np.zeros(grid.shape, dtype=np.float32)
+        field[grid] = correction / support
+        if step > 1:
+            field = cv2.warpAffine(field, np.array([[step, 0, 0], [0, step, 0]], dtype=np.float32),
+                                   (width, height), flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+        result = depth.copy()
+        valid = interiors[index]
+        bound = 0.08 * depth[valid]
+        result[valid] += field[valid].clip(-bound, bound)
+        aligned.append(result)
+    return np.stack(aligned)
+
+
+def _overlap_faces(vertices, triangles, index, depths, calibrations, poses, camera_to_world, qualities, interiors):
     shape = depths.shape[1:]
     indices, y, x, _ = _project_pixels(vertices, None, shape, calibrations[index])
     own_quality = np.zeros(len(vertices), dtype=np.float32)
     own_quality[indices] = qualities[index][y, x]
-    keep = own_quality > 0
+    covered = np.zeros(len(triangles), dtype=bool)
+    corroborated = np.zeros(len(vertices), dtype=bool)
+    contradicted = np.zeros(len(vertices), dtype=bool)
     for other, calibration in enumerate(calibrations):
         if other == index:
             continue
         ids, y, x, z = _project_pixels(vertices, poses[other] @ camera_to_world[index], shape, calibration)
+        interior = interiors[other][y, x]
+        ids, y, x, z = ids[interior], y[interior], x[interior], z[interior]
         observed = depths[other, y, x]
-        competing = qualities[other][y, x]
-        own = own_quality[ids]
-        # Prefer a closer or more frontal observation where both cameras see the same surface.
-        comparable = np.isfinite(observed) & (np.abs(z - observed) <= 0.18 * z)
+        competing, own = qualities[other][y, x], own_quality[ids]
+        comparable = np.abs(z - observed) <= 0.06 * z
         wins = (competing > 1.2 * own) | ((other < index) & (competing >= own / 1.2))
-        # A nearer surface that a stronger view should see but does not is likely a depth outlier.
-        unsupported = (competing > 1.2 * own) & (z < 0.82 * observed)
-        keep[ids[(comparable & wins) | unsupported]] = False
-    return keep
-
-
-def merge_moge_views(geometry, images, calibration, poses, tracks, call_node, check_cancel, *, capture_holes=None):
-    import torch
-
-    depth = geometry.get("depth")
-    if not torch.is_tensor(depth) or tuple(depth.shape) != tuple(images.shape[:3]):
-        raise ValueError("MoGe did not return a depth map for each camera view")
-    depth = depth.detach().cpu().float()
-    scales = [_depth_scale(np.asarray(view), track) for view, track in zip(depth, tracks)]
-    # COLMAP's world scale is arbitrary. Use the original MoGe frame as the scale reference.
-    poses = poses.copy()
-    poses[:, :3, 3] /= scales[0]
-    return _mesh_moge_surfaces(depth, images, [calibration] * len(images), poses,
-                               [scale / scales[0] for scale in scales], call_node, check_cancel,
-                               capture_holes=capture_holes)
+        corroborated[ids[comparable]] = True
+        contradicted[ids[(competing > 1.2 * own) & (z < 0.82 * observed)]] = True
+        # Drop only faces fully covered by one observation. Different winners at the
+        # three corners do not establish coverage and used to cut cracks in the mesh.
+        view_coverage = np.zeros(len(vertices), dtype=bool)
+        view_coverage[ids[comparable & wins]] = True
+        covered |= view_coverage[triangles].all(axis=1)
+    return covered | (contradicted & ~corroborated)[triangles].all(axis=1)
 
 
 def fuse_moge_views(depth, images, cameras, call_node, check_cancel):
@@ -426,21 +477,31 @@ def fuse_moge_views(depth, images, cameras, call_node, check_cancel):
     poses = np.asarray(cameras["world_to_camera"], dtype=np.float64)
     scales = np.asarray(cameras["depth_scales"], dtype=np.float32)
     count = len(images)
+    offsets = np.asarray(cameras.get("depth_offsets", np.zeros(count)), dtype=np.float32)
     if (tuple(depth.shape) != tuple(images.shape[:3]) or calibration.shape != (count, 3, 3)
-            or poses.shape != (count, 4, 4) or scales.shape != (count,)
+            or poses.shape != (count, 4, 4) or scales.shape != (count,) or offsets.shape != (count,)
             or not np.isfinite(calibration).all() or not np.isfinite(poses).all() or not np.isfinite(scales).all()
+            or not np.isfinite(offsets).all()
             or np.any(scales <= 0) or np.any(calibration[:, (0, 1), (0, 1)] <= 0)):
         raise ValueError("Saved camera calibration does not match the reconstruction frames")
-    return _mesh_moge_surfaces(depth, images, calibration, poses, scales, call_node, check_cancel, ranked=True)
-
-
-def _mesh_moge_surfaces(depth, images, calibrations, poses, scales, call_node, check_cancel, *, capture_holes=None, ranked=False):
     import torch
 
-    depth = depth * torch.as_tensor(scales)[:, None, None]
+    valid = torch.isfinite(depth) & (depth > 0)
+    aligned = depth * torch.as_tensor(scales)[:, None, None] + torch.as_tensor(offsets)[:, None, None]
+    return _mesh_moge_surfaces(aligned.masked_fill(~valid, torch.inf), images, calibration, poses, call_node, check_cancel)
+
+
+def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_cancel):
+    import cv2
+    import torch
+
     depth = depth.masked_fill(~torch.isfinite(depth) | (depth <= 0), torch.inf)
-    depth_maps = np.asarray(depth)
-    qualities = [_surface_quality(view, calibration) for view, calibration in zip(depth_maps, calibrations)] if ranked else None
+    depth_maps = _consensus_depths(depth.numpy(), calibrations, poses, check_cancel)
+    depth = torch.from_numpy(depth_maps)
+    qualities = [_surface_quality(view, calibration) for view, calibration in zip(depth_maps, calibrations, strict=True)]
+    # Keep both surfaces across a small band at image and occlusion edges.
+    interiors = [cv2.erode(depth_interior(view).astype(np.uint8), np.ones((3, 3), dtype=np.uint8),
+                           borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool) for view in depth_maps]
     camera_to_world = np.linalg.inv(poses)
     count, height, width, _ = images.shape
     flip_yz = torch.tensor([1., -1., -1.])
@@ -465,14 +526,9 @@ def _mesh_moge_surfaces(depth, images, calibrations, poses, scales, call_node, c
         mesh, = call_node("MoGePointMapToMesh", moge_geometry=view, batch_index=0, texture=False,
                           decimation=stride, discontinuity_threshold=0.04)
         verts, triangles = mesh.vertices[0] * flip_yz, mesh.faces[0].long()
-        if ranked:
-            keep = _best_surface_vertices(np.asarray(verts), index, depth_maps, calibrations, poses, camera_to_world, qualities)
-            triangles = triangles[torch.from_numpy(keep)[triangles].all(dim=1)]
-        elif index:
-            keep = _additional_surface_vertices(np.asarray(verts), index, depth_maps, poses, camera_to_world,
-                                                calibration, [np.asarray(surface) for surface in vertices], stride,
-                                                capture_holes.get(index) if capture_holes else None)
-            triangles = triangles[torch.from_numpy(keep)[triangles].all(dim=1)]
+        covered = _overlap_faces(np.asarray(verts), triangles.numpy(), index, depth_maps, calibrations, poses,
+                                 camera_to_world, qualities, interiors)
+        triangles = triangles[~torch.from_numpy(covered)]
         if not len(triangles):
             continue
         used = torch.zeros(len(verts), dtype=torch.bool)

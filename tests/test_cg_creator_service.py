@@ -155,7 +155,11 @@ def test_multiview_meshing_aligns_depth_scale_and_textures_to_original_camera(co
         return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]),
             faces=torch.tensor([[[0, 2, 1], [1, 2, 3]]]), uvs=torch.tensor([[[0., 0], [1, 0], [0, 1], [1, 1]]])),)
 
-    mesh = multiview.merge_moge_views({"depth": depth}, images, calibration, poses, tracks, triangulate, lambda: None)
+    scales, offsets = np.array([multiview.depth_transform(d.numpy(), t) for d, t in zip(depth, tracks)]).T
+    poses[:, :3, 3] /= scales[0]
+    cameras = {"intrinsics": [calibration] * count, "world_to_camera": poses,
+               "depth_scales": scales / scales[0], "depth_offsets": offsets / scales[0]}
+    mesh = multiview.fuse_moge_views(depth, images, cameras, triangulate, lambda: None)
     assert torch.all(mesh.vertices[0, :, 2] == -2)
     assert mesh.vertices[0, ::4, :2].tolist() == [[-0.75, 0.75], [-2.75, 0.75], [1.25, 0.75], [-0.75, 2.75], [-0.75, -1.25]][:count]
     assert mesh.faces.shape == (1, 2 * count, 3)
@@ -166,30 +170,66 @@ def test_multiview_meshing_aligns_depth_scale_and_textures_to_original_camera(co
     assert [mesh.texture[0, y, x, 0].item() for y, x in tile_origins] == list(colors)
 
 
-def test_moge_merge_rejects_depth_duplicates_and_keeps_corroborated_disocclusion():
-    pytest.importorskip("cv2")
+def test_moge_overlap_preserves_faces_at_the_boundary():
     import numpy as np
 
     multiview = load("nodes.cg_moge_multiview")
     calibration = np.array([[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]])
     poses = np.repeat(np.eye(4)[None], 3, axis=0)
-    depth = np.full((3, 8, 8), np.inf)
-    depth[0] = 2
-    pixels = np.array([4.5, 7.5, 1.5, 1.5, 1.5])
-    z = np.array([3., 3., 3., 1., 2.])
-    vertices = np.column_stack(((pixels - 4.) * z / 8., np.zeros_like(z), z))
-    depth[2, 4, 4] = 3
-    depth[2, 4, 7] = 3
-    depth[2, 4, 1] = 1
-    accepted = [np.array([[0., 0., 2.]])]
+    depths = np.full((3, 8, 8), 2., dtype=np.float32)
+    qualities = np.ones_like(depths)
+    interiors = np.ones(depths.shape, dtype=bool)
+    # The same wall continues across the boundary between views 0 and 1.
+    interiors[0, :, 4:] = False
+    interiors[1, :, :4] = False
+    pixels = np.array([[2.5, 2.5], [3.5, 2.5], [2.5, 3.5], [4.5, 2.5]])
+    vertices = np.column_stack(((pixels - 4.) / 4, np.full(len(pixels), 2.)))
+    triangles = np.array([[0, 1, 2], [1, 3, 2]])
+    dropped = multiview._overlap_faces(vertices, triangles, 2, depths, [calibration] * 3,
+                                        poses, poses, qualities, interiors)
+    assert dropped.tolist() == [True, False]
 
-    keep = multiview._additional_surface_vertices(vertices, 1, depth, poses, poses, calibration, accepted, 1)
 
-    assert keep.tolist() == [False, True, False, False, True]
-    capture_holes = np.zeros((8, 8), dtype=bool)
-    capture_holes[4, [1, 4]] = True
-    keep = multiview._additional_surface_vertices(vertices, 1, depth, poses, poses, calibration, accepted, 1, capture_holes)
-    assert keep.tolist() == [False, True, True, False, True]
+def test_moge_overlap_aligns_a_wall_without_crossing_an_occlusion():
+    pytest.importorskip("cv2")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    calibration = np.array([[24., 0., 12.], [0., 24., 12.], [0., 0., 1.]])
+    depths = np.stack([np.full((24, 24), value, dtype=np.float32) for value in (2., 2.1)])
+    depths[1, :, 18:] = 1.
+    poses = np.repeat(np.eye(4)[None], 2, axis=0)
+    poses[1, 0, 3] = 0.2
+    fused = multiview._consensus_depths(depths, [calibration] * 2, poses, lambda: None)
+    assert fused[0, 12, 8] == pytest.approx(2.05)
+    assert fused[1, 12, 10] == pytest.approx(2.05)
+    assert fused[0, 12, 18] == 2.
+    assert fused[1, 12, 20] == 1.
+
+
+def test_moge_depth_registration_fits_a_shift_from_reliable_tracks():
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    depth = np.linspace(1, 4, 32)[None]
+    tracks = np.column_stack((np.arange(32) + .5, np.full(32, .5), 1.3 * depth[0] + .4))
+    tracks[-1, 2] = 100
+    assert multiview.depth_transform(depth, tracks) == pytest.approx((1.3, .4))
+
+
+def test_moge_composite_keeps_observed_pixels_and_leaves_new_geometry_visible():
+    pytest.importorskip("cv2")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    raw = Image.new("RGB", (32, 16), (0, 0, 0))
+    generated = Image.new("RGB", raw.size, (18, 18, 18))
+    depth = np.ones((16, 32))
+    depth[:, 16:] = np.inf
+    result = multiview.composite_capture(raw, generated, depth)
+    assert result.getpixel((4, 8)) == (0, 0, 0)
+    assert result.getpixel((20, 8)) == (18, 18, 18)
+    assert 0 < result.getpixel((13, 8))[0] < 18
 
 
 def test_moge_fusion_uses_closer_view_for_shared_surface():
@@ -201,7 +241,7 @@ def test_moge_fusion_uses_closer_view_for_shared_surface():
     poses = np.repeat(np.eye(4)[None], 2, axis=0)
     poses[1, 2, 3] = -0.5
     cameras = {"intrinsics": [calibration] * 2, "world_to_camera": poses, "depth_scales": [1., 1.]}
-    depths = torch.stack((torch.full((8, 8), 2.), torch.full((8, 8), 1.5)))
+    depths = torch.stack((torch.full((8, 8), 2.), torch.full((8, 8), 1.55)))
     images = torch.stack((torch.zeros((8, 8, 3)), torch.ones((8, 8, 3))))
 
     def triangulate(_name, *, moge_geometry, **_options):
@@ -212,7 +252,7 @@ def test_moge_fusion_uses_closer_view_for_shared_surface():
     mesh = multiview.fuse_moge_views(depths, images, cameras, triangulate, lambda: None)
 
     assert mesh.faces.shape == (1, 2, 3)
-    assert torch.all(mesh.vertices[0, :, 2] == -2)
+    torch.testing.assert_close(mesh.vertices[0, :, 2], torch.full((4,), -2.025))
     assert torch.all(mesh.uvs[0, :, 0] > 0.5)
 
 
@@ -301,7 +341,7 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     monkeypatch.setattr(multiview, "require_colmap", require)
     monkeypatch.setattr(multiview, "register_views", register)
     merge = mock.Mock(return_value=mesh)
-    monkeypatch.setattr(multiview, "merge_moge_views", merge)
+    monkeypatch.setattr(multiview, "fuse_moge_views", merge)
     document = workspace.document
     settings = service.normalize_settings({"resolution_mp": 3, "generation": {"cache_device": "cpu"}})
     service.start_job(document["background_id"], job_payload(document, "model", settings=settings,
@@ -314,14 +354,13 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     require.assert_not_called()
     register.assert_not_called()
     merge.assert_called_once()
-    geometry, images, _, retained_poses, tracks, *_ = merge.call_args.args
+    depths, images, cameras, *_ = merge.call_args.args
     retained = [0, 2, 3, 4] if reject_first_view else [0, 1, 2, 3, 4]
-    assert len(geometry["depth"]) == len(images) == len(retained)
+    assert len(depths) == len(images) == len(retained)
     assert (images[:, 0, 0, 0] * 255).round().tolist() == [[255, *seen][i] for i in retained]
-    np.testing.assert_array_equal(retained_poses, poses[retained])
-    assert multiview._depth_scale(geometry["depth"][0].numpy(), tracks[0]) == 1.
-    assert multiview._depth_scale(geometry["depth"][1].numpy(), tracks[1]) == 3.
-    assert list(merge.call_args.kwargs["capture_holes"]) == list(range(1, len(retained)))
+    np.testing.assert_array_equal(cameras["world_to_camera"], poses[retained])
+    assert cameras["depth_scales"] == [1.] + [3.] * (len(retained) - 1)
+    assert cameras["depth_offsets"] == [0.] * len(retained)
     export.assert_called_once_with(mesh=mesh)
     saved = library.load_background(document["background_id"])
     assert len(saved["models"]) == 1 and not saved["cgs"]
@@ -331,7 +370,7 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     with Image.open(diagnostics / "image_1.png") as image:
         assert image.getpixel((0, 0)) == (255, 0, 0)
     for view, pixel in zip(("01-up", "02-forward", "03-right", "04-left"), seen):
-        for file in ("image_2.png", "qi2_result.png"):
+        for file in ("image_2.png", "qi2_result.png", "reconstruction_frame.png"):
             with Image.open(diagnostics / view / file) as image:
                 assert image.getpixel((0, 0)) == (pixel,) * 3
     assert not list(factory._factory_root().iterdir())
@@ -401,7 +440,9 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
             return images
 
         monkeypatch.setattr(service, "_infer_moge", infer)
-        align = mock.Mock(return_value=(pose, 2.))
+        align = mock.Mock(return_value=(pose, 2., .1))
+        monkeypatch.setattr(multiview, "rasterize_expansion_depth",
+                            lambda _path, _camera, shape, _focal, _cancel: (np.ones(shape), pose))
         monkeypatch.setattr(multiview, "align_expansion_depth", align)
         monkeypatch.setattr(multiview, "fuse_moge_views", fuse)
         monkeypatch.setattr(service, "_save_moge_mesh",
@@ -498,6 +539,8 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
     if provider_name == "moge":
         expected_scales = [1.] * 5 + ([1. if camera_source == "colmap" else 2.] if save else [])
         assert manifest["cameras"]["depth_scales"] == expected_scales
+        if save:
+            assert manifest["cameras"]["depth_offsets"] == [0.] * 5 + [0. if camera_source == "colmap" else .1]
 
 
 @pytest.mark.parametrize("name", [None, "", "   "])
@@ -912,7 +955,7 @@ def test_moge_model_job_uses_native_nodes_and_saves_source_camera(workspace, mon
     monkeypatch.setattr(multiview, "capture_depth_tracks", lambda *_args: tracks)
     model, geometry, mesh = object(), {"depth": torch.ones(batch[1:].shape[:3])}, types.SimpleNamespace(unlit=True)
     merge = mock.Mock(return_value=mesh)
-    monkeypatch.setattr(multiview, "merge_moge_views", merge)
+    monkeypatch.setattr(multiview, "fuse_moge_views", merge)
     asset = b"glTF" + b"fixture payload"
     calls = []
 
