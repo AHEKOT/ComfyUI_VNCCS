@@ -314,6 +314,31 @@ def test_moge_mesh_preserves_a_surface_next_to_a_depth_jump():
     assert mesh.vertices[0, :, 2].tolist() == [-2.] * 3
 
 
+def test_moge_fusion_keeps_one_surface_in_observed_overlap():
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    calibration = [[8., 0., 4.], [0., 8., 4.], [0., 0., 1.]]
+    poses = np.repeat(np.eye(4)[None], 2, axis=0)
+    poses[1, 0, 3] = 0.25
+    cameras = {"intrinsics": [calibration] * 2, "world_to_camera": poses, "depth_scales": [1., 1.]}
+    depth = torch.stack([torch.full((8, 8), z) for z in (2., 3.)])
+    images = torch.zeros(2, 8, 8, 3)
+    holes = np.zeros((8, 8), dtype=bool)
+    holes[:, 4:] = True
+
+    def triangulate(_name, *, moge_geometry, **_options):
+        points = moge_geometry["points"][:, 2:4, [1, 2, 5, 6]].reshape(1, 8, 3)
+        return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]), uvs=torch.zeros(1, 8, 2),
+            faces=torch.tensor([[[0, 4, 1], [1, 4, 5], [2, 6, 3], [3, 6, 7]]])),)
+
+    mesh = multiview.fuse_moge_views(depth, images, cameras, triangulate, lambda: None, capture_holes={1: holes})
+    face_depths = mesh.vertices[0, mesh.faces[0], 2]
+    assert face_depths[:, 0].tolist() == [-2.] * 4 + [-3.] * 2
+    assert (mesh.vertices[0, mesh.faces[0, -2:].flatten(), 0] > 0).all()
+
+
 @pytest.mark.parametrize("turn_camera", [True, False])
 def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera):
     torch = pytest.importorskip("torch")
@@ -407,8 +432,9 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     def capture(*_args):
         image = infer.call_args.args[0]
         height, width = image.shape[1:3]
-        frames = [(torch.full_like(image, value), np.zeros((height, width), dtype=bool),
-                   np.full((height, width), 6.)) for value in (0.2, 0.4, 0.6)]
+        holes = np.zeros((height, width), dtype=bool)
+        holes[:, -32:] = True
+        frames = [(torch.full_like(image, value), holes, np.where(holes, np.inf, 6.)) for value in (0.2, 0.4, 0.6)]
         focal = 1.5 * height
         return frames, np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]]), poses
 
@@ -416,12 +442,17 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     monkeypatch.setattr(multiview, "render_shifted_views", rasterize)
     seen = []
 
-    def refine(settings, _job_id, _cancel, frame, background, *, save_dataset, progress_range):
+    def refine(settings, _job_id, _cancel, frame, background, *, save_dataset, progress_range, preserve_capture_grid):
         assert settings["resolution_mp"] == 0.05 and settings["generation"]["cache_device"] == "off"
-        assert not save_dataset and 0 < progress_range[0] < progress_range[1] < 0.6
+        assert not save_dataset and preserve_capture_grid and 0 < progress_range[0] < progress_range[1] < 0.6
+        assert background.size == frame.size and all(side % 32 == 0 for side in frame.size)
         assert background.getpixel((0, 0)) == (255, 0, 0)
-        seen.append(frame.getpixel((0, 0))[0])
-        return frame, {}
+        pixel = frame.getpixel((0, 0))[0]
+        seen.append(pixel)
+        refined = frame.copy()
+        refined.putpixel((0, 0), (pixel + 8,) * 3)
+        refined.paste((4, 5, 6), (frame.width - 32, 0, frame.width, frame.height))
+        return refined, {}
 
     monkeypatch.setattr(service, "generate_image", refine)
     observed = np.array([[i + .5, i + .5, 6.] for i in range(8)])
@@ -448,7 +479,14 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     depths, images, cameras, *_ = merge.call_args.args
     retained = [index for index in range(view_count + 1) if index != 1 or not reject_first_view]
     assert len(depths) == len(images) == len(retained)
+    assert set(merge.call_args.kwargs["capture_holes"]) == set(range(1, len(retained)))
+    height, width = images.shape[1:3]
+    assert (width, height) == (448, 224)
+    assert depths.shape[1:] == (height, width)
+    assert cameras["intrinsics"][0][0][2] == width / 2
+    assert cameras["intrinsics"][0][1][2] == height / 2
     assert (images[:, 0, 0, 0] * 255).round().tolist() == [[255, *seen][i] for i in retained]
+    assert (images[1:, 0, -1] * 255).round().tolist() == [[4, 5, 6]] * (len(retained) - 1)
     np.testing.assert_array_equal(cameras["world_to_camera"], poses[retained])
     assert cameras["depth_scales"] == [1.] + [3.] * (len(retained) - 1)
     assert cameras["depth_offsets"] == [0.] * len(retained)
@@ -463,9 +501,11 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     views = ("01-up", "02-right", "03-left")
     assert {entry.name for entry in diagnostics.iterdir() if entry.is_dir()} == set(views)
     for view, pixel in zip(views, seen, strict=True):
-        for file in ("image_2.png", "qi2_result.png", "reconstruction_frame.png"):
+        for file in ("image_2.png", "reconstruction_frame.png"):
             with Image.open(diagnostics / view / file) as image:
                 assert image.getpixel((0, 0)) == (pixel,) * 3
+        with Image.open(diagnostics / view / "qi2_result.png") as image:
+            assert image.getpixel((0, 0)) == (pixel + 8,) * 3
     assert not list(factory._factory_root().iterdir())
 
 
@@ -526,7 +566,7 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
             inferred.append(images)
             return {"depth": torch.ones(images.shape[:3])}
 
-        def fuse(depth, images, calibration, _call_node, _check_cancel):
+        def fuse(depth, images, calibration, _call_node, _check_cancel, *, capture_holes=None):
             assert depth.shape == images.shape[:3]
             expected = [1.] * len(images) if camera_source == "colmap" else [1.] * 5 + [2.]
             assert calibration["depth_scales"] == expected

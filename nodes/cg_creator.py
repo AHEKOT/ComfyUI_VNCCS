@@ -1436,9 +1436,19 @@ def _save_dataset(references, image, prompt):
         raise
 
 
+def _qi2_capture_size(width, height):
+    width, height = (max(64, min(4096, 32 * round(side / 32))) for side in (width, height))
+    while width * height > 16_000_000:
+        if width >= height:
+            width -= 32
+        else:
+            height -= 32
+    return width, height
+
+
 @logged_operation("CGCreator", "refine")
 def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character_references=(), *,
-                   save_dataset=True, progress_range=(0, 1)):
+                   save_dataset=True, progress_range=(0, 1), preserve_capture_grid=False):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
@@ -1458,6 +1468,12 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
 
     megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
     resolution = 32 * round(32 * math.sqrt(megapixels))
+    if preserve_capture_grid:
+        # Calibrated frames and the sampled latent must use the same pixel grid.
+        capture_size = _qi2_capture_size(width, height)
+        reference = reference.resize(capture_size, Image.Resampling.LANCZOS) if reference.size != capture_size else reference
+        background = background.resize(capture_size, Image.Resampling.LANCZOS) if background.size != capture_size else background
+        resolution = 0
     prompt = ANYANGLE_PROMPT
     references = [("image_1", "original background", background.convert("RGB")),
                   ("image_2", "captured camera frame", reference.convert("RGB"))]
@@ -1507,12 +1523,21 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         if not isinstance(encoded, (tuple, list)) or len(encoded) < 3 or encoded[0] is None or encoded[1] is None:
             raise RuntimeError("QI2 returned invalid image conditioning; update ComfyUI")
         positive, negative = encoded[:2]
-        scaled_reference = _call_comfy_node("ImageScaleToTotalPixels", image=reference_tensor,
-            upscale_method="nearest-exact", megapixels=megapixels, resolution_steps=1)[0]
-        latent_width, latent_height, _ = _call_comfy_node("GetImageSize", image=scaled_reference)
+        if preserve_capture_grid:
+            latent_width, latent_height = capture_size
+            latent = encoded[2]
+            samples = latent.get("samples") if isinstance(latent, dict) else None
+            if not torch.is_tensor(samples) or samples.shape[-2:] != (latent_height // 16, latent_width // 16):
+                raise RuntimeError("QI2 returned a latent that does not match the calibrated capture")
+        else:
+            scaled_reference = _call_comfy_node("ImageScaleToTotalPixels", image=reference_tensor,
+                upscale_method="nearest-exact", megapixels=megapixels, resolution_steps=1)[0]
+            latent_width, latent_height, _ = _call_comfy_node("GetImageSize", image=scaled_reference)
+            latent = _call_comfy_node("EmptyLatentImage", width=latent_width, height=latent_height, batch_size=1)[0]
         log_event("latent", job_id=draw_id, width=latent_width, height=latent_height,
-                  source="image_2", resolution_mp=megapixels, upscale_method="nearest-exact", resolution_steps=1)
-        latent = _call_comfy_node("EmptyLatentImage", width=latent_width, height=latent_height, batch_size=1)[0]
+                  source="image_2", resolution_mp=megapixels,
+                  upscale_method="lanczos" if preserve_capture_grid else "nearest-exact",
+                  resolution_steps=32 if preserve_capture_grid else 1)
         stage("sampling", 0.35, "Rendering the CG frame")
         sampler_settings = {
             "seed": generation["seed"], "steps": generation["steps"], "cfg": generation["cfg"],
@@ -1527,6 +1552,9 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
                                                 turbo=generation["turbo"])
         stage("decoding", 0.9, "Decoding the CG image")
         image = _tensor_to_pil(_call_comfy_node("VAEDecode", vae=vae, samples=samples)[0])
+        if preserve_capture_grid and image.size != capture_size:
+            raise RuntimeError(f"QI2 returned a {image.width}x{image.height} frame for the calibrated "
+                               f"{latent_width}x{latent_height} capture")
         _check_cancel(cancel_event)
         if save_dataset:
             _save_dataset(references, image, prompt)
@@ -1954,7 +1982,7 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
     log_event("moge_diagnostics", component="CGCreator", job_id=job_id, directory=str(diagnostics))
     megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
     scale = min(math.sqrt(megapixels * 1e6 / (source.width * source.height)), 4000 / max(source.size))
-    size = tuple(max(64, 16 * round(side * scale / 16)) for side in source.size)
+    size = _qi2_capture_size(source.width * scale, source.height * scale)
     original = source if source.size == size else source.resize(size, Image.Resampling.LANCZOS)
     images = _pil_to_tensor(original)
     with _model_session(job_id, cancel), torch.inference_mode():
@@ -1970,7 +1998,7 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
         del geometry, mesh
 
     (diagnostics / "cameras.json").write_bytes(_json_bytes({
-        "intrinsics": calibration.tolist(), "world_to_camera": poses.tolist(),
+        "intrinsics": calibration.tolist(), "world_to_camera": poses.tolist(), "size": list(size),
     }))
     generation = settings["generation"]
     settings = {**settings, "generation": {**generation, "seed": _resolve_seed(generation), "seed_mode": "fixed"}}
@@ -1980,6 +2008,8 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
         view_dir = diagnostics / f"{index:02}-{direction}"
         view_dir.mkdir()
         raw = _tensor_to_pil(frame)
+        if raw.size != size or holes.shape != size[::-1] or observed.shape != size[::-1]:
+            raise RuntimeError("Camera capture and its depth and mask must use the calibrated frame dimensions")
         (view_dir / "image_2.png").write_bytes(_image_bytes(raw))
         raw_views.append((view_dir, raw, observed))
         capture_holes[index] = holes
@@ -1988,11 +2018,9 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
     for index, (view_dir, raw, observed) in enumerate(raw_views):
         start = 0.12 + view_progress * index
         log_event("moge_refine_view", component="CGCreator", job_id=job_id, view=view_dir.name)
-        refined, _ = generate_image(settings, job_id, cancel, raw, source,
-                                    save_dataset=False, progress_range=(start, start + view_progress))
+        refined, _ = generate_image(settings, job_id, cancel, raw, original, save_dataset=False,
+                                    progress_range=(start, start + view_progress), preserve_capture_grid=True)
         (view_dir / "qi2_result.png").write_bytes(_image_bytes(refined))
-        if refined.size != size:
-            refined = refined.resize(size, Image.Resampling.LANCZOS)
         if preserve_capture:
             refined = composite_capture(raw, refined, observed)
             (view_dir / "reconstruction_frame.png").write_bytes(_image_bytes(refined))
@@ -2054,7 +2082,9 @@ def _generate_moge_scene(job, images, scene, scene_directory, *, capture_holes, 
         cameras = {"intrinsics": [calibration.tolist()] * len(images),
                    "world_to_camera": (normalized @ np.linalg.inv(normalized[0])).tolist(),
                    "depth_scales": (scales / scales[0]).tolist(), "depth_offsets": (offsets / scales[0]).tolist()}
-        mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
+        # Only initial captures have masks for every supplementary view.
+        mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel,
+                               capture_holes=capture_holes if known_views is not None else None)
         _save_moge_mesh(job, scene, scene_directory, mesh, camera)
     return images, capture_holes, cameras
 
@@ -2333,10 +2363,14 @@ def _preview_expansion_frame(job, values):
     model = values["model_directory"]
     with Image.open(_contained(model, "reconstruction", "000000.png")) as stored:
         original = stored.convert("RGB")
+    if values["raw"].size != original.size:
+        raise ValueError("Expansion capture must match the saved reconstruction dimensions")
     settings = _reconstruction_generation(values["settings"], values["model_settings"])
-    refined, _ = generate_image(settings, job["job_id"], job["cancel_event"], values["raw"], original, save_dataset=False)
+    refined, _ = generate_image(settings, job["job_id"], job["cancel_event"], values["raw"], original,
+                                save_dataset=False, preserve_capture_grid=True)
     (diagnostics / "qi2_result.png").write_bytes(_image_bytes(refined))
     if refined.size != original.size:
+        # Older reconstructions store their cameras in a 16-pixel grid.
         refined = refined.resize(original.size, Image.Resampling.LANCZOS)
     if values["model_settings"]["provider"] == "moge":
         from .cg_moge_multiview import composite_capture, rasterize_expansion_depth
@@ -2429,7 +2463,7 @@ def _execute(job, values):
                     colmap_views = register_views(images, lambda: runtime._check_cancel(job), diagnostics=diagnostics,
                                                   focal_length=None if expanding else focal_length, capture_holes=capture_holes)
                     images, capture_holes, cameras = _generate_moge_scene(job, images, scene, scene_directory,
-                        capture_holes=capture_holes, colmap_views=colmap_views)
+                        capture_holes=capture_holes, known_views=None if expanding else known_views, colmap_views=colmap_views)
                 elif expanding:
                     cameras = _expand_moge_scene(job, values, images, scene, scene_directory)
                 else:

@@ -132,7 +132,8 @@ def runtime(monkeypatch, tmp_path):
         model.patches[state["lora"]] = [(strength, clip_strength)]
         return model, clip
     monkeypatch.setattr(sys.modules["comfy.sd"], "load_lora_for_models", apply_lora, raising=False)
-    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(inference_mode=nullcontext))
+    monkeypatch.setitem(sys.modules, "torch", types.SimpleNamespace(
+        inference_mode=nullcontext, is_tensor=lambda value: isinstance(value, np.ndarray)))
     monkeypatch.setattr(generation, "model_operation_lock", lambda: runtime_cleanup.inference_lock)
     monkeypatch.setattr(generation, "_set_progress", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(generation, "_set_interrupt", mock.Mock())
@@ -155,6 +156,9 @@ def runtime(monkeypatch, tmp_path):
         if name == "QwenImage21Cache":
             return (kwargs["model"],)
         if name == "TextEncodeQwenImage21":
+            if kwargs["resolution"] == 0:
+                width, height = kwargs["images"]["image_1"][1]
+                return "positive", "negative", {"samples": np.zeros((1, 64, height // 16, width // 16))}
             return "positive", "negative", {"samples": "encoder-reference"}
         if name == "ImageScaleToTotalPixels":
             return ("scaled-camera-frame",)
@@ -217,14 +221,44 @@ def test_dataset_write_failure_removes_partial_sample_and_reports_error(runtime,
     assert not [path for path in runtime.dataset.rglob("*") if path.is_file()]
 
 
-def test_internal_camera_refinement_uses_cg_conditioning_without_saving_dataset(runtime):
-    image, metadata = generation.generate_image({}, "internal-view", threading.Event(), runtime.reference,
-                                                 runtime.background, save_dataset=False, progress_range=(0.12, 0.24))
-    encode = dict(runtime.calls)["TextEncodeQwenImage21"]
+@pytest.mark.parametrize("size, expected", [((1344, 736), (1344, 736)), ((1328, 752), (1344, 768))])
+def test_internal_camera_refinement_preserves_the_qi2_grid(runtime, size, expected):
+    runtime.size[:] = expected
+    image, metadata = generation.generate_image({}, "internal-view", threading.Event(),
+                                                 Image.new("RGB", size, "red"), runtime.background, save_dataset=False,
+                                                 progress_range=(0.12, 0.24), preserve_capture_grid=True)
+    calls = dict(runtime.calls)
+    encode = calls["TextEncodeQwenImage21"]
     assert metadata["prompt"] == encode["prompt"] == generation.ANYANGLE_PROMPT
-    assert set(encode["images"]) == {"image_1", "image_2"}
-    assert image.size == tuple(runtime.size)
+    assert encode["resolution"] == 0
+    assert encode["images"] == {"image_1": ("image", expected, "RGB", (0, 128, 0)),
+                                "image_2": ("image", expected, "RGB", (255, 0, 0))}
+    assert "ImageScaleToTotalPixels" not in calls
+    assert "EmptyLatentImage" not in calls
+    assert calls["KSampler"]["latent_image"]["samples"].shape == (1, 64, expected[1] // 16, expected[0] // 16)
+    assert image.size == expected
     assert not runtime.dataset.exists()
+
+
+def test_internal_views_use_the_cg_lora_with_existing_turbo_sampling_settings(runtime):
+    runtime.size[:] = [128, 96]
+    capture = Image.new("RGB", (128, 96), "red")
+    settings = {"generation": {"diffusion_model_name": generation.TURBO_MODEL, "steps": 8, "cfg": 1.2,
+                               "sampler": "heun", "scheduler": "normal", "seed": 41}}
+    generation.generate_image(settings, "internal-view", threading.Event(), capture, runtime.background,
+                              save_dataset=False, preserve_capture_grid=True)
+    calls = dict(runtime.calls)
+    assert calls["UNETLoader"]["unet_name"] == generation.TURBO_MODEL
+    encode = calls["TextEncodeQwenImage21"]
+    assert encode["images"] == {"image_1": ("image", capture.size, "RGB", (0, 128, 0)),
+                                "image_2": ("image", capture.size, "RGB", (255, 0, 0))}
+    assert encode["resolution"] == 0 and encode["negative_prompt"] == ""
+    assert encode["prompt"] == generation.ANYANGLE_PROMPT
+    assert calls["ApplyLoRA"]["state"] == {"lora": "/models/loras/" + TEST_CG_LORA}
+    sample = calls["KSampler"]
+    assert (sample["steps"], sample["cfg"], sample["sampler_name"], sample["scheduler"]) == (8, 1.2, "heun", "normal")
+    assert set(sample["latent_image"]) == {"samples"}
+    assert sample["latent_image"]["samples"].shape == (1, 64, 6, 8)
 
 
 @pytest.mark.parametrize("branch", ["", "control1"])

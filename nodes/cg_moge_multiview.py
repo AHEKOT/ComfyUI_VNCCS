@@ -607,7 +607,7 @@ def _restore_reference_coverage(surfaces, shape, calibration, check_cancel, *,
             dropped &= ~boundary[faces].any(dim=1)
 
 
-def fuse_moge_views(depth, images, cameras, call_node, check_cancel):
+def fuse_moge_views(depth, images, cameras, call_node, check_cancel, *, capture_holes=None):
     calibration = np.asarray(cameras["intrinsics"], dtype=np.float64)
     poses = np.asarray(cameras["world_to_camera"], dtype=np.float64)
     scales = np.asarray(cameras["depth_scales"], dtype=np.float32)
@@ -619,24 +619,33 @@ def fuse_moge_views(depth, images, cameras, call_node, check_cancel):
             or not np.isfinite(offsets).all()
             or np.any(scales <= 0) or np.any(calibration[:, (0, 1), (0, 1)] <= 0)):
         raise ValueError("Saved camera calibration does not match the reconstruction frames")
+    if capture_holes is not None and (set(capture_holes) != set(range(1, count))
+            or any(mask.shape != tuple(depth.shape[1:]) or mask.dtype != np.bool_ for mask in capture_holes.values())):
+        raise ValueError("Capture masks do not match the reconstruction frames")
     import torch
 
     valid = torch.isfinite(depth) & (depth > 0)
     aligned = depth * torch.as_tensor(scales)[:, None, None] + torch.as_tensor(offsets)[:, None, None]
-    return _mesh_moge_surfaces(aligned.masked_fill(~valid, torch.inf), images, calibration, poses, call_node, check_cancel)
+    return _mesh_moge_surfaces(aligned.masked_fill(~valid, torch.inf), images, calibration, poses, call_node,
+                               check_cancel, capture_holes=capture_holes)
 
 
-def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_cancel):
+def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_cancel, *, capture_holes=None):
     import cv2
     import torch
 
     depth = depth.masked_fill(~torch.isfinite(depth) | (depth <= 0), torch.inf)
-    depth_maps = _consensus_depths(depth.numpy(), calibrations, poses, check_cancel)
+    # Shifted captures already render the source surface in their observed pixels.
+    # Re-estimated depths from those pixels must not move or replace that surface.
+    depth_maps = (depth.numpy() if capture_holes is not None
+                  else _consensus_depths(depth.numpy(), calibrations, poses, check_cancel))
     depth = torch.from_numpy(depth_maps)
     qualities = [_surface_quality(view, calibration) for view, calibration in zip(depth_maps, calibrations, strict=True)]
     # Keep both surfaces across a small band at image and occlusion edges.
     interiors = [cv2.erode(depth_interior(view).astype(np.uint8), np.ones((3, 3), dtype=np.uint8),
                            borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool) for view in depth_maps]
+    for index, holes in (capture_holes or {}).items():
+        interiors[index] &= holes
     camera_to_world = np.linalg.inv(poses)
     count, height, width, _ = images.shape
     flip_yz = torch.tensor([1., -1., -1.])
@@ -665,8 +674,17 @@ def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_can
         corner_depths = verts[:, 2][triangles]
         near = corner_depths.amin(dim=1)
         triangles = triangles[(corner_depths.amax(dim=1) - near) <= 0.04 * near]
-        covered = _overlap_faces(np.asarray(verts), triangles.numpy(), index, depth_maps, calibrations, poses,
-                                 camera_to_world, qualities, interiors)
+        if capture_holes is not None and index == 0:
+            covered = np.zeros(len(triangles), dtype=bool)
+        else:
+            if capture_holes is not None:
+                ids, y, x, _ = _project_pixels(np.asarray(verts), None, (height, width), calibration)
+                new = np.zeros(len(verts), dtype=bool)
+                new[ids] = capture_holes[index][y, x]
+                # Exclude these faces before coverage repair so it cannot bring the copies back.
+                triangles = triangles[new[triangles.numpy()].all(axis=1)]
+            covered = _overlap_faces(np.asarray(verts), triangles.numpy(), index, depth_maps, calibrations, poses,
+                                     camera_to_world, qualities, interiors)
         transform = torch.from_numpy(poses[0] @ camera_to_world[index]).float()
         surfaces.append((verts @ transform[:3, :3].T + transform[:3, 3], triangles, torch.from_numpy(covered), mesh.uvs[0]))
 
