@@ -3,6 +3,13 @@ const vector = value => Array.isArray(value) && value.length === 3 && value.ever
 export const MESH_DEFAULTS = Object.freeze({ age: 25, gender: .5, weight: .5, muscle: .5, height: .5 });
 export const LIGHT_DEFAULTS = Object.freeze({ x: 10, y: 20, z: 30, intensity: 1.25, color: "#ffffff" });
 export const CHARACTER_PROMPT_LIMIT = 8000;
+export const CHARACTER_COLORS = Object.freeze({
+    White: "#ffffff", Pink: "#ff73ae", Blue: "#60a5ff", Orange: "#fb923c", Green: "#22c55e",
+    Purple: "#8b5cf6", Yellow: "#facc15", Cyan: "#22d3ee", Red: "#ef4444", Lime: "#a3e635",
+    Brown: "#95582e", Navy: "#273575", Magenta: "#c5238a", Gray: "#808080",
+});
+const colorNames = Object.keys(CHARACTER_COLORS);
+export const CHARACTER_LIMIT = 16 - 2; // QI2 reserves the first two inputs for background and capture.
 
 export function validateCharacters(value) {
     if (!Array.isArray(value) || value.length > 16) throw new Error("Invalid CG characters.");
@@ -12,6 +19,8 @@ export function validateCharacters(value) {
             || !Number.isFinite(item.scale) || item.scale < .001 || item.scale > 1000 || !item.pose || Array.isArray(item.pose))
             throw new Error("Invalid CG character transform.");
         ids.add(item.id);
+        if (item.dummyColor != null && (typeof item.dummyColor !== "string" || !Object.hasOwn(CHARACTER_COLORS, item.dummyColor)))
+            throw new Error("Invalid CG mannequin color.");
         for (const key of ["bones", "bonePositions"]) {
             const bones = item.pose[key];
             if (!bones || typeof bones !== "object" || Array.isArray(bones) || Object.keys(bones).length > 256
@@ -72,15 +81,25 @@ export async function loadCharacterRuntime(viewerURL) {
             this.initialized = true; this.loadData(data, true);
             this.styleMesh();
             this.mesh = { ...MESH_DEFAULTS };
-            // Dedicated lights keep the neutral mannequin visible with raw-splat lighting off.
-            const ambient = new THREE.AmbientLight(0xffffff, .55), key = new THREE.DirectionalLight(0xffffff, 1.25);
-            key.position.set(10, 20, 30); ambient.layers.set(1); key.layers.set(1); this.scene.add(ambient, key);
-            this.keyLight = key; this.light = { ...LIGHT_DEFAULTS };
             viewer.camera.layers.enable(1); viewer.captureCamera.layers.enable(1);
             viewer.scene.add(this.scene);
         }
         styleMesh() {
-            this.skinnedMesh.material.color.set("#c8c3ce");
+            const material = this.skinnedMesh.material;
+            this.lightDirection = { value: new THREE.Vector3() };
+            this.lightColor = { value: new THREE.Color() };
+            // Each mannequin shades its own material so other characters' lights cannot change its color.
+            material.onBeforeCompile = shader => {
+                shader.uniforms.cgLightDirection = this.lightDirection;
+                shader.uniforms.cgLightColor = this.lightColor;
+                shader.fragmentShader = shader.fragmentShader
+                    .replace("#include <common>", "#include <common>\nuniform vec3 cgLightDirection;\nuniform vec3 cgLightColor;")
+                    .replace("#include <opaque_fragment>", `
+                        vec3 cgLight = (viewMatrix * vec4(cgLightDirection, 0.0)).xyz;
+                        outgoingLight = diffuseColor.rgb * (vec3(0.55) + cgLightColor * max(0.0, dot(normal, cgLight)));
+                        #include <opaque_fragment>
+                    `);
+            };
             this.skinnedMesh.traverse(object => object.layers.set(1));
             this.skeletonHelper.visible = false;
         }
@@ -93,8 +112,8 @@ export async function loadCharacterRuntime(viewerURL) {
         }
         setLight(params) {
             this.light = { ...LIGHT_DEFAULTS, ...params };
-            this.keyLight.position.set(this.light.x, this.light.y, this.light.z);
-            this.keyLight.intensity = this.light.intensity; this.keyLight.color.set(this.light.color);
+            this.lightDirection.value.set(this.light.x, this.light.y, this.light.z).normalize();
+            this.lightColor.value.set(this.light.color).multiplyScalar(this.light.intensity);
             this.requestRender();
         }
         requestRender() { if (!this._disposed) this.viewer?.invalidate(); }
@@ -112,8 +131,8 @@ export async function loadCharacterRuntime(viewerURL) {
 }
 
 export class CGCharacterEditor {
-    constructor(viewer, runtime, { canEdit, onStart, onChange, onEnd }) {
-        Object.assign(this, { viewer, runtime, canEdit, onStart, onChange, onEnd });
+    constructor(viewer, runtime, { getScene, canEdit, onStart, onChange, onEnd }) {
+        Object.assign(this, { viewer, runtime, getScene, canEdit, onStart, onChange, onEnd });
         this.entries = new Map(); this.selected = ""; this.mode = "pose"; this.events = new AbortController();
         const canvas = viewer.canvas;
         for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel", "lostpointercapture"])
@@ -123,7 +142,7 @@ export class CGCharacterEditor {
     snapshot() {
         return [...this.entries].map(([id, core]) => {
             const { bones, bonePositions } = core.getPose(), mesh = core.skinnedMesh;
-            return { id, position: mesh.position.toArray(), scale: mesh.scale.x,
+            return { id, position: mesh.position.toArray(), scale: mesh.scale.x, dummyColor: core.dummyColor,
                 mesh: { ...core.mesh }, light: { ...core.light }, source: { ...core.source },
                 ...(core.prompt ? { prompt: core.prompt } : {}),
                 origin: [...core.origin], baseScale: core.baseScale,
@@ -133,6 +152,7 @@ export class CGCharacterEditor {
     restore(characters) {
         validateCharacters(characters);
         const wanted = new Set(characters.map(item => item.id));
+        const freeColors = colorNames.filter(color => !characters.some(item => item.dummyColor === color));
         for (const [id, core] of this.entries) if (!wanted.has(id)) { core.dispose(); this.entries.delete(id); }
         for (const item of characters) {
             let core = this.entries.get(item.id);
@@ -149,22 +169,81 @@ export class CGCharacterEditor {
             core.source = { ...item.source }; core.origin = [...(item.origin || item.position)]; core.baseScale = item.baseScale || item.scale;
             core.prompt = item.prompt || "";
             core.setMesh(item.mesh); core.setLight(item.light);
+            core.dummyColor = item.dummyColor || freeColors.shift() || "White";
+            core.skinnedMesh.material.color.set(CHARACTER_COLORS[core.dummyColor]);
             core.skinnedMesh.position.fromArray(item.position); core.skinnedMesh.scale.setScalar(item.scale);
             core.setPose(item.pose, true); core.updateIKEffectorPositions();
         }
         this.entries = new Map(characters.map(item => [item.id, this.entries.get(item.id)]));
         this.select(wanted.has(this.selected) ? this.selected : characters.at(-1)?.id || "");
     }
+    neutralBasis(scene) {
+        const { Matrix4, Vector3 } = this.runtime.THREE;
+        const basis = new Matrix4();
+        const source = scene?.objects[0]?.source_camera || scene?.camera;
+        if (source && scene.background_settings?.provider === "worldmirror") {
+            // The source camera defines upright in WorldMirror's OpenCV coordinate system.
+            basis.lookAt(new Vector3(...source.position), new Vector3(...source.target), new Vector3(...source.up));
+        }
+        return basis;
+    }
+    neutralPose(basis) {
+        const rotation = new this.runtime.THREE.Euler().setFromRotationMatrix(basis);
+        return { bones: {}, bonePositions: {}, modelRotation: [rotation.x, rotation.y, rotation.z].map(n => n * 180 / Math.PI) };
+    }
+    surfaceDepth(object, camera) {
+        const splat = object?.splat, surface = splat || object?.mesh;
+        if (!surface || !camera) return 0;
+        const { Raycaster, Vector3 } = this.runtime.THREE;
+        const origin = new Vector3(...camera.position);
+        const forward = new Vector3(...camera.target).sub(origin).normalize();
+        const up = new Vector3(...camera.up).projectOnPlane(forward).normalize();
+        const ray = new Raycaster();
+        ray.near = .001;
+        const enableSplatPicking = splat?.raycastable === false;
+        if (enableSplatPicking) splat.raycastable = true;
+        try {
+            for (const offset of [0, -.35]) {
+                const direction = forward.clone().addScaledVector(up, offset * Math.tan(camera.fov * Math.PI / 360)).normalize();
+                ray.set(origin, direction);
+                const hit = ray.intersectObject(surface, !splat)[0];
+                if (hit && Number.isFinite(hit.distance)) return hit.distance * direction.dot(forward);
+            }
+        } finally {
+            if (enableSplatPicking) splat.raycastable = false;
+        }
+        return 0;
+    }
     add(id) {
-        if (this.entries.size) return;
-        const THREE = this.runtime.THREE, camera = this.viewer.camera;
-        const target = this.viewer.controls.target.clone(), distance = camera.position.distanceTo(target);
-        const height = Math.max(.1, distance * Math.tan(camera.fov * Math.PI / 360));
+        if (this.entries.size >= CHARACTER_LIMIT) return;
+        const { Vector3 } = this.runtime.THREE;
+        const camera = this.viewer.getCameraState(), scene = this.getScene?.(), item = scene?.objects[0];
+        const object = this.viewer.objects?.get(item?.object_id);
+        const source = item?.asset_kind === "mesh" ? this.viewer.getModelSourceCamera?.(item.object_id) : item?.source_camera || scene?.camera;
+        const sourceDepth = this.surfaceDepth(object, source), currentDepth = this.surfaceDepth(object, camera);
+        const worldMirror = scene?.background_settings?.provider === "worldmirror";
+        // If the current view points into empty space, place the figure in the reconstructed area.
+        const placementView = worldMirror && !currentDepth && sourceDepth ? source : camera;
+        const origin = new Vector3(...placementView.position), look = new Vector3(...placementView.target).sub(origin);
+        const placementDepth = (worldMirror ? .8 : .65) * (currentDepth || sourceDepth) || look.length();
+        // Calibrate size at the source view so a later camera move or FOV change cannot rescale the character.
+        const referenceDepth = sourceDepth || currentDepth;
+        const sizeDepth = worldMirror && referenceDepth ? 1.1 * referenceDepth : sourceDepth ? .65 * sourceDepth : placementDepth;
+        const height = sizeDepth * Math.tan((sourceDepth ? source.fov : camera.fov) * Math.PI / 360);
         const scale = Math.max(.001, Math.min(1000, height / (this.runtime.maxY - this.runtime.minY)));
-        // Center the new figure in the current view; subsequent placement is authored.
-        target.add(new THREE.Vector3(0, -(this.runtime.minY + this.runtime.maxY) / 2 * scale, 0));
-        this.restore([...this.snapshot(), { id, position: target.toArray(), scale,
-            pose: { bones: {}, bonePositions: {}, modelRotation: [0, 0, 0] } }]);
+        const basis = this.neutralBasis(scene), up = new Vector3().setFromMatrixColumn(basis, 1);
+        const target = origin.addScaledVector(look.normalize(), placementDepth)
+            .addScaledVector(up, -(this.runtime.minY + this.runtime.maxY) / 2 * scale);
+        const existing = this.snapshot();
+        const dummyColor = colorNames.find(color => !existing.some(item => item.dummyColor === color));
+        const slot = colorNames.indexOf(dummyColor);
+        const right = look.clone().cross(new Vector3(...placementView.up)).normalize();
+        target.addScaledVector(right, [0, .65, -.65][slot % 3] * height);
+        if (slot >= 3) {
+            const groundForward = look.clone().addScaledVector(up, -look.dot(up));
+            target.addScaledVector(groundForward, -.12 * Math.floor(slot / 3) * placementDepth);
+        }
+        this.restore([...existing, { id, position: target.toArray(), scale, dummyColor, pose: this.neutralPose(basis) }]);
         this.select(id); this.onChange();
     }
     select(id) {
@@ -181,15 +260,15 @@ export class CGCharacterEditor {
         this.select(this.selected || this.entries.keys().next().value);
     }
     edit(change) {
-        const core = this.entries.values().next().value;
+        const core = this.active;
         if (!core || !this.canEdit()) return;
         this.onStart(); change(core);
         core.skinnedMesh.updateMatrixWorld(true); core.updateIKEffectorPositions();
         this.showHelpers(); this.onChange();
     }
     reset() {
-        this.edit(core => core.setPose({ bones: {}, bonePositions: {}, modelRotation: [0, 0, 0] }, true));
-        this.select(this.entries.keys().next().value); this.onEnd();
+        this.edit(core => core.setPose(this.neutralPose(this.neutralBasis(this.getScene?.())), true));
+        this.select(this.selected); this.onEnd();
     }
     showHelpers(hidden = false) {
         for (const [id, core] of this.entries) {
@@ -211,25 +290,22 @@ export class CGCharacterEditor {
         }
     }
     pointer(event) {
-        if (!this.canEdit() || !this.entries.size) return;
+        if (!this.canEdit() || !this.active) return;
         const canvas = this.viewer.canvas, rect = canvas.getBoundingClientRect();
         const pointer = { x: (event.clientX - rect.left) / rect.width * 2 - 1, y: 1 - (event.clientY - rect.top) / rect.height * 2, button: event.button };
-        let core = this.active;
+        const core = this.active;
         if (event.type === "pointerdown") {
             if (event.button !== 0) return;
             core?.transform.pointerHover(pointer);
             if (!core?.transform.axis) {
                 const ray = new this.runtime.THREE.Raycaster(); ray.layers.enable(1); ray.setFromCamera(pointer, this.viewer.camera);
-                const meshes = [...this.entries.values()].flatMap(item => [item.skinnedMesh, ...item.jointMarkers.filter(marker => marker.visible)]);
+                const meshes = [core.skinnedMesh, ...core.jointMarkers.filter(marker => marker.visible)];
                 const hit = ray.intersectObjects(meshes, false)[0]?.object;
-                const selected = [...this.entries].find(([, item]) => item.skinnedMesh === hit || item.jointMarkers.includes(hit));
-                if (!selected) {
+                if (!hit) {
                     core?.transform.detach();
                     if (core) { core.selectedBone = core.selectedIKEffector = core.selectedPoleTarget = null; core.updateMarkers(); }
                     this.showHelpers(); return;
                 }
-                if (selected[0] !== this.selected) this.select(selected[0]);
-                core = this.active;
             }
             this.onStart(); this.pointerId = event.pointerId;
             canvas.focus({ preventScroll: true }); canvas.setPointerCapture(event.pointerId);

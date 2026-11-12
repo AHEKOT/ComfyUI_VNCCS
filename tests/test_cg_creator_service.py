@@ -776,9 +776,9 @@ def test_character_job_captures_selected_costume_sprite_and_emotion(workspace, m
     selected.unlink()
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
-    sprite = workspace.generated.call_args.kwargs["character"]
+    (color, sprite, saved_prompt), = workspace.generated.call_args.kwargs["character_references"]
     assert sprite.size == (64, 128) and sprite.getpixel((0, 0)) == (0, 0, 255, 128)
-    assert workspace.generated.call_args.kwargs["character_prompt"] == prompt
+    assert color == "White" and saved_prompt == prompt
     saved = library.load_background(document["background_id"])
     assert saved["cgs"][-1]["characters"][0]["source"]["emotion"] == "Happy"
     assert saved["cgs"][-1]["characters"][0]["prompt"] == prompt
@@ -901,7 +901,7 @@ def test_sampling_cancellation_is_translated_to_factory_job_cancellation(workspa
 
 def test_stop_after_sampling_prevents_committing_a_finished_frame(workspace):
     document = with_model(workspace)
-    def generate(_settings, _job_id, event, _reference, _background, character=None, *, character_prompt=""):
+    def generate(_settings, _job_id, event, _reference, _background, *, character_references=()):
         event.set()
         return Image.new("RGB", (128, 64)), {}
     workspace.generated.side_effect = generate

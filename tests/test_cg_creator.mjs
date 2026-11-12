@@ -151,6 +151,7 @@ class Element {
         return Promise.all(results);
     }
     click() { return this.fire("click"); }
+    focus() {}
     showModal() { this.open = true; }
     close() { this.open = false; }
     getAnimations() { return this.animations || []; }
@@ -312,7 +313,8 @@ test("node recovery preserves all edited values after reload and respects newer 
     const generation = h.widget.state.settings.generation;
     Object.assign(generation, { diffusion_model_name: "Custom.safetensors", steps: 37, cfg: 0, seed: 153, cache_dtype: "int4" });
     h.widget.qi2.options.onChange();
-    const provider = h.control("[data-model-provider]"); provider.value = "triposplat"; await provider.fire("change");
+    await h.control("[data-model-provider]").click();
+    await h.control('[data-scene-provider="moge"]').click();
     const reloaded = harness(raw, { drafts }); await reloaded.ready();
     assert.deepEqual(clone(reloaded.widget.state.settings), clone(h.widget.state.settings));
     assert.deepEqual(clone(reloaded.widget.state.model_settings), clone(h.widget.state.model_settings));
@@ -611,9 +613,10 @@ test("Expand Scene explains why an older model cannot be expanded before capturi
     })) : undefined;
     await h.ready();
     const button = h.control("[data-expand-scene]");
+    assert.equal(button.hidden, true);
     assert.equal(button.disabled, false);
     await button.click();
-    assert.match(h.widget.status.textContent, /no reconstruction frames.*Create Model/);
+    assert.match(h.widget.status.textContent, /no reconstruction frames.*Regenerate model/);
     assert.equal(h.widget.viewer.captureOptions, undefined);
     assert.equal(h.calls.some(call => call.path.endsWith("/jobs")), false);
 });
@@ -729,7 +732,7 @@ test("MoGe restores and recenters its source camera in the imported mesh coordin
         objects: [{ object_id: B, locked: true, asset_kind: "mesh", source_camera: source }],
     })) : undefined;
     await h.ready();
-    assert.equal(h.control("[data-model-provider]").value, "moge");
+    assert.equal(h.control("[data-model-provider]").querySelector(".vnccs-common-creator-model-card-name").textContent, "MoGe");
     assert.equal(h.control("[data-model-settings]").disabled, false);
     assert.deepEqual(h.widget.viewer.camera, imported);
     assert.deepEqual(JSON.parse(h.data.value).camera, imported);
@@ -770,8 +773,8 @@ test("model settings keep separate resolution scales and camera sources", async 
     mogeCameras.value = "colmap";
     assert.equal(field("moge_additional_angles"), undefined);
     dialog.querySelectorAll("button").at(-1).onclick(); await opening;
-    const provider = h.control("[data-model-provider]");
-    provider.value = "worldmirror"; await provider.fire("change");
+    await h.control("[data-model-provider]").click();
+    await h.control('[data-scene-provider="worldmirror"]').click();
     opening = h.control("[data-model-settings]").click();
     dialog = h.control("[role=dialog]");
     assert.equal(String(field("worldmirror_resolution_mp").value), "1");
@@ -897,6 +900,12 @@ test("startup shows the source and lets the user switch variants while the viewe
     await h.ready({ loadModel: false });
     assert.equal(h.widget.restoring, false);
     assert.equal(h.control("[data-model-source]").src, doc.images[0].url);
+    assert.equal(h.control(".bg-camera-toolbar").style.visibility, "");
+    assert.equal(h.control("[data-expand-scene]").hidden, true);
+    for (const selector of ["[data-fov]", "[data-fov-number]", "[data-add-character]", "[data-recenter]"]) {
+        assert.equal(h.control(selector).hidden, false, selector);
+        assert.equal(h.control(selector).disabled, true, selector);
+    }
     const variant = h.control(`[data-source-choice="${sourceChoices(doc)[1].key}"]`);
     assert.equal(variant.disabled, false);
     await variant.click();
@@ -1793,7 +1802,7 @@ test("compact dock preserves stored prompts, profiles and Qwen cache settings", 
         ...settingsDefaults().generation, cache_device: "cpu", cache_dtype: "int4",
         lora_stack: [{ name: "saved-style.safetensors", strength: 0.4 }], future_option: "retain" } };
     const h = harness(JSON.stringify(state({ settings }))); await h.ready();
-    assert.equal(h.control(".cg-middle").contains(h.control(".bg-generation-dock")), true);
+    assert.equal(h.control(".bg-generation-dock").parentElement, h.control(".bg-viewport-panel").parentElement);
     assert.equal(h.control(".bg-generation-dock").contains(h.control("[data-aspect]")), true);
     assert.equal(h.control("[data-prompt]"), null);
     assert.equal(h.control(".bg-viewport").contains(h.control(".bg-camera-toolbar")), false);

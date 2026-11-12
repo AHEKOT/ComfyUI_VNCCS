@@ -178,8 +178,9 @@ def test_generation_appends_matching_dataset_controls_result_and_actual_prompt(r
     for index in range(2):
         runtime.size[:] = [128 + 16 * index, 64]
         extra_prompt = "Keep the red scarf.\nHave her look toward the window." if with_character and index else ""
+        references = [("White", character, extra_prompt)] if with_character else []
         image, metadata = generation.generate_image({"prompt": "Unused editor prompt"}, "dataset", threading.Event(),
-                                                    runtime.reference, runtime.background, character, character_prompt=extra_prompt)
+                                                    runtime.reference, runtime.background, references)
         encode = dict(runtime.calls)["TextEncodeQwenImage21"]
         results = set((runtime.dataset / "img").glob("*.png"))
         assert len(results) == index + 1
@@ -308,7 +309,7 @@ def test_cg_uses_creator_assets_fixed_prompt_ordered_images_and_scaled_frame(run
 @pytest.mark.parametrize("alpha,color", [(0, (255, 255, 255)), (128, (127, 127, 255)), (255, (0, 0, 255))])
 def test_character_inference_applies_only_the_cg_lora(runtime, alpha, color):
     character = Image.new("RGBA", (128, 256), (0, 0, 255, alpha))
-    _, metadata = generation.generate_image({}, "character", threading.Event(), runtime.reference, runtime.background, character)
+    _, metadata = generation.generate_image({}, "character", threading.Event(), runtime.reference, runtime.background, [("White", character, "")])
     encode = dict(runtime.calls)["TextEncodeQwenImage21"]
     assert list(encode["images"]) == ["image_1", "image_2", "image_3"]
     assert encode["images"] == {"image_1": ("image", runtime.background.size, "RGB", (0, 128, 0)),
@@ -318,6 +319,25 @@ def test_character_inference_applies_only_the_cg_lora(runtime, alpha, color):
     applied = [values for name, values in runtime.calls if name == "ApplyLoRA"]
     assert applied == [{"state": {"lora": "/models/loras/" + TEST_CG_LORA},
                         "strength": 1.0, "clip_strength": 0.0}]
+
+@pytest.mark.parametrize("count", [4, 14])
+def test_multi_character_prompt_follows_sprite_inputs_and_keeps_background_and_capture(runtime, count):
+    references = [(color, Image.new("RGB", (64, 64), pixel), prompt) for color, pixel, prompt in [
+        ("Blue", "blue", "Look left."), ("White", "white", ""), ("Pink", "pink", "Keep the scarf."),
+    ]] + [(color, Image.new("RGB", (64, 64), (index, 0, 0)), "")
+          for index, color in enumerate(generation.CHARACTER_COLORS[3:count], 3)]
+    assert len(references) == count
+    generation.generate_image({}, "characters", threading.Event(), runtime.reference, runtime.background, references)
+    encode = dict(runtime.calls)["TextEncodeQwenImage21"]
+    assert encode["prompt"] == (generation.ANYANGLE_PROMPT + " "
+        + "\n".join(f"{color} dummy is character from image{slot}"
+                    for slot, (color, _, _) in enumerate(references, 3))
+        + "\nBlue dummy: Look left.\nPink dummy: Keep the scarf.")
+    assert list(encode["images"]) == [f"image_{slot}" for slot in range(1, count + 3)]
+    assert [tensor[-1] for tensor in encode["images"].values()] == [
+        runtime.background.getpixel((0, 0)), runtime.reference.getpixel((0, 0)),
+        *(sprite.getpixel((0, 0)) for _, sprite, _ in references),
+    ]
 
 
 def test_fixed_prompt_never_runs_enhancement_and_preserves_the_legacy_profile(runtime):

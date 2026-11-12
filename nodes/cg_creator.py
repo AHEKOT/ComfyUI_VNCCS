@@ -45,6 +45,9 @@ MAX_MODEL_BYTES = 4 * 1024 * 1024 * 1024
 MAX_CGS = 512
 MAX_MODELS = 512
 CHARACTER_PROMPT_LIMIT = 8000
+CHARACTER_COLORS = ("White", "Pink", "Blue", "Orange", "Green", "Purple", "Yellow", "Cyan", "Red", "Lime",
+                    "Brown", "Navy", "Magenta", "Gray")
+MAX_CHARACTER_REFERENCES = 16 - 2  # QI2 reserves the first two inputs for background and capture.
 _ID = re.compile(r"^[a-f0-9]{32}$")
 _ASSET_SUFFIXES = {"ply": ".ply", "splat": ".splat", "model": ".glb", "reference": ".png", "prepared": ".png"}
 
@@ -771,6 +774,8 @@ def _characters(value):
                 raise ValueError("Invalid CG character source")
         if "prompt" in item:
             _text(item["prompt"], "CG character prompt", CHARACTER_PROMPT_LIMIT)
+        if item.get("dummyColor") is not None and item["dummyColor"] not in CHARACTER_COLORS:
+            raise ValueError("Invalid CG mannequin color")
         if ("origin" in item and not vector(item["origin"]) or "baseScale" in item and
                 (type(item["baseScale"]) not in (int, float) or not .001 <= item["baseScale"] <= 1000)):
             raise ValueError("Invalid CG character placement")
@@ -1432,16 +1437,14 @@ def _save_dataset(references, image, prompt):
 
 
 @logged_operation("CGCreator", "refine")
-def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character=None, *,
-                   character_prompt="", save_dataset=True, progress_range=(0, 1)):
+def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, reference, background, character_references=(), *,
+                   save_dataset=True, progress_range=(0, 1)):
     from PIL import Image
     settings = normalize_settings(settings)
     if not isinstance(reference, Image.Image):
         raise ValueError("CG refinement requires a captured frame")
     if not isinstance(background, Image.Image):
         raise ValueError("AnyAngle requires the original background as image 1")
-    if character is not None and not isinstance(character, Image.Image):
-        raise ValueError("Pose Studio requires the selected character sprite as image 3")
     width, height = reference.size
     if any(value < 64 or value > 4096 or value % 16 for value in (width, height)) or width * height > 16_000_000:
         raise ValueError("Captured frame dimensions must be multiples of 16, between 64 and 4096, and at most 16 MP")
@@ -1456,11 +1459,20 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
     megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
     resolution = 32 * round(32 * math.sqrt(megapixels))
     prompt = ANYANGLE_PROMPT
-    if character is not None:
-        prompt += " White dummy is character from image3"
-        extra_prompt = _text(character_prompt, "CG character prompt", CHARACTER_PROMPT_LIMIT)
+    references = [("image_1", "original background", background.convert("RGB")),
+                  ("image_2", "captured camera frame", reference.convert("RGB"))]
+    character_prompts = []
+    for slot, (color, sprite, extra_prompt) in enumerate(character_references, 3):
+        if not isinstance(sprite, Image.Image):
+            raise ValueError(f"{color} dummy requires a selected character sprite")
+        sprite = Image.alpha_composite(Image.new("RGBA", sprite.size, "white"), sprite.convert("RGBA")).convert("RGB")
+        references.append((f"image_{slot}", "selected character sprite", sprite))
+        prompt += (" " if slot == 3 else "\n") + f"{color} dummy is character from image{slot}"
         if extra_prompt:
-            prompt += "\n" + extra_prompt
+            extra_prompt = _text(extra_prompt, "CG character prompt", CHARACTER_PROMPT_LIMIT)
+            character_prompts.append(f"{color} dummy: {extra_prompt}" if len(character_references) > 1 else extra_prompt)
+    if character_prompts:
+        prompt += "\n" + "\n".join(character_prompts)
     with _model_session(draw_id, cancel_event), torch.inference_mode():
         generation["seed"] = _resolve_seed(generation)
         stage("loading", 0.01, "Locating CG LoRA")
@@ -1482,11 +1494,6 @@ def generate_image(settings: dict[str, Any], draw_id: str, cancel_event, referen
         cache_device = "auto" if generation["cache_device"] == "default" else generation["cache_device"]
         model = _call_comfy_node("QwenImage21Cache", model=model, device=cache_device, dtype=generation["cache_dtype"])[0]
         stage("conditioning", 0.3, "Encoding the original background and camera frame")
-        background, reference = background.convert("RGB"), reference.convert("RGB")
-        references = [("image_1", "original background", background), ("image_2", "captured camera frame", reference)]
-        if character is not None:
-            character = Image.alpha_composite(Image.new("RGBA", character.size, "white"), character.convert("RGBA")).convert("RGB")
-            references.append(("image_3", "selected character sprite", character))
         for slot, source, image in references:
             log_event("reference_image", job_id=draw_id, slot=slot, source=source,
                       width=image.width, height=image.height, rgb_sha256=hashlib.sha256(image.tobytes()).hexdigest())
@@ -2217,13 +2224,24 @@ def start_job(background_id, payload, raw_image=None):
             if min(raw.size) < 64 or max(raw.size) > 4096 or raw.width % 16 or raw.height % 16 or raw.width * raw.height > 16_000_000:
                 raise ValueError("CG frame must be 64–4096 pixels, aligned to 16 pixels, at most 16 MP")
             values["raw"] = raw
-        if values.get("characters"):
-            source = values["characters"][0].get("source", {})
-            if not all(source.get(key) for key in ("character", "costume", "sprite")):
-                raise ValueError("Select a character, costume and sprite before generating CG")
-            with Image.open(character_sprite(source["character"], source["costume"], source["sprite"], source.get("emotion") or "Neutral")) as sprite:
-                _dimensions(*sprite.size)
-                values["character"] = sprite.copy()
+        if action == "cg":
+            characters = values["characters"]
+            if len(characters) > MAX_CHARACTER_REFERENCES:
+                raise ValueError(f"QI2 supports up to {MAX_CHARACTER_REFERENCES} character sprites per CG")
+            assigned_colors = [item["dummyColor"] for item in characters if item.get("dummyColor") is not None]
+            if len(assigned_colors) != len(set(assigned_colors)):
+                raise ValueError("Each CG character needs a distinct mannequin color")
+            free_colors = iter(color for color in CHARACTER_COLORS if color not in assigned_colors)
+            references = values["character_references"] = []
+            for item in characters:
+                color = item.get("dummyColor") or next(free_colors)
+                source = item.get("source", {})
+                if not all(source.get(key) for key in ("character", "costume", "sprite")):
+                    raise ValueError(f"Select a character, costume and sprite for the {color.lower()} dummy before generating CG")
+                path = character_sprite(source["character"], source["costume"], source["sprite"], source.get("emotion") or "Neutral")
+                with Image.open(path) as sprite:
+                    _dimensions(*sprite.size)
+                    references.append((color, sprite.copy(), item.get("prompt", "")))
     with _JOBS_LOCK:
         ensure_idle(background_id)
         document = load_background(background_id)
@@ -2364,7 +2382,7 @@ def _execute(job, values):
                     background_image = source.convert("RGB")
                 characters = values.get("characters", [])
                 image, _ = generate_image(values["settings"], job["job_id"], job["cancel_event"], values["raw"], background_image,
-                    character=values.get("character"), character_prompt=characters[0].get("prompt", "") if characters else "")
+                    character_references=values["character_references"])
                 runtime._check_cancel(job)
                 with _JOBS_LOCK:
                     runtime._check_cancel(job)

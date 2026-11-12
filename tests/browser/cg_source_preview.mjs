@@ -113,6 +113,12 @@ try {
         window.backgroundNavigation = widget.change({ target: select });
     }, id);
     const backgroundSettled = () => page.evaluate(() => window.backgroundNavigation);
+    const settingsToggle = page.locator("[data-toggle-cg-settings]");
+    const imageSettings = page.locator("[data-qi2]");
+    const openImageSettings = async () => {
+        if (await settingsToggle.getAttribute("aria-expanded") === "false") await settingsToggle.click();
+        await imageSettings.evaluate(panel => Promise.all(panel.getAnimations().map(animation => animation.finished)));
+    };
     const workflow = () => page.evaluate(() => {
         const info = { widgets_values: ['stale'] }; widget.node.onSerialize(info);
         return { raw: info.widgets_values[0], size: [...widget.node.size], extra: structuredClone(widget.node.graph.extra) };
@@ -125,6 +131,62 @@ try {
         return saved;
     };
     await page.goto(origin); await page.waitForFunction(() => window.ready); await ready();
+    for (const [width, label] of [[LAYOUT_WIDTH, "default"], [1481, "compact"]]) {
+        await ready(width);
+        const viewport = page.locator(".bg-viewport"), dock = page.locator("[data-qi2]"), gallery = page.locator(".bg-cg-panel");
+        const modelAction = page.locator("[data-action=model]"), scenePicker = page.locator(".bg-scene-picker");
+        const head = scenePicker.locator("[data-model-provider]");
+        const cg = gallery.getByRole("button", { name: "Generate CG", exact: true });
+        const before = await geometry(), action = await modelAction.boundingBox();
+        assert.equal(await settingsToggle.getAttribute("aria-expanded"), "false");
+        assert.equal(await dock.isVisible(), false);
+        assert.ok(before[".bg-viewport-panel"].y + before[".bg-viewport-panel"].height - (before[".bg-viewport"].y + before[".bg-viewport"].height) < 18);
+        assert.equal(await modelAction.textContent(), "Regenerate model");
+        assert.match(await head.textContent(), /WorldMirror/);
+        await head.press("Enter");
+        assert.equal(await head.getAttribute("aria-expanded"), "true");
+        const options = scenePicker.locator("[data-scene-provider]");
+        assert.deepEqual(await options.locator(".vnccs-common-creator-model-card-name").allTextContents(), ["WorldMirror", "MoGe"]);
+        await capture(`redesign-scene-models-${label}`);
+        await options.filter({ hasText: "MoGe" }).click();
+        assert.equal(await head.getAttribute("aria-expanded"), "false");
+        assert.equal(await page.evaluate(() => document.activeElement.matches("[data-model-provider]")), true);
+        assert.equal(JSON.parse((await workflow()).raw).model_settings.provider, "moge");
+        assert.deepEqual(await modelAction.boundingBox(), action);
+        await page.getByRole("button", { name: "MoGe settings", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "MoGe settings" });
+        await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+        await head.click();
+        await options.filter({ hasText: "WorldMirror" }).click();
+        const stage = await viewport.boundingBox(), galleryBefore = await gallery.boundingBox();
+        await openImageSettings();
+        assert.equal(await settingsToggle.getAttribute("aria-expanded"), "true");
+        assert.deepEqual(await viewport.boundingBox(), stage);
+        assert.deepEqual(await gallery.boundingBox(), galleryBefore);
+        const panel = await dock.boundingBox(), fields = await dock.locator(".bg-qi2-contents").boundingBox();
+        assert.ok(panel.x + panel.width <= galleryBefore.x && panel.x < stage.x + stage.width);
+        assert.ok(panel.height < stage.height && panel.height - fields.height < 36, "The drawer fits the form instead of the whole viewport");
+        const qi2Head = dock.locator(".is-picker-head");
+        await qi2Head.click();
+        await capture(`redesign-image-models-${label}`);
+        await qi2Head.press("Escape");
+        assert.equal(await qi2Head.getAttribute("aria-expanded"), "false");
+        await capture(`redesign-expanded-${label}`);
+        await settingsToggle.click(); await dock.waitFor({ state: "hidden" });
+        assert.equal(await settingsToggle.getAttribute("aria-expanded"), "false");
+        assert.deepEqual(await viewport.boundingBox(), stage);
+        assert.deepEqual(await gallery.boundingBox(), galleryBefore);
+        await capture(`redesign-collapsed-${label}`);
+        await openImageSettings();
+        assert.deepEqual(await viewport.boundingBox(), stage);
+        await cg.click();
+        await page.getByRole("dialog", { name: "Generate CG" }).getByRole("button", { name: "Cancel", exact: true }).click();
+        await page.locator('[data-source-choice]').nth(2).click();
+        await page.waitForFunction(() => !widget.busy && widget.state.selected_variant?.index === 2);
+        assert.equal(await modelAction.textContent(), "Generate model");
+        await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
+    }
+    await ready();
     const originalGraphExtra = await page.evaluate(() => structuredClone(widget.node.graph.extra));
     const originalDocument = structuredClone(document);
     for (const [width, scale, label] of [[1481, 1, 'compact'], [LAYOUT_WIDTH, 1, 'default'], [5200, 1, 'wide'], [LAYOUT_WIDTH, .7, 'scaled']]) {
@@ -173,6 +235,7 @@ try {
     for (const [width, scale, label] of [[1481, 1, 'compact'], [LAYOUT_WIDTH, 1, 'default'], [5200, 1, 'wide'], [LAYOUT_WIDTH, .7, 'scaled']]) {
         await page.evaluate(() => { widget.node.onRemoved(); localStorage.clear(); });
         await ready(width, scale);
+        await openImageSettings();
         const before = await geometry();
         const device = page.getByRole('combobox', { name: 'cache device', exact: true });
         const dtype = page.getByRole('combobox', { name: 'cache dtype', exact: true });
@@ -190,8 +253,9 @@ try {
         assert.equal(settings.cache_device, 'cpu'); assert.equal(settings.cache_dtype, 'int4');
         await page.evaluate(saved => setup(saved.width, saved.scale, saved.raw, saved.height), { width, scale, raw: current.raw, height: current.size[1] });
         await settle();
+        await openImageSettings();
         assert.equal(await device.innerText(), 'cpu'); assert.equal(await dtype.innerText(), 'int4');
-        const picker = page.locator('.vnccs-common-creator-model-picker');
+        const picker = page.locator('[data-qi2] .vnccs-common-creator-model-picker');
         await picker.locator('.is-picker-head').click();
         await picker.locator('.vnccs-common-creator-model-picker-menu [role="button"]').filter({ hasText: 'Qwen Image 2.1 Turbo INT8 ConvRot' }).click();
         assert.equal(await device.innerText(), 'cpu'); assert.equal(await dtype.innerText(), 'int4');
@@ -329,8 +393,9 @@ try {
         }
         await route.fulfill({ json: modelDocument });
     });
-    const picker = page.locator('.vnccs-common-creator-model-picker');
+    const picker = page.locator('[data-qi2] .vnccs-common-creator-model-picker');
     const selectModel = async name => {
+        await openImageSettings();
         await picker.locator('.is-picker-head').click();
         await picker.locator('.vnccs-common-creator-model-picker-menu [role="button"]').filter({ hasText: name }).click();
     };
@@ -371,12 +436,14 @@ try {
     assert.equal(JSON.parse((await workflow()).raw).settings.generation.diffusion_model_name, missingModel);
     equalGeometry(await geometry(), modelGeometry); await capture('model-selection-catalog-unavailable');
     await page.unroute(configRoute); await page.unroute(catalogRoute); await reloadWorkflow();
+    await openImageSettings();
     await picker.locator('.is-picker-head').click(); await capture('model-selection-picker');
     await picker.locator('.is-picker-head').click();
     await selectModel('Qwen Image 2.1 Turbo INT8 ConvRot');
     await reloadWorkflow();
     assert.equal(await page.evaluate(() => widget.state.settings.generation.diffusion_model_name), turboModel);
     equalGeometry(await geometry(), modelGeometry); await capture('model-selection-after');
+    await openImageSettings();
     await page.waitForFunction(() => !document.querySelector('.vnccs-common-ui-motion-ghost'));
     await page.locator('[data-qi2-setting="generation.steps"]').fill('19');
     await page.locator('[data-qi2-setting="generation.cfg"]').fill('2.5');

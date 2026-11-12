@@ -1,5 +1,5 @@
-import { CGCharacterPanel, CG_CHARACTER_PANEL_CSS } from "./cg_character_panel.mjs?v=cg-creator-3";
-import { CGCharacterEditor, loadCharacterRuntime, validateCharacters } from "./cg_characters.mjs?v=cg-creator-3";
+import { CGCharacterPanel, CG_CHARACTER_PANEL_CSS } from "./cg_character_panel.mjs?v=cg-creator-6";
+import { CGCharacterEditor, loadCharacterRuntime, validateCharacters } from "./cg_characters.mjs?v=cg-creator-6";
 import { STYLE_PICKER_CSS } from "./character_styles.mjs?v=style-mix-9";
 import { app } from "../../scripts/app.js";
 import { vnccsApi as api, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
@@ -22,41 +22,45 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator.vnccs-i3s { position:relative; display:flex; flex-direction:column; min-height:0; box-sizing:border-box; border:0; overflow:hidden; transform-origin:top left; pointer-events:auto; font-family:var(--font); }
 .vnccs-cg-creator [hidden] { display:none !important; }
 /* One logical composition scales as a whole with the node. */
-.vnccs-cg-creator .cg-workspace { flex:1; min-height:0; display:grid; grid-template-columns:${SOURCE_PANEL_WIDTH}px 2247px 960px; gap:12px; }
+.vnccs-cg-creator .cg-workspace { --cg-gallery-width:960px; position:relative; flex:1; min-height:0; display:grid; grid-template-columns:${SOURCE_PANEL_WIDTH}px minmax(0,1fr) var(--cg-gallery-width); gap:12px; }
 .vnccs-cg-creator .bg-panel { min-width:0; min-height:0; overflow-x:hidden; overscroll-behavior:contain; }
 .vnccs-cg-creator .bg-panel>* { flex:0 0 auto; min-width:0; }
 .vnccs-cg-creator .bg-model-source { overflow:hidden; gap:10px; }
-.vnccs-cg-creator .cg-middle { position:relative; display:grid; grid-template-rows:minmax(0,1fr) 248px; min-height:0; min-width:0; gap:12px; }
-.vnccs-cg-creator .bg-generation-dock { min-width:0; min-height:248px; }
-.vnccs-cg-creator .bg-generation-dock .bg-panel { overflow:hidden; gap:7px; padding:12px; }
-.vnccs-cg-creator .bg-generation-dock .bg-qi2-model-panel { overflow:visible; gap:6px; }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-picker { position:relative; }
-/* Floating surface copied from Sakura .vnccs-common-ui-dropdown. */
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-picker-menu { position:absolute; bottom:calc(100% + 8px); left:0; right:0; z-index:10; max-height:320px; overflow:auto; background:#17121d; box-shadow:0 12px 28px rgba(0,0,0,0.45),0 0 0 1px rgba(255,143,163,0.04); }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-section-title { margin:0; font-size:10px; letter-spacing:1px; }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-subsection { gap:7px; }
+.vnccs-cg-creator .bg-generation-dock.vnccs-common-creator-container { position:absolute; z-index:10; top:0; right:calc(var(--cg-gallery-width) + 12px); width:384px; height:auto; padding:16px; overflow:visible; zoom:1; transition:transform 180ms ease-out, visibility 0s; }
+.vnccs-cg-creator .is-settings-collapsed .bg-generation-dock { transform:translateX(calc(100% + 12px)); visibility:hidden; pointer-events:none; transition-delay:0s,180ms; }
+@media (prefers-reduced-motion: reduce) {
+    .vnccs-cg-creator .bg-generation-dock.vnccs-common-creator-container { transition:none; }
+}
+.vnccs-cg-creator .bg-qi2-contents { display:flex; flex-direction:column; gap:16px; min-width:0; }
+.vnccs-cg-creator .bg-qi2-contents > div { display:flex; flex-direction:column; gap:10px; min-width:0; }
+.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-picker,
+.vnccs-cg-creator .bg-scene-picker { position:relative; }
+.vnccs-cg-creator .vnccs-common-creator-model-picker-menu { position:absolute; top:calc(100% + 8px); inset-inline-start:0; min-width:100%; width:max-content; max-width:760px; box-sizing:border-box; z-index:12; max-height:320px; overflow:auto; overscroll-behavior:contain; background:#17121d; box-shadow:0 12px 28px rgba(0,0,0,.45); }
+.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-picker-menu { inset-inline-start:auto; inset-inline-end:0; }
+.vnccs-cg-creator .vnccs-common-creator-model-picker .is-picker-head:focus-visible,
+.vnccs-cg-creator .vnccs-common-creator-model-picker-menu :is(button,[role=button]):focus-visible { outline:2px solid var(--accent); outline-offset:-3px; }
 .vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-field { margin:0; gap:5px; }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-gen-param-grid { gap:8px; }
+.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-resolution-slider { margin-inline:0; }
+.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-gen-param-grid,
+.vnccs-cg-creator .bg-qi2-cache { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
 .vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-gen-param-input,.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-gen-param-select { min-height:34px; height:34px; padding:6px 10px; }
 .vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-seed-dice-btn { height:34px; width:34px; }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-card { padding:8px 10px; gap:4px; }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-card-desc { font-size:10px; }
-.vnccs-cg-creator .bg-generation-dock .vnccs-common-creator-model-card-status { font-size:9px; }
+.vnccs-cg-creator .bg-generation-dock .is-picker-head .vnccs-common-creator-model-card-desc { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-cg-creator .bg-frame-settings { display:contents; }
-.vnccs-cg-creator .bg-frame-settings .bg-field { margin:0; gap:4px; }
-.vnccs-cg-creator .bg-frame-settings .bg-field:first-child { display:grid; grid-template-columns:88px minmax(0,1fr); align-items:center; }
 .vnccs-cg-creator .bg-frame-settings .vnccs-common-creator-select { height:34px; min-height:34px; padding:6px 10px; }
-.vnccs-cg-creator .bg-frame-settings .vnccs-common-creator-label { font-size:9px; }
-.vnccs-cg-creator .bg-qi2-cache { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-.vnccs-cg-creator .bg-qi2-cache .vnccs-common-creator-gen-param-field { display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:8px; }
-.vnccs-cg-creator .bg-qi2-cache .vnccs-common-creator-label { font-size:9px; white-space:nowrap; }
-.vnccs-cg-creator .bg-generation-dock .bg-qi2-cache .vnccs-common-creator-gen-param-select { min-height:28px; height:28px; padding:3px 8px; font-size:12px; }
-.vnccs-cg-creator [data-qi2].vnccs-common-creator-container { display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1fr); gap:12px; padding:0; overflow:visible; zoom:1; pointer-events:auto; }
-.vnccs-cg-creator [data-qi2]>.bg-qi2-contents { display:contents; }
-.vnccs-cg-creator .bg-row { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(0,1fr); align-items:start; gap:10px; }
-.vnccs-cg-creator .bg-model-mode { align-items:center; }
-.vnccs-cg-creator .bg-model-mode .vnccs-common-creator-section-title { margin:0; }
-.vnccs-cg-creator .bg-wide { width:100%; flex:none; min-height:40px; }
+.vnccs-cg-creator .bg-model-toolbar,.vnccs-cg-creator .bg-gallery-toolbar { display:flex; align-items:center; gap:8px; }
+.vnccs-cg-creator .bg-scene-picker { flex:0 0 300px; }
+.vnccs-cg-creator .bg-scene-picker .vnccs-common-creator-model-card { width:100%; text-align:left; }
+.vnccs-cg-creator .bg-scene-picker .is-picker-head { height:58px; justify-content:center; }
+.vnccs-cg-creator .bg-scene-picker .is-picker-head:hover:not(:disabled) { border-color:var(--success); }
+.vnccs-cg-creator .bg-scene-picker .is-picker-head:disabled { opacity:.55; cursor:default; }
+.vnccs-cg-creator [data-model-status] { color:var(--text-secondary); }
+.vnccs-cg-creator :is([data-model-settings],[data-toggle-cg-settings]) { display:grid; place-items:center; flex:0 0 42px; width:42px; height:42px; padding:0; }
+.vnccs-cg-creator [data-toggle-cg-settings] { font-size:18px; }
+.vnccs-cg-creator [data-model-settings] svg { width:19px; height:19px; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linejoin:round; }
+.vnccs-cg-creator [data-action=model] { flex:0 0 168px; width:168px; min-height:42px; padding-inline:8px; white-space:nowrap; }
+.vnccs-cg-creator [data-save-view] { flex:0 0 auto; width:auto; min-height:42px; padding-inline:20px; }
+.vnccs-cg-creator :is([data-model-settings],[data-toggle-cg-settings],[data-action=model],[data-save-view]):focus-visible { outline:2px solid var(--accent-hover) !important; outline-offset:2px; }
 /* Source preview rules copied from VNCCS Background Creator; root selector adapted. */
 .vnccs-cg-creator .bg-panel>.bg-preview { flex:0 0 auto; width:100%; height:auto; aspect-ratio:16/9; min-height:100px; }
 .vnccs-cg-creator .bg-preview>[data-preview] { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; }
@@ -70,11 +74,9 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .bg-image-viewport.is-dragging { cursor:grabbing; }
 .vnccs-cg-creator .bg-image-viewport:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 .vnccs-cg-creator .bg-image-preview img { position:absolute; left:0; top:0; display:block; max-width:none; max-height:none; transform-origin:0 0; pointer-events:none; user-select:none; }
-.vnccs-cg-creator .bg-model-card { display:flex; flex-direction:column; align-items:stretch; text-align:left; width:100%; }
 .vnccs-cg-creator .vnccs-i3s__camera-frame>span { display:none; }
-.vnccs-cg-creator .bg-viewport-panel { overflow:hidden; }
-.vnccs-cg-creator .bg-badge { margin-left:auto; font-size:10px; font-weight:400; letter-spacing:0; color:var(--text-secondary); }
-.vnccs-cg-creator .bg-viewport { box-sizing:border-box; flex:0 0 auto; position:relative; width:100%; height:auto; aspect-ratio:16/9; min-height:0; background:#08090e; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; }
+.vnccs-cg-creator .bg-viewport-panel { overflow:visible; }
+.vnccs-cg-creator .bg-viewport-panel > .bg-viewport { box-sizing:border-box; flex:1 1 0; position:relative; width:100%; min-height:0; background:#08090e; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden; }
 .vnccs-cg-creator [data-viewer] { position:absolute; inset:0; }
 .vnccs-cg-creator [data-viewer][inert] { pointer-events:none; }
 .vnccs-cg-creator [data-viewer] canvas:focus-visible { outline-offset:-3px; }
@@ -102,8 +104,10 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator [data-expansion-split] { position:absolute; inset:0; width:100%; height:100%; margin:0; opacity:0; cursor:inherit; }
 .vnccs-cg-creator .bg-expansion-images:has([data-expansion-split]:focus-visible) { outline:2px solid var(--accent); outline-offset:-2px; }
 .vnccs-cg-creator .bg-viewer-empty { position:absolute; inset:20px; display:grid; place-items:center; text-align:center; color:var(--text-secondary); pointer-events:none; }
-.vnccs-cg-creator .bg-hint { font-size:10px; color:var(--text-secondary); }
-.vnccs-cg-creator .bg-cg-panel { overflow:hidden; }
+.vnccs-cg-creator .bg-hint { position:absolute; z-index:6; top:12px; left:12px; right:12px; width:max-content; max-width:calc(100% - 24px); box-sizing:border-box; margin-inline:auto; padding:7px 12px; border-radius:var(--radius-sm); background:var(--bg-primary); color:var(--text-secondary); font-size:12px; overflow-wrap:anywhere; pointer-events:none; }
+.vnccs-cg-creator .bg-hint:not(.is-visible) { clip-path:inset(50%); }
+.vnccs-cg-creator :is(.bg-generation-dock,.bg-cg-panel) { background:color-mix(in srgb,#14101e 88%,var(--bg-primary)); }
+.vnccs-cg-creator .bg-cg-panel { z-index:11; overflow:hidden; }
 .vnccs-cg-creator .bg-cg-list { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:14px; padding:2px; }
 .vnccs-cg-creator .bg-cg-entry { position:relative; flex:none; }
 .vnccs-cg-creator .bg-cg-entry .bg-cg-card { width:100%; }
@@ -118,7 +122,7 @@ ${STYLE_PICKER_CSS.replaceAll(".vnccs-creator-container", ".vnccs-cg-creator")}
 .vnccs-cg-creator .error { color:var(--error) !important; }
 
 /* Original cards are divs; button bindings inherit their owner text color. */
-.vnccs-cg-creator .bg-model-card,.vnccs-cg-creator .bg-cg-card { color:inherit; }
+.vnccs-cg-creator .bg-cg-card { color:inherit; }
 
 
 /* Background Creator's horizontal collection, with two rows of larger source cards. */
@@ -315,7 +319,7 @@ class CGQi2Controls {
             },
         });
         const state = { gen_settings: g }, els = this.els = {}, ccState = { config: null, downloadStatus: {} };
-        const CC_REPO_ID = "MIUProject/VNCCS_v3.0", modelPickerOpen = { qi2: false };
+        const CC_REPO_ID = "MIUProject/VNCCS_v3.0";
         let localAssets = { diffusion_models: [], loras: [] };
         const saveState = () => { if (!this.disposed && !this.disabled && getSettings()) onChange(); };
         const ccHasRequiredFamilies = config => (config?.models || []).some(entry => String(entry.kind || entry.Kind || "").toLowerCase() === "qi2");
@@ -515,6 +519,7 @@ class CGQi2Controls {
             const name = document.createElement("div");
             name.className = "vnccs-common-creator-model-card-name";
             name.textContent = entry.name || rel || "Unknown";
+            name.title = name.textContent;
             top.appendChild(name);
 
             const statusEl = document.createElement("div");
@@ -553,12 +558,13 @@ class CGQi2Controls {
 
         const renderModelPicker = ({ containerEl, entries, cat, key, mode, emptyText, onSelect, onDownload = null }) => {
             if (!containerEl) return;
-            containerEl.innerHTML = "";
+            const open = Boolean(containerEl.querySelector(".is-open"));
+            containerEl.replaceChildren();
             const picker = document.createElement("div");
             picker.className = "vnccs-common-creator-model-picker";
             picker.dataset.mode = mode;
             picker.dataset.sakuraFocusGroup = mode;
-            picker.classList.toggle("is-open", !!modelPickerOpen[mode]);
+            picker.dataset.sakuraPicker = "";
             containerEl.appendChild(picker);
 
             const current = String(state.gen_settings[key] || "").replace(/\\/g, "/");
@@ -582,10 +588,7 @@ class CGQi2Controls {
                 cat,
                 selectedValue: ccRelPath(selectedEntry),
                 pickerHead: true,
-                onSelect: () => {
-                    modelPickerOpen[mode] = !modelPickerOpen[mode];
-                    renderControlCenterCards();
-                },
+                onSelect: () => setModelPickerOpen(picker, !picker.classList.contains("is-open")),
                 onDownload,
             }));
 
@@ -616,6 +619,7 @@ class CGQi2Controls {
 
             appendGroup("VNCCS Models", entries.filter(entry => entry.source !== "local"));
             appendGroup("User Models", entries.filter(entry => entry.source === "local"));
+            setModelPickerOpen(picker, open);
         };
 
         const syncGenerationControls = () => {
@@ -670,9 +674,12 @@ class CGQi2Controls {
                 state.gen_settings.turbo_enabled = false;
                 state.gen_settings.turbo_previous_settings = null;
             }
-            modelPickerOpen.qi2 = false;
+            const picker = els.qi2ModelCards.querySelector(".is-open");
+            const returnFocus = picker?.contains(document.activeElement);
+            if (picker) setModelPickerOpen(picker, false);
             selectCcAsset("diffusion_model_name", rel);
             syncGenerationControls();
+            if (returnFocus) els.qi2ModelCards.querySelector(".is-picker-head")?.focus({ preventScroll: true });
         };
 
         const downloadQi2Bundle = async (cat, entry) => {
@@ -819,9 +826,8 @@ class CGQi2Controls {
         seedWrap.appendChild(seedRow);
         colRight.appendChild(seedWrap);
 
-        const modelPanel = document.createElement("section"); modelPanel.className = "bg-panel bg-qi2-model-panel vnccs-common-creator-col";
-        const modelTitle = document.createElement("div"); modelTitle.className = "vnccs-common-creator-section-title"; modelTitle.textContent = "Qwen Image 2.1 model & frame";
-        modelPanel.append(modelTitle, qi2Models, resolutionWrap);
+        const modelPanel = document.createElement("div"); modelPanel.className = "bg-qi2-model-panel";
+        modelPanel.append(qi2Models, resolutionWrap);
         const frameSettings = host.querySelector("[data-frame-settings]"); if (frameSettings) modelPanel.appendChild(frameSettings);
         const cacheSettings = document.createElement("div"); cacheSettings.className = "bg-qi2-cache";
         cacheSettings.setAttribute("role", "group"); cacheSettings.setAttribute("aria-label", "Qwen Image 2.1 Cache");
@@ -831,9 +837,8 @@ class CGQi2Controls {
             els[key].replaceChildren(...choices.map(value => new Option(value, value)));
         }
         modelPanel.appendChild(cacheSettings);
-        const samplingPanel = document.createElement("section"); samplingPanel.className = "bg-panel bg-qi2-sampling-panel vnccs-common-creator-col";
-        const samplingTitle = document.createElement("div"); samplingTitle.className = "vnccs-common-creator-section-title"; samplingTitle.textContent = "Sampling";
-        samplingPanel.append(samplingTitle, genParamGrid, seedWrap);
+        const samplingPanel = document.createElement("div"); samplingPanel.className = "bg-qi2-sampling-panel";
+        samplingPanel.append(genParamGrid, seedWrap);
         colRight.replaceChildren(modelPanel, samplingPanel);
 
         host.classList.add("vnccs-common-creator-container"); host.appendChild(colRight);
@@ -871,6 +876,20 @@ class CGQi2Controls {
 
 const BASE = "/vnccs/cg-creator";
 const MODEL_NAMES = { worldmirror: "WorldMirror", moge: "MoGe" };
+const MODEL_DESCRIPTIONS = { worldmirror: "Multi-view Gaussian splat", moge: "Textured GLB mesh" };
+const sceneModelCard = (provider, head = false) => `<button type="button" class="vnccs-common-creator-model-card is-installed${head ? " is-picker-head" : ""}"
+        ${head ? 'data-model-provider aria-expanded="false"' : `data-scene-provider="${provider}" aria-pressed="false"`}>
+    <span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span>
+        <span class="vnccs-common-creator-model-card-name">${MODEL_NAMES[provider]}</span>${head ? '<span class="vnccs-common-creator-model-card-status" data-model-status></span>' : ""}</span>
+    <span class="vnccs-common-creator-model-card-desc">${MODEL_DESCRIPTIONS[provider]}</span></button>`;
+
+function setModelPickerOpen(picker, open, restoreFocus = false) {
+    picker.classList.toggle("is-open", open);
+    const head = picker.querySelector(".is-picker-head");
+    head.setAttribute("aria-expanded", String(open));
+    if (restoreFocus) head.focus({ preventScroll: true });
+}
+
 const CAMERA_HINT = "Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo";
 const ASPECTS = ["16:9", "9:16", "4:3", "3:4", "1:1", "21:9", "3:2", "2:3"];
 const latestModel = (doc, state) => doc?.models?.filter(model => sameSource(model, state)).at(-1);
@@ -883,30 +902,59 @@ class CGCreatorWidget {
         this.epoch = 0; this.restoring = true; this.busy = false; this.disposed = false;
         this.events = new AbortController(); this.operations = Promise.resolve(); this.dialogs = new Set();
         this.history = null;
+        this.settingsCollapsed = true;
         this.container = document.createElement("div"); this.container.className = "vnccs-i3s vnccs-cg-creator vnccs-common-creator-container vnccs-common-ui-host";
         this.frame = document.createElement("div"); this.frame.className = "vnccs-cg-widget"; this.frame.appendChild(this.container);
-        this.container.innerHTML = `<section class="cg-workspace">
-                <aside class="bg-panel bg-model-source vnccs-common-creator-col">
-                    <div class="vnccs-common-creator-section-title">Background select</div>
+        this.container.innerHTML = `<section class="cg-workspace is-settings-collapsed">
+                <aside class="bg-panel bg-model-source vnccs-common-creator-col" aria-label="Background">
                     <select class="vnccs-common-creator-select" data-library aria-label="Saved background"></select>
                     <div class="bg-preview vnccs-common-creator-preview-container"><img data-preview data-model-source alt="Selected background" hidden>
                         <span class="vnccs-common-creator-placeholder" data-empty><span class="vnccs-common-creator-placeholder-title">Select a background</span><span class="vnccs-common-creator-placeholder-hint">Choose a saved background and one of its variants.</span></span>
                         <button class="bg-enlarge" data-enlarge aria-label="Open full-size background preview" hidden></button></div>
-                    <div class="vnccs-common-creator-section-title">Variants</div>
                     <div class="bg-variation-strip"><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="-1" aria-label="Scroll variants left"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 12H5m6-6-6 6 6 6"/></svg></button><div class="bg-variation-cards" data-source-choices data-sakura-scroll="cg-source-variants" role="group" aria-label="Background variants"></div><button type="button" class="vnccs-common-creator-sprite-nav-btn bg-variation-scroll" data-scroll-source="1" aria-label="Scroll variants right"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button></div>
-                    <div class="bg-row bg-model-mode"><div class="vnccs-common-creator-section-title">Model generation</div><select class="vnccs-common-creator-select" data-model-provider aria-label="Model generator"><option value="worldmirror" selected>WorldMirror</option><option value="moge">MoGe</option></select></div>
-                    <button class="vnccs-common-creator-model-card is-installed bg-model-card" data-model-settings aria-label="WorldMirror settings"><span class="vnccs-common-creator-model-card-top"><span class="vnccs-common-creator-model-card-badge ok"></span><span class="vnccs-common-creator-model-card-name">WorldMirror</span><span class="vnccs-common-creator-model-card-status" data-model-status>Model not created</span></span><span class="vnccs-common-creator-model-card-desc">Textured GLB mesh</span></button>
-                    <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary bg-wide" data-action="model">Create model</button>
                 </aside>
-                <section class="cg-middle">
-                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Model viewport <span class="bg-badge" data-model-kind>Raw splat</span></div><div class="bg-camera-toolbar"><label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label><button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button><button class="vnccs-common-creator-model-card-download" data-expand-scene title="Create the model to save reconstruction frames">Expand Scene</button><button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button></div><div class="bg-viewport" data-vnccs-own-navigation><div data-viewer></div><div class="bg-viewer-empty" data-viewer-empty>Select a saved background and create its model.</div><div class="bg-expansion-compare" data-expansion-compare hidden><div class="bg-expansion-images"><img data-expansion-before alt="Captured view"><img data-expansion-after alt="QI2 reconstruction frame"><input type="range" min="0" max="100" value="50" class="vnccs-common-creator-slider" data-expansion-split aria-label="Compare captured view and QI2 frame"></div></div><div class="bg-expansion-actions" data-expansion-frame-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion-frame>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-approve-expansion-frame>Rebuild Scene</button></div><div class="bg-expansion-actions" data-expansion-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-expansion>Save Scene</button></div></div><div class="bg-hint">Drag to look · Middle-drag to pan · Scroll to move · Ctrl Z to undo</div></section>
-                    <div class="bg-generation-dock" data-qi2><div class="bg-frame-settings" data-frame-settings>
-                    <label class="bg-field vnccs-common-creator-field"><span class="vnccs-common-creator-label">Aspect ratio</span><select class="vnccs-common-creator-select" data-aspect aria-label="Aspect ratio">${ASPECTS.map(value => `<option>${value}</option>`).join("")}</select></label>
-                    </div></div>
+                <section class="bg-panel bg-viewport-panel vnccs-common-creator-col" aria-label="Scene viewport">
+                    <div class="bg-model-toolbar">
+                        <div class="bg-scene-picker vnccs-common-creator-model-picker" data-sakura-picker data-mode="scene">
+                            ${sceneModelCard(MODEL_DEFAULTS.provider, true)}
+                            <div class="vnccs-common-creator-model-picker-menu" data-sakura-scroll="model-picker-scene" role="group" aria-label="Scene models">
+                                ${Object.keys(MODEL_NAMES).map(provider => sceneModelCard(provider)).join("")}
+                            </div>
+                        </div>
+                        <button class="vnccs-common-creator-model-card-download" data-model-settings aria-label="WorldMirror settings" title="WorldMirror settings">
+                            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3h4l.7 2.8 2 .9 2.6-.9 2 3.4-2 2v2.6l2 2-2 3.4-2.6-.9-2 .9L14 22h-4l-.7-2.8-2-.9-2.6.9-2-3.4 2-2v-2.6l-2-2 2-3.4 2.6.9 2-.9z"/><circle cx="12" cy="12.5" r="3.2"/></svg>
+                        </button>
+                        <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-action="model">Generate model</button>
+                    </div>
+                    <div class="bg-camera-toolbar">
+                        <label>FOV <input type="range" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-slider" data-fov aria-label="Camera field of view"><input type="number" min="5" max="120" step="0.1" value="60" class="vnccs-common-creator-input" data-fov-number aria-label="Exact camera field of view"></label>
+                        <button class="vnccs-common-creator-model-card-download" data-add-character>Add Character</button>
+                        <button class="vnccs-common-creator-model-card-download" data-expand-scene title="Generate the model to save reconstruction frames" hidden>Expand Scene</button>
+                        <button class="vnccs-common-creator-model-card-download" data-recenter>Recenter</button>
+                    </div>
+                    <div class="bg-viewport" data-vnccs-own-navigation>
+                        <div data-viewer></div>
+                        <div class="bg-viewer-empty" data-viewer-empty>Select a saved background and generate its model.</div>
+                        <div class="bg-hint" role="status"></div>
+                        <div class="bg-expansion-compare" data-expansion-compare hidden><div class="bg-expansion-images"><img data-expansion-before alt="Captured view"><img data-expansion-after alt="QI2 reconstruction frame"><input type="range" min="0" max="100" value="50" class="vnccs-common-creator-slider" data-expansion-split aria-label="Compare captured view and QI2 frame"></div></div>
+                        <div class="bg-expansion-actions" data-expansion-frame-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion-frame>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-approve-expansion-frame>Rebuild Scene</button></div>
+                        <div class="bg-expansion-actions" data-expansion-actions hidden><button class="vnccs-common-creator-btn" data-discard-expansion>Discard</button><button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-expansion>Save Scene</button></div>
+                    </div>
                 </section>
-                <aside class="bg-panel bg-cg-panel vnccs-common-creator-col"><div class="vnccs-common-creator-section-title">Generated CG <span class="bg-badge" data-cg-count>0</span></div><div class="bg-cg-list" data-cgs></div><p data-cg-empty>Compose the camera and press Generate CG.</p></aside>
+                <aside class="bg-panel bg-generation-dock vnccs-common-creator-col" data-qi2 aria-label="Image generation settings">
+                    <div class="bg-frame-settings" data-frame-settings>
+                        <label class="bg-field vnccs-common-creator-field"><span class="vnccs-common-creator-label">Aspect ratio</span><select class="vnccs-common-creator-select" data-aspect aria-label="Aspect ratio">${ASPECTS.map(value => `<option>${value}</option>`).join("")}</select></label>
+                    </div>
+                </aside>
+                <aside class="bg-panel bg-cg-panel vnccs-common-creator-col" aria-label="Generated CG">
+                    <div class="bg-gallery-toolbar">
+                        <button class="vnccs-common-creator-model-card-download" data-toggle-cg-settings aria-expanded="false" aria-label="Show image generation settings" title="Show image generation settings">«</button>
+                        <button class="vnccs-common-creator-btn vnccs-common-creator-btn-primary" data-save-view>Generate CG</button>
+                    </div>
+                    <div class="bg-cg-list" data-cgs></div><p data-cg-empty>Compose the camera and press Generate CG.</p>
+                </aside>
             </section>`;
-        this.host = this.container.querySelector("[data-viewer]"); this.status = this.container.querySelector(".bg-hint"); this.status.setAttribute("role", "status");
+        this.host = this.container.querySelector("[data-viewer]"); this.status = this.container.querySelector(".bg-hint");
         this.expansionCompare = this.container.querySelector("[data-expansion-compare]");
         this.expansionBefore = this.container.querySelector("[data-expansion-before]");
         this.expansionAfter = this.container.querySelector("[data-expansion-after]");
@@ -934,6 +982,19 @@ class CGCreatorWidget {
             onError: error => this.message(String(error.message || error), true), onResolutionChange: () => this.updateFrame() });
         this.qi2.els._ui = this.customSelects;
         this.on(this.container, "click", event => this.click(event)); this.on(this.container, "input", event => this.input(event)); this.on(this.container, "change", event => this.change(event));
+        const dismissModelPickers = event => {
+            for (const picker of this.container.querySelectorAll("[data-sakura-picker].is-open")) {
+                if (!picker.contains(event.target)) setModelPickerOpen(picker, false);
+            }
+        };
+        this.on(document, "pointerdown", dismissModelPickers, { capture: true });
+        this.on(document, "focusin", dismissModelPickers);
+        this.on(this.container, "keydown", event => {
+            const picker = event.target.closest("[data-sakura-picker].is-open");
+            if (event.key !== "Escape" || !picker) return;
+            event.preventDefault(); event.stopPropagation();
+            setModelPickerOpen(picker, false, true);
+        });
         for (const type of ["change", "blur", "keyup", "pointerup", "pointercancel"]) this.on(this.container, type, () => this.commitGesture());
         this.on(this.host, "pointerdown", () => this.beginCameraNavigation(), { capture: true });
         this.on(this.host, "pointermove", () => { if (this.canEditCamera() && this.history?.pending) this.sync(); });
@@ -951,7 +1012,13 @@ class CGCreatorWidget {
     }
 
     on(target, type, callback, options = {}) { target.addEventListener(type, callback, { ...options, signal: this.events.signal }); }
-    message(text, error = false, showText = false) { if (!this.disposed) { this.status.textContent = error || showText ? text : this.modelError || this.libraryError || (this.characters?.entries.size ? "Drag joints to pose · Select a joint to rotate · Right-drag to look · Ctrl Z to undo" : CAMERA_HINT); this.status.classList.toggle("error", error || Boolean(this.modelError || this.libraryError)); } }
+    message(text, error = false, showText = false) {
+        if (this.disposed) return;
+        const failure = error || Boolean(this.modelError || this.libraryError);
+        this.status.textContent = error || showText ? text : this.modelError || this.libraryError || CAMERA_HINT;
+        this.status.classList.toggle("error", failure);
+        this.status.classList.toggle("is-visible", failure || showText);
+    }
     async request(path, options = {}) {
         const response = await this.api.fetchApi(BASE + path, { ...options, signal: this.events.signal }), result = await response.json();
         if (!response.ok) { const error = new Error(result.error || `Request failed: HTTP ${response.status}`); error.status = response.status; throw error; }
@@ -1026,11 +1093,18 @@ class CGCreatorWidget {
         const runtime = await this.characterRuntime;
         if (this.disposed) throw new Error("CG Creator was removed.");
         this.characters ||= new CGCharacterEditor(this.viewer, runtime, {
+            getScene: () => this.selectedScene(),
             canEdit: () => this.canEditCamera() && !this.document?._recovery && !this.document?.archived,
             onStart: () => this.beginGesture(), onChange: () => { this.sync(); this.characterPanel?.refresh(); }, onEnd: () => { this.commitGesture(); this.characterPanel?.refresh(); },
         });
         this.characterPanel ||= new CGCharacterPanel(this);
         return this.characters;
+    }
+    addCharacter(editor = this.characters) {
+        if (!editor || !this.canEditCamera()) return;
+        this.beginGesture();
+        editor.add(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""));
+        this.commitGesture(); this.updateControls();
     }
     captureScene(options, mode) {
         if (options.cameraState && this.selectedScene()?.background_settings?.provider === "moge") {
@@ -1056,7 +1130,7 @@ class CGCreatorWidget {
         this.container.querySelector("[data-save-view]").disabled = !this.canEditCamera() || Boolean(this.document?._recovery || this.document?.archived);
         const expand = this.container.querySelector("[data-expand-scene]");
         const savedScene = this.selectedScene();
-        expand.hidden = !["moge", "worldmirror"].includes(savedScene?.background_settings?.provider);
+        const waitingForScene = !savedScene && Boolean(this.state?.model_id) && !this.modelError;
         expand.disabled ||= !this.canEditCamera();
         if (savedScene?.can_expand) expand.removeAttribute("title");
         else expand.setAttribute("title", "Recreate this model to save its reconstruction frames");
@@ -1094,13 +1168,23 @@ class CGCreatorWidget {
             this.container.querySelector("[data-approve-expansion-frame]").disabled ||= ![this.expansionBefore, this.expansionAfter]
                 .every(image => image.complete && image.naturalWidth > 0);
         }
-        this.container.querySelector('[data-action="model"]').disabled ||= !this.state?.selected_image_id;
-        this.container.querySelector("[data-model-provider]").disabled ||= !this.document;
-        this.qi2?.setDisabled(this.busy || this.restoring || !this.document || Boolean(frameId || this.state?.job || this.document?._recovery || this.document?.archived));
+        const modelAction = this.container.querySelector('[data-action="model"]');
+        modelAction.disabled ||= !this.state?.selected_image_id;
+        const modelLabel = latestModel(this.document, this.state) ? "Regenerate model" : "Generate model";
+        if (modelAction.textContent !== modelLabel) modelAction.textContent = modelLabel;
+        const provider = this.container.querySelector("[data-model-provider]");
+        provider.disabled ||= !this.document;
+        this.container.querySelector("[data-model-settings]").disabled ||= !this.document;
+        this.container.querySelector("[data-toggle-cg-settings]").disabled = false;
+        this.qi2?.setDisabled(this.settingsCollapsed || this.busy || this.restoring || !this.document
+            || Boolean(frameId || this.expansionId || this.state?.job || this.document?._recovery || this.document?.archived));
+        for (const picker of this.container.querySelectorAll("[data-sakura-picker].is-open")) {
+            if (picker.querySelector(".is-picker-head").disabled || picker.closest("[inert]")) setModelPickerOpen(picker, false);
+        }
         this.updateSourceScroll();
         this.customSelects?.syncSelects();
         this.host.inert = !this.canEditCamera();
-        const toolbar = this.container.querySelector(".bg-camera-toolbar"), hidden = Boolean(this.previewSource || !this.selectedScene());
+        const toolbar = this.container.querySelector(".bg-camera-toolbar"), hidden = Boolean(this.previewSource || (!savedScene && !waitingForScene));
         toolbar.style.visibility = hidden ? "hidden" : ""; toolbar.style.opacity = hidden ? "0" : ""; toolbar.inert = hidden;
         this.container.querySelector("[data-model-status]").textContent = this.busy && this.activeAction === "model" ? "Creating model…"
             : this.modelError ? "Model unavailable" : !this.state?.model_id ? "Model not created" : this.loadingModel || this.backgroundTransition ? "Loading model…" : "Model ready";
@@ -1455,17 +1539,19 @@ class CGCreatorWidget {
         this.renderSourceCards(choices, selected?.key);
         const selectedProvider = this.state.model_settings.provider;
         const provider = Object.hasOwn(MODEL_NAMES, selectedProvider) ? selectedProvider : MODEL_DEFAULTS.provider;
-        this.container.querySelector("[data-model-provider]").value = provider;
-        const card = this.container.querySelector("[data-model-settings]");
-        card.setAttribute("aria-label", `${MODEL_NAMES[provider]} settings`);
+        const card = this.container.querySelector("[data-model-provider]");
         card.querySelector(".vnccs-common-creator-model-card-name").textContent = MODEL_NAMES[provider];
-        card.querySelector(".vnccs-common-creator-model-card-desc").textContent = provider === "moge" ? "Textured GLB mesh" : "Multi-view Gaussian splat";
+        card.querySelector(".vnccs-common-creator-model-card-desc").textContent = MODEL_DESCRIPTIONS[provider];
+        const gear = this.container.querySelector("[data-model-settings]");
+        gear.title = `${MODEL_NAMES[provider]} settings`; gear.setAttribute("aria-label", gear.title);
+        for (const option of this.container.querySelectorAll("[data-scene-provider]")) {
+            const selected = option.dataset.sceneProvider === provider;
+            option.classList.toggle("is-selected", selected);
+            option.setAttribute("aria-pressed", String(selected));
+        }
         const visible = Boolean(this.selectedScene()); this.host.hidden = !visible; this.container.querySelector("[data-viewer-empty]").hidden = visible;
-        const kind = this.container.querySelector("[data-model-kind]");
-        kind.hidden = !visible;
-        kind.textContent = this.scene?.objects[0]?.asset_kind === "mesh" ? "Textured mesh" : "Raw splat";
         this.container.querySelector("[data-viewer-empty]").textContent = this.modelError || (latestModel(this.document, this.state)
-            ? "Loading the saved model…" : "Select a saved background and create its model.");
+            ? "Loading the saved model…" : "Select a saved background and generate its model.");
         const gallery = this.container.querySelector("[data-cgs]");
         const cgs = imageCGs(this.document, this.state).reverse();
         const galleryKey = JSON.stringify([cgs.map(cg => [cg.cg_id, cg.name, cg.url, cg.width, cg.height]), this.pendingCG && [this.pendingCG.name, this.pendingCG.url, this.pendingCG.width, this.pendingCG.height]]);
@@ -1503,7 +1589,7 @@ class CGCreatorWidget {
             }
         }
         for (const card of gallery.querySelectorAll("[data-cg-id]")) card.classList.toggle("is-selected", card.dataset.cgId === this.state.selected_cg_id);
-        this.container.querySelector("[data-cg-count]").textContent = String(cgs.length + (this.pendingCG ? 1 : 0)); this.container.querySelector("[data-cg-empty]").hidden = Boolean(cgs.length || this.pendingCG);
+        this.container.querySelector("[data-cg-empty]").hidden = Boolean(cgs.length || this.pendingCG);
         this.qi2.render(this.config); this.container.querySelector("[data-aspect]").value = this.state.settings.aspect;
         this.customSelects.syncSelects(); this.customSelects.restoreView(view); this.updateControls(); for (const [element, top, left] of scroll) { element.scrollTop = top; element.scrollLeft = left; } this.resize();
     }
@@ -1653,10 +1739,34 @@ class CGCreatorWidget {
         const button = event.target.closest("button"); if (!button || !this.container.contains(button) || button.disabled) return; const epoch = this.epoch;
         let navigating = false;
         try {
+            if (button.hasAttribute("data-toggle-cg-settings")) {
+                this.settingsCollapsed = !this.settingsCollapsed;
+                this.container.querySelector(".cg-workspace").classList.toggle("is-settings-collapsed", this.settingsCollapsed);
+                button.textContent = this.settingsCollapsed ? "«" : "»";
+                button.title = this.settingsCollapsed ? "Show image generation settings" : "Hide image generation settings";
+                button.setAttribute("aria-label", button.title);
+                button.setAttribute("aria-expanded", String(!this.settingsCollapsed));
+                this.customSelects._closeDropdown?.(false);
+                this.updateControls();
+                return;
+            }
+            if (button.hasAttribute("data-model-provider")) {
+                const picker = button.closest("[data-sakura-picker]");
+                setModelPickerOpen(picker, !picker.classList.contains("is-open"));
+                return;
+            }
+            if (button.dataset.sceneProvider) {
+                setModelPickerOpen(button.closest("[data-sakura-picker]"), false, true);
+                if (button.dataset.sceneProvider !== this.state.model_settings.provider) {
+                    this.state.model_settings.provider = button.dataset.sceneProvider;
+                    this.markEdited(); this.render();
+                }
+                return;
+            }
             if (button.hasAttribute("data-expand-scene")) {
                 if (!this.canEditCamera() || this.expansionId) return;
                 if (!this.selectedScene().can_expand) {
-                    this.message("This model has no reconstruction frames. Use Create Model once, then try Expand Scene.", true);
+                    this.message("This model has no reconstruction frames. Use Regenerate model once, then try Expand Scene.", true);
                     return;
                 }
                 const camera = this.viewer.getCameraState();
@@ -1766,11 +1876,11 @@ class CGCreatorWidget {
             if (button.hasAttribute("data-add-character")) {
                 if (!this.canEditCamera()) return;
                 if (this.characters?.entries.size) { await this.characterPanel?.show(); return; }
-                this.beginGesture(); this.busy = true; this.updateControls();
+                this.busy = true; this.updateControls();
                 const editor = await this.ensureCharacters();
                 if (this.disposed || epoch !== this.epoch) return;
-                this.busy = false; editor.add(Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, "0")).join(""));
-                this.commitGesture(); this.updateControls(); await this.characterPanel?.show(); return;
+                this.busy = false; this.addCharacter(editor);
+                await this.characterPanel?.show(); return;
             }
             if (button.hasAttribute("data-recenter")) { this.beginGesture(); this.recenterCamera(this.scene, true); this.commitGesture(); return; }
             if (button.hasAttribute("data-enlarge")) { this.openPreview(); return; }
@@ -1851,9 +1961,6 @@ class CGCreatorWidget {
         try {
             if (control.hasAttribute("data-library")) { const id = control.value; if (!id || id === this.state.background_id) { control.value = this.state.background_id; return; } navigating = this.busy = true; this.updateControls(); epoch = ++this.epoch;
                 await this.switchBackground(await this.request(`/backgrounds/${id}`), epoch);
-            } else if (control.hasAttribute("data-model-provider")) {
-                if (control.disabled || !Object.hasOwn(MODEL_NAMES, control.value)) return;
-                this.state.model_settings.provider = control.value; this.markEdited(); this.render();
             } else if (control.hasAttribute("data-aspect")) { this.state.settings.aspect = control.value; this.updateFrame(); this.markEdited();
             }
         } catch (error) {
