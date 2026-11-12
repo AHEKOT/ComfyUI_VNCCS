@@ -461,7 +461,8 @@ def _overlap_faces(vertices, triangles, index, depths, calibrations, poses, came
         observed = depths[other, y, x]
         competing, own = qualities[other][y, x], own_quality[ids]
         comparable = np.abs(z - observed) <= 0.06 * z
-        wins = (competing > 1.2 * own) | ((other < index) & (competing >= own / 1.2))
+        # Pairwise quality tolerances let three views reject the same surface in a cycle.
+        wins = (competing > own) | ((other < index) & (competing == own))
         corroborated[ids[comparable]] = True
         contradicted[ids[(competing > 1.2 * own) & (z < 0.82 * observed)]] = True
         # Drop only faces fully covered by one observation. Different winners at the
