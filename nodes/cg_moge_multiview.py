@@ -2,7 +2,7 @@
 
 import json
 import math
-from itertools import combinations
+from itertools import combinations, product
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,7 +10,13 @@ import numpy as np
 from PIL import Image
 
 
-REFINED_MOGE_VIEWS = (("up", (0, -2, 0)), ("forward", (0, 0, 2)), ("right", (1, 0, 0)), ("left", (-1, 0, 0)))
+REFINED_MOGE_VIEWS = (("up", (0, -2, 0)), ("right", (1, 0, 0)), ("left", (-1, 0, 0)))
+ADDITIONAL_MOGE_VIEWS = (("up-right", (2, -3, 1)), ("up-left", (-2, -3, 1)))
+LEGACY_MOGE_VIEWS = (REFINED_MOGE_VIEWS[0], ("forward", (0, 0, 2)), *REFINED_MOGE_VIEWS[1:])
+
+
+def refined_moge_views(additional_angles):
+    return REFINED_MOGE_VIEWS + ADDITIONAL_MOGE_VIEWS if additional_angles else REFINED_MOGE_VIEWS
 
 
 def require_colmap():
@@ -23,7 +29,7 @@ def require_colmap():
     return pycolmap
 
 
-def _fit_shifted_camera(points, center, rotation, shape, calibration, check_cancel):
+def _camera_coverage_probe(points, shape, calibration):
     import cv2
 
     height, width = shape
@@ -33,6 +39,19 @@ def _fit_shifted_camera(points, center, rotation, shape, calibration, check_canc
     probe_shape = (probe_height, probe_width)
     probe_calibration = calibration * np.array([[probe_width / width], [probe_height / height], [1.]])
     kernel = np.ones((3, 3), dtype=np.uint8)
+
+    def probe(center, rotation):
+        view = (points - center) @ rotation.T
+        ids, y, x, _ = _project_pixels(view[view[:, 2] > 0.05], None, probe_shape, probe_calibration)
+        occupied = np.zeros(probe_shape, dtype=np.uint8)
+        occupied[y, x] = 1
+        return cv2.morphologyEx(occupied, cv2.MORPH_CLOSE, kernel), len(ids) / len(points)
+
+    return probe, probe_shape
+
+
+def _fit_shifted_camera(points, center, rotation, shape, calibration, check_cancel):
+    probe, (probe_height, probe_width) = _camera_coverage_probe(points, shape, calibration)
     upper_view = center[1] < 0
     sign = np.sign(center[0])
     rotation = rotation.astype(np.float32)
@@ -41,11 +60,7 @@ def _fit_shifted_camera(points, center, rotation, shape, calibration, check_canc
     nearby = points[(points[:, 1] > center[1] - 0.08) & (points[:, 1] < 0.08) & (points[:, 2] < 0.5)]
 
     def measure(candidate):
-        view = (points - candidate) @ rotation.T
-        ids, y, x, _ = _project_pixels(view[view[:, 2] > 0.05], None, probe_shape, probe_calibration)
-        occupied = np.zeros(probe_shape, dtype=np.uint8)
-        occupied[y, x] = 1
-        occupied = cv2.morphologyEx(occupied, cv2.MORPH_CLOSE, kernel)
+        occupied, overlap = probe(candidate, rotation)
         if upper_view:
             edge = occupied[::-1, probe_width // 5:4 * probe_width // 5].T
         else:
@@ -53,7 +68,7 @@ def _fit_shifted_camera(points, center, rotation, shape, calibration, check_canc
             if sign < 0:
                 edge = edge[:, ::-1]
         gaps = np.where(edge.any(axis=1), edge.argmax(axis=1), edge_extent)
-        return np.quantile(gaps, 0.65) / edge_extent, occupied.mean(), len(ids) / len(points)
+        return np.quantile(gaps, 0.65) / edge_extent, occupied.mean(), overlap
 
     edge_margin = 1 / edge_extent
     initial_gap, initial_coverage, initial_overlap = measure(center.astype(np.float32))
@@ -82,7 +97,48 @@ def _fit_shifted_camera(points, center, rotation, shape, calibration, check_canc
     return best_center
 
 
-def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
+def _diagonal_rotation(sign, yaw=20, pitch=24):
+    yaw = math.radians(sign * yaw)
+    pitch = math.radians(pitch)
+    sy, cy = math.sin(yaw), math.cos(yaw)
+    sp, cp = math.sin(pitch), math.cos(pitch)
+    return np.array(((cy, 0, sy), (sp * sy, cp, -sp * cy), (-cp * sy, sp, cp * cy)), dtype=np.float32)
+
+
+def _fit_diagonal_camera(points, center, rotation, shape, calibration, check_cancel):
+    probe, (height, width) = _camera_coverage_probe(points, shape, calibration)
+    sign = np.sign(center[0])
+    band = max(2, min(height, width) // 10)
+    nearby = points[(points[:, 0] * sign >= -0.08) & (points[:, 0] * sign <= 0.44)
+                    & (points[:, 1] >= -0.56) & (points[:, 1] <= 0.08) & (points[:, 2] <= 0.50)]
+    center = center.astype(np.float32)
+    _, initial_overlap = probe(center, rotation)
+    best_center, best_rotation = center, rotation
+    best_score = -math.inf
+    angles = [(yaw, pitch, _diagonal_rotation(sign, yaw, pitch))
+              for yaw, pitch in product((12, 20, 28), (16, 24, 32))]
+    for side, rise, forward in product((0.14, 0.24, 0.34), (0.24, 0.36, 0.48), (0., 0.14, 0.28, 0.42)):
+        check_cancel()
+        candidate = np.array([sign * side, -rise, forward], dtype=np.float32)
+        if len(nearby):
+            along = ((nearby @ candidate) / (candidate @ candidate)).clip(0, 1)
+            if np.any(np.linalg.norm(nearby - along[:, None] * candidate, axis=1) < 0.08):
+                continue
+        travel = np.linalg.norm(candidate - center)
+        for yaw, pitch, candidate_rotation in angles:
+            occupied, overlap = probe(candidate, candidate_rotation)
+            if overlap < 0.80 * initial_overlap:
+                continue
+            edge = min(occupied[:band].mean(), occupied[-band:].mean(),
+                       occupied[:, :band].mean(), occupied[:, -band:].mean())
+            score = occupied.mean() + 0.65 * edge + 0.10 * overlap - 0.16 * travel
+            score -= 0.003 * (abs(yaw - 20) + abs(pitch - 24))
+            if score > best_score:
+                best_score, best_center, best_rotation = score, candidate, candidate_rotation
+    return best_center, best_rotation
+
+
+def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True, additional_angles=False):
     import torch
     from torch.nn.functional import grid_sample
     from comfy.model_management import get_torch_device
@@ -115,22 +171,29 @@ def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
     if turn_camera and len(vertices) >= 512:
         sample_ids = np.random.default_rng(0).choice(len(vertices), min(24_000, len(vertices)), replace=False)
         probe_points = vertices[torch.as_tensor(sample_ids, device=device)].cpu().numpy()
-    poses = np.repeat(np.eye(4)[None], 1 + len(REFINED_MOGE_VIEWS), axis=0)
+    directions = refined_moge_views(additional_angles) if turn_camera else LEGACY_MOGE_VIEWS
+    poses = np.repeat(np.eye(4)[None], 1 + len(directions), axis=0)
     views = []
     sine, cosine = math.sin(math.radians(20)), math.cos(math.radians(20))
-    for index, (name, direction) in enumerate(REFINED_MOGE_VIEWS, 1):
+    for index, (name, direction) in enumerate(directions, 1):
         check_cancel()
         center = 0.12 * np.asarray(direction)
         rotation = poses[index, :3, :3]
-        if turn_camera and name == "up":
+        if turn_camera and direction[0] and direction[1]:
+            rotation[:] = _diagonal_rotation(np.sign(center[0]))
+            if probe_points is not None:
+                center, fitted_rotation = _fit_diagonal_camera(
+                    probe_points, center, rotation.astype(np.float32), (height, width), calibration, check_cancel)
+                rotation[:] = fitted_rotation
+        elif turn_camera and name == "up":
             rotation[:] = ((1, 0, 0), (0, cosine, -sine), (0, sine, cosine))
         elif turn_camera and name in ("right", "left"):
             yaw = sine if name == "right" else -sine
             rotation[:] = ((cosine, 0, yaw), (0, 1, 0), (-yaw, 0, cosine))
-        if probe_points is not None and name != "forward":
+        if probe_points is not None and name in ("up", "right", "left"):
             center = _fit_shifted_camera(probe_points, center, rotation, (height, width), calibration, check_cancel)
         view = vertices - vertices.new_tensor(center)
-        if turn_camera and name != "forward":
+        if turn_camera:
             view = view @ vertices.new_tensor(rotation.T)
         z = view[:, 2]
         view[:, 0] += z * ((cx - width * 0.5) / fx)
@@ -173,8 +236,9 @@ def _colmap_matches(colmap, database):
 
 def register_views(images, check_cancel, *, diagnostics=None, focal_length=None, capture_holes=None):
     colmap = require_colmap()
-    if diagnostics is not None and len(images) == len(REFINED_MOGE_VIEWS) + 1 and focal_length is not None:
-        labels = ["original", *(name for name, _ in REFINED_MOGE_VIEWS)]
+    directions = refined_moge_views(len(images) == len(refined_moge_views(True)) + 1)
+    if diagnostics is not None and len(images) == len(directions) + 1 and focal_length is not None:
+        labels = ["original", *(name for name, _ in directions)]
         names = [f"{index:02}-{label}.png" for index, label in enumerate(labels)]
     else:
         names = [f"{index:02}.png" for index in range(len(images))]
@@ -538,7 +602,8 @@ def _overlap_faces(vertices, triangles, index, depths, calibrations, poses, came
     return covered | (contradicted & ~corroborated)[triangles].all(axis=1)
 
 
-def _restore_reference_coverage(surfaces, shape, calibration, check_cancel):
+def _restore_reference_coverage(surfaces, shape, calibration, check_cancel, *,
+                                reference_to_camera=None, source_index=None):
     import torch
     from comfy_extras.sam3d_body.rasterizer import _rasterize_person
 
@@ -559,10 +624,15 @@ def _restore_reference_coverage(surfaces, shape, calibration, check_cancel):
     # A replacement must cover the same pixels after meshing and culling.
     for recover in (False, True):
         for index, (vertices, faces, dropped, _) in enumerate(surfaces):
+            if recover and source_index is not None and index != source_index:
+                continue
             selected = torch.where(dropped == recover)[0]
             if not len(selected):
                 continue
-            view = vertices / unit
+            if reference_to_camera is None:
+                view = vertices / unit
+            else:
+                view = (vertices @ reference_to_camera[:3, :3].T + reference_to_camera[:3, 3]) / unit
             view[:, :2] = view[:, :2] * scale + view[:, 2:] * shift
 
             def shade(ids, _weights):
@@ -642,8 +712,12 @@ def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_can
         points = torch.stack((view_depth * x, view_depth * y[:, None], view_depth), dim=-1)
         view = {"points": points.unsqueeze(0), "depth": view_depth.unsqueeze(0), "intrinsics": calibration}
         mesh, = call_node("MoGePointMapToMesh", moge_geometry=view, batch_index=0, texture=False,
-                          decimation=stride, discontinuity_threshold=0.04)
+                          decimation=stride, discontinuity_threshold=0.)
         verts, triangles = mesh.vertices[0] * flip_yz, mesh.faces[0].long()
+        # Reject triangles across depth jumps without cutting a strip along either surface.
+        corner_depths = verts[:, 2][triangles]
+        near = corner_depths.amin(dim=1)
+        triangles = triangles[(corner_depths.amax(dim=1) - near) <= 0.04 * near]
         covered = _overlap_faces(np.asarray(verts), triangles.numpy(), index, depth_maps, calibrations, poses,
                                  camera_to_world, qualities, interiors)
         transform = torch.from_numpy(poses[0] @ camera_to_world[index]).float()
@@ -651,6 +725,12 @@ def _mesh_moge_surfaces(depth, images, calibrations, poses, call_node, check_can
 
     if any(dropped.any() for _, _, dropped, _ in surfaces):
         _restore_reference_coverage(surfaces, (height, width), calibrations[0], check_cancel)
+        # Keep coverage checks bounded to the initial capture set as expansions add views.
+        for index in range(1, min(count, 1 + len(refined_moge_views(True)))):
+            if surfaces[index][2].any():
+                transform = torch.from_numpy(poses[index] @ camera_to_world[0]).float()
+                _restore_reference_coverage(surfaces, (height, width), calibrations[index], check_cancel,
+                                            reference_to_camera=transform, source_index=index)
 
     offset = 0
     for index, (verts, triangles, dropped, uv) in enumerate(surfaces):

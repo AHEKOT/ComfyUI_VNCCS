@@ -257,14 +257,17 @@ def test_moge_fusion_uses_closer_view_for_shared_surface(monkeypatch):
     assert torch.all(mesh.uvs[0, :, 0] > 0.5)
 
 
-def test_moge_fusion_restores_only_faces_that_cover_missing_reference_pixels(monkeypatch):
+@pytest.mark.parametrize("upper_view", [False, True])
+def test_moge_fusion_restores_only_faces_that_cover_missing_reference_pixels(monkeypatch, upper_view):
     torch = pytest.importorskip("torch")
     import numpy as np
 
     multiview = load("nodes.cg_moge_multiview")
 
-    def rasterize(_view, faces, _focal, width, height, depth, owners, visible, shade):
+    def rasterize(view, faces, _focal, width, height, depth, owners, visible, shade):
         assert (height, width) == (2, 4)
+        if upper_view:
+            torch.testing.assert_close(view[0, 0], view.new_tensor(2_000.))
         pixels = (faces[:, 0] == 4).long()
         wins = depth[pixels] > 1
         ids = torch.where(wins)[0]
@@ -277,12 +280,42 @@ def test_moge_fusion_restores_only_faces_that_cover_missing_reference_pixels(mon
     vertices = torch.ones((8, 3))
     faces = torch.tensor([[0, 1, 2], [0, 1, 3], [4, 5, 6], [5, 6, 7]])
     dropped = torch.tensor([False, True, True, True])
-    multiview._restore_reference_coverage([(vertices, faces, dropped, None)], (1, 2), np.eye(3), lambda: None)
+    surfaces = [(vertices, faces, dropped, None)]
+    if upper_view:
+        other = torch.ones(4, dtype=torch.bool)
+        surfaces.insert(0, (vertices, faces, other, None))
+        transform = torch.eye(4)
+        transform[0, 3] = 1.
+        multiview._restore_reference_coverage(surfaces, (1, 2), np.diag([1., 1., 1.]), lambda: None,
+                                              reference_to_camera=transform, source_index=1)
+        assert other.all()
+    else:
+        multiview._restore_reference_coverage(surfaces, (1, 2), np.eye(3), lambda: None)
     assert dropped.tolist() == [False, True, False, False]
 
 
-@pytest.mark.parametrize("turn_camera", [True, False])
-def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera):
+def test_moge_mesh_preserves_a_surface_next_to_a_depth_jump():
+    torch = pytest.importorskip("torch")
+    import numpy as np
+
+    multiview = load("nodes.cg_moge_multiview")
+    depth = torch.tensor([[[2., 2.], [2., 8.]]])
+    image = torch.zeros(1, 2, 2, 3)
+
+    def triangulate(_name, *, moge_geometry, discontinuity_threshold, **_options):
+        assert discontinuity_threshold == 0.
+        points = moge_geometry["points"].reshape(1, 4, 3)
+        return (types.SimpleNamespace(vertices=points * torch.tensor([1, -1, -1]),
+            faces=torch.tensor([[[0, 2, 1], [1, 2, 3]]]), uvs=torch.zeros(1, 4, 2)),)
+
+    cameras = {"intrinsics": [np.eye(3)], "world_to_camera": [np.eye(4)], "depth_scales": [1.]}
+    mesh = multiview.fuse_moge_views(depth, image, cameras, triangulate, lambda: None)
+    assert mesh.faces.tolist() == [[[0, 2, 1]]]
+    assert mesh.vertices[0, :, 2].tolist() == [-2.] * 3
+
+
+@pytest.mark.parametrize(("turn_camera", "additional_angles"), [(True, False), (True, True), (False, False)])
+def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_camera, additional_angles):
     torch = pytest.importorskip("torch")
     import numpy as np
 
@@ -303,14 +336,22 @@ def test_shifted_views_render_and_save_the_same_camera_pose(monkeypatch, turn_ca
                                 vertices=(points * torch.tensor([1., -1., -1.]))[None],
                                 faces=torch.tensor([[[0, 1, 2]]]), uvs=torch.zeros(1, 3, 2))
     intrinsics = torch.tensor([[1., 0., .5], [0., 1., .5], [0., 0., 1.]])
-    views, _, poses = multiview.render_shifted_views(mesh, intrinsics, lambda: None, turn_camera=turn_camera)
+    views, _, poses = multiview.render_shifted_views(
+        mesh, intrinsics, lambda: None, turn_camera=turn_camera, additional_angles=additional_angles)
 
-    expected_centers = [[0, -.48, 0], [0, 0, .48], [.24, 0, 0], [-.24, 0, 0]]
-    np.testing.assert_allclose(np.linalg.inv(poses[1:])[:, :3, 3], expected_centers, atol=1e-8)
     sine, cosine = np.sin(np.deg2rad(20)), np.cos(np.deg2rad(20))
-    expected_look = [[0, sine, cosine], [0, 0, 1], [-sine, 0, cosine], [sine, 0, cosine]]
-    if not turn_camera:
+    if turn_camera:
+        expected_centers = [[0, -.48, 0], [.24, 0, 0], [-.24, 0, 0], [.48, -.72, .24], [-.48, -.72, .24]]
+        down, forward = np.sin(np.deg2rad(24)), np.cos(np.deg2rad(24))
+        expected_look = [[0, sine, cosine], [-sine, 0, cosine], [sine, 0, cosine],
+                         [-forward * sine, down, forward * cosine], [forward * sine, down, forward * cosine]]
+    else:
+        expected_centers = [[0, -.48, 0], [0, 0, .48], [.24, 0, 0], [-.24, 0, 0]]
         expected_look = [[0, 0, 1]] * 4
+    if turn_camera and not additional_angles:
+        expected_centers = expected_centers[:3]
+        expected_look = expected_look[:3]
+    np.testing.assert_allclose(np.linalg.inv(poses[1:])[:, :3, 3], expected_centers, atol=1e-8)
     np.testing.assert_allclose(poses[1:, 2, :3], expected_look)
     for view, actual, pose in zip(views, rendered, poses[1:], strict=True):
         expected = points.numpy() @ pose[:3, :3].T + pose[:3, 3]
@@ -347,8 +388,9 @@ def test_side_camera_reaches_the_source_edge_and_preserves_overlap(sign):
     assert sign * fitted[0] >= abs(original[0]) and fitted[2] > 0
 
 
-@pytest.mark.parametrize("reject_first_view", [False, True])
-def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(workspace, monkeypatch, reject_first_view):
+@pytest.mark.parametrize(("reject_first_view", "additional_angles"), [(False, False), (False, True), (True, True)])
+def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
+        workspace, monkeypatch, reject_first_view, additional_angles):
     torch = pytest.importorskip("torch")
     import numpy as np
 
@@ -364,14 +406,16 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     export = mock.Mock(return_value=(types.SimpleNamespace(get_bytes=lambda: b"glTF fixture"),))
     monkeypatch.setattr(service, "_call_comfy_node", lambda name, **kwargs: (
         (mesh,) if name == "MoGePointMapToMesh" else export(**kwargs)))
-    poses = np.repeat(np.eye(4)[None], 5, axis=0)
-    poses[1:, :3, 3] = [[0, .48, 0], [0, 0, -.48], [-.24, 0, 0], [.24, 0, 0]]
+    view_count = 5 if additional_angles else 3
+    poses = np.repeat(np.eye(4)[None], view_count + 1, axis=0)
+    poses[1:, :3, 3] = [[0, .48, 0], [-.24, 0, 0], [.24, 0, 0], [-.48, .72, -.24], [.48, .72, -.24]][:view_count]
 
-    def capture(*_args):
+    def capture(*_args, additional_angles):
+        assert additional_angles == (view_count == 5)
         image = infer.call_args.args[0]
         height, width = image.shape[1:3]
         frames = [(torch.full_like(image, value), np.zeros((height, width), dtype=bool),
-                   np.full((height, width), 6.)) for value in (0.25, 0.5, 0.75, 1.)]
+                   np.full((height, width), 6.)) for value in (0.2, 0.4, 0.6, 0.8, 1.)[:view_count]]
         focal = 1.5 * height
         return frames, np.array([[focal, 0, width / 2], [0, focal, height / 2], [0, 0, 1]]), poses
 
@@ -388,7 +432,7 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
 
     monkeypatch.setattr(service, "generate_image", refine)
     observed = np.array([[i + .5, i + .5, 6.] for i in range(8)])
-    matcher = mock.Mock(side_effect=[np.empty((0, 3)) if reject_first_view else observed, observed, observed, observed])
+    matcher = mock.Mock(side_effect=[np.empty((0, 3)) if reject_first_view else observed, *[observed] * (view_count - 1)])
     monkeypatch.setattr(multiview, "capture_depth_tracks", matcher)
     require = mock.Mock(side_effect=AssertionError("Refine views must not require COLMAP"))
     register = mock.Mock(side_effect=AssertionError("Refine views must use the known cameras"))
@@ -398,18 +442,20 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     monkeypatch.setattr(multiview, "fuse_moge_views", merge)
     document = workspace.document
     settings = service.normalize_settings({"resolution_mp": 3, "generation": {"cache_device": "cpu"}})
-    service.start_job(document["background_id"], job_payload(document, "model", settings=settings,
-        model_settings={"provider": "moge", "moge_resolution_mp": 0.05}))
+    options = {"provider": "moge", "moge_resolution_mp": 0.05}
+    if additional_angles:
+        options["moge_additional_angles"] = True
+    service.start_job(document["background_id"], job_payload(document, "model", settings=settings, model_settings=options))
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
-    assert [len(call.args[0]) for call in infer.call_args_list] == [1, 4]
+    assert [len(call.args[0]) for call in infer.call_args_list] == [1, view_count]
     assert rasterize.call_args.args[:2] == (mesh, calibration)
-    assert seen == [63, 127, 191, 255]
+    assert seen == [51, 102, 153, 204, 255][:view_count]
     require.assert_not_called()
     register.assert_not_called()
     merge.assert_called_once()
     depths, images, cameras, *_ = merge.call_args.args
-    retained = [0, 2, 3, 4] if reject_first_view else [0, 1, 2, 3, 4]
+    retained = [index for index in range(view_count + 1) if index != 1 or not reject_first_view]
     assert len(depths) == len(images) == len(retained)
     assert (images[:, 0, 0, 0] * 255).round().tolist() == [[255, *seen][i] for i in retained]
     np.testing.assert_array_equal(cameras["world_to_camera"], poses[retained])
@@ -423,7 +469,9 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     diagnostics = library.root().parent / "CG_MoGe_Diagnostics" / job["job_id"]
     with Image.open(diagnostics / "image_1.png") as image:
         assert image.getpixel((0, 0)) == (255, 0, 0)
-    for view, pixel in zip(("01-up", "02-forward", "03-right", "04-left"), seen):
+    views = ("01-up", "02-right", "03-left", "04-up-right", "05-up-left")[:view_count]
+    assert {entry.name for entry in diagnostics.iterdir() if entry.is_dir()} == set(views)
+    for view, pixel in zip(views, seen, strict=True):
         for file in ("image_2.png", "qi2_result.png", "reconstruction_frame.png"):
             with Image.open(diagnostics / view / file) as image:
                 assert image.getpixel((0, 0)) == (pixel,) * 3
@@ -898,19 +946,19 @@ def test_late_cg_cannot_publish_after_the_source_pixels_change(workspace):
     assert not (source.parent / "CG").exists()
 
 
-@pytest.mark.parametrize(("size", "expected_size", "sky", "precision", "max_splats", "camera_source"), [
-    (2048, 2044, True, "convrot4", 2_000_000, "camera_inputs"),
-    (1022, 1022, False, "convrot8", 5_000_000, "predicted"),
+@pytest.mark.parametrize(("size", "expected_size", "sky", "precision", "max_splats", "camera_source", "additional_angles"), [
+    (2048, 2044, True, "convrot4", 2_000_000, "camera_inputs", False),
+    (1022, 1022, False, "convrot8", 5_000_000, "predicted", True),
 ])
 def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkeypatch, size, expected_size, sky, precision, max_splats,
-                                                             camera_source):
+                                                             camera_source, additional_angles):
     torch = pytest.importorskip("torch")
     pytest.importorskip("cv2")
     import numpy as np
 
     mirror = load("nodes.world_mirror_v2")
     monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
-    batch = torch.zeros(5, 64, 128, 3)
+    batch = torch.zeros(6 if additional_angles else 4, 64, 128, 3)
     model = object()
     loader = mock.Mock(return_value=(model,))
     monkeypatch.setattr(mirror.VNCCS_WorldMirrorV2Loader, "load_model", loader)
@@ -934,6 +982,8 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
     settings = {"provider": "worldmirror", "worldmirror_target_size": size, "worldmirror_apply_sky_mask": sky,
                 "worldmirror_precision": precision, "worldmirror_max_splats": max_splats, "worldmirror_resolution_mp": 1.5,
                 "worldmirror_camera_source": camera_source}
+    if additional_angles:
+        settings["worldmirror_additional_angles"] = True
     service.start_job(document["background_id"], job_payload(document, "model", model_settings=settings, source_variant=variant))
     job = workspace.run_pending()
     assert job["status"] == "completed", job["error"]
@@ -942,6 +992,7 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
     (loaded, image), options = predicted.call_args
     assert predicted.call_count == 1 and loaded is model and image is batch
     refine.assert_called_once()
+    assert refine.call_args.kwargs["additional_angles"] is additional_angles
     assert refine.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
     assert refine.call_args.args[2]["resolution_mp"] == 1.5
     assert refine.call_args.args[2]["generation"]["cache_device"] == "off"
@@ -995,15 +1046,15 @@ def test_moge_model_job_uses_native_nodes_and_saves_source_camera(workspace, mon
     monkeypatch.setattr(service, "_installed", lambda category: {
         "geometry_estimation": [checkpoint],
     }.get(category, []))
-    batch = torch.zeros(5, 64, 128, 3)
+    batch = torch.zeros(4, 64, 128, 3)
     multiview = load("nodes.cg_moge_multiview")
     focal = 32 / np.tan(np.deg2rad(47 / 2))
     poses = np.repeat(np.eye(4)[None], len(batch), axis=0)
     source_depth = torch.ones(batch.shape[1:3])
     tracks = np.array([[x + 0.5, 0.5, 1.] for x in range(8)])
     holes = np.zeros(batch.shape[1:3], dtype=bool)
-    frames = [(batch[:1], holes, source_depth.numpy())] * 4
-    refine = mock.Mock(return_value=(batch, focal, dict.fromkeys(range(1, 5), holes),
+    frames = [(batch[:1], holes, source_depth.numpy())] * (len(batch) - 1)
+    refine = mock.Mock(return_value=(batch, focal, dict.fromkeys(range(1, len(batch)), holes),
         (np.diag([focal, focal, 1]), poses, source_depth, frames)))
     monkeypatch.setattr(service, "_generate_refined_moge_views", refine)
     monkeypatch.setattr(multiview, "capture_depth_tracks", lambda *_args: tracks)
@@ -1036,7 +1087,7 @@ def test_moge_model_job_uses_native_nodes_and_saves_source_camera(workspace, mon
     assert torch.equal(merge.call_args.args[1], batch)
     assert refine.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
     assert calls[0] == ("LoadMoGeModel", {"model_name": checkpoint})
-    assert calls[1][0] == "MoGeInference" and calls[1][1]["batch_size"] == 4
+    assert calls[1][0] == "MoGeInference" and calls[1][1]["batch_size"] == 3
     assert calls[1][1]["fov_x_degrees"] == pytest.approx(np.rad2deg(2 * np.arctan(64 / focal)))
     assert calls[2] == ("MeshToFile3D", {"mesh": mesh})
     saved = library.load_background(document["background_id"])
