@@ -1762,8 +1762,12 @@ def _expansion_frame(model, frame_id):
     return folder, frame
 
 
-def _expansion_diagnostics(frame_id):
-    return _contained(root().parent, "CG_Expansion_Diagnostics", _id(frame_id))
+def _expansion_capture(folder, frame_id):
+    capture = _contained(folder, "capture.png")
+    if capture.is_file():
+        return capture
+    # Pending previews created by older versions stored the capture separately.
+    return _contained(root().parent, "CG_Expansion_Diagnostics", _id(frame_id), "capture.png")
 
 
 def expansion_frame_image(background_id, model_id, expansion_id, kind):
@@ -1771,7 +1775,7 @@ def expansion_frame_image(background_id, model_id, expansion_id, kind):
         directory, document, _ = _locate(background_id)
         folder, _ = _expansion_frame(_model_directory(directory, model_id, document), expansion_id)
         if kind == "before":
-            return _contained(_expansion_diagnostics(expansion_id), "capture.png")
+            return _expansion_capture(folder, expansion_id)
         if kind == "after":
             return _contained(folder, "frame.png")
         raise FileNotFoundError("Expansion frame image is unavailable")
@@ -1972,14 +1976,11 @@ def _infer_moge(images, fov_x=0.0):
     return geometry
 
 
-def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve_capture=False):
+def _generate_refined_moge_views(job, source, settings, *, preserve_capture=False):
     import torch
     from .cg_moge_multiview import REFINED_MOGE_VIEWS, composite_capture, render_shifted_views
 
     job_id, cancel = job["job_id"], job["cancel_event"]
-    diagnostics.mkdir(parents=True)
-    (diagnostics / "image_1.png").write_bytes(_image_bytes(source))
-    log_event("moge_diagnostics", component="CGCreator", job_id=job_id, directory=str(diagnostics))
     megapixels = math.floor(settings["resolution_mp"] * 10 + 0.5) / 10
     scale = min(math.sqrt(megapixels * 1e6 / (source.width * source.height)), 4000 / max(source.size))
     size = _qi2_capture_size(source.width * scale, source.height * scale)
@@ -1997,33 +1998,25 @@ def _generate_refined_moge_views(job, source, settings, diagnostics, *, preserve
         focal_length = float(intrinsics[1, 1]) * size[1]
         del geometry, mesh
 
-    (diagnostics / "cameras.json").write_bytes(_json_bytes({
-        "intrinsics": calibration.tolist(), "world_to_camera": poses.tolist(), "size": list(size),
-    }))
     generation = settings["generation"]
     settings = {**settings, "generation": {**generation, "seed": _resolve_seed(generation), "seed_mode": "fixed"}}
     raw_views = []
     capture_holes = {}
     for index, ((direction, _), (frame, holes, observed)) in enumerate(zip(REFINED_MOGE_VIEWS, frames, strict=True), 1):
-        view_dir = diagnostics / f"{index:02}-{direction}"
-        view_dir.mkdir()
         raw = _tensor_to_pil(frame)
         if raw.size != size or holes.shape != size[::-1] or observed.shape != size[::-1]:
             raise RuntimeError("Camera capture and its depth and mask must use the calibrated frame dimensions")
-        (view_dir / "image_2.png").write_bytes(_image_bytes(raw))
-        raw_views.append((view_dir, raw, observed))
+        raw_views.append((f"{index:02}-{direction}", raw, observed))
         capture_holes[index] = holes
     references = [images]
     view_progress = 0.46 / len(raw_views)
-    for index, (view_dir, raw, observed) in enumerate(raw_views):
+    for index, (view, raw, observed) in enumerate(raw_views):
         start = 0.12 + view_progress * index
-        log_event("moge_refine_view", component="CGCreator", job_id=job_id, view=view_dir.name)
+        log_event("moge_refine_view", component="CGCreator", job_id=job_id, view=view)
         refined, _ = generate_image(settings, job_id, cancel, raw, original, save_dataset=False,
                                     progress_range=(start, start + view_progress), preserve_capture_grid=True)
-        (view_dir / "qi2_result.png").write_bytes(_image_bytes(refined))
         if preserve_capture:
             refined = composite_capture(raw, refined, observed)
-            (view_dir / "reconstruction_frame.png").write_bytes(_image_bytes(refined))
         references.append(_pil_to_tensor(refined))
     return torch.cat(references), focal_length, capture_holes, (calibration, poses, source_depth, frames)
 
@@ -2169,15 +2162,12 @@ def _expand_moge_scene(job, values, images, scene, scene_directory):
         if cameras is None:
             cameras = _recover_initial_moge_cameras(images, depths, seed, check_cancel)
         _stage(job_id, cancel, "meshing", 0.86, "Fusing all calibrated MoGe views")
-        try:
-            pose, scale, offset = align_expansion_depth(path, camera, values["raw"], images[-1], depths[-1], focal, check_cancel)
-            cameras["intrinsics"].append(calibration)
-            cameras["world_to_camera"].append(pose.tolist())
-            cameras["depth_scales"].append(scale)
-            cameras.setdefault("depth_offsets", [0.] * (len(images) - 1)).append(offset)
-            mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
-        except ValueError as error:
-            raise ValueError(f"{error}. See {values['expansion_diagnostics']}.") from error
+        pose, scale, offset = align_expansion_depth(path, camera, values["raw"], images[-1], depths[-1], focal, check_cancel)
+        cameras["intrinsics"].append(calibration)
+        cameras["world_to_camera"].append(pose.tolist())
+        cameras["depth_scales"].append(scale)
+        cameras.setdefault("depth_offsets", [0.] * (len(images) - 1)).append(offset)
+        mesh = fuse_moge_views(depths, images, cameras, _call_comfy_node, check_cancel)
         _save_moge_mesh(job, scene, scene_directory, mesh, base["camera"])
     return cameras
 
@@ -2298,8 +2288,7 @@ def start_job(background_id, payload, raw_image=None):
                 folder, frame = _expansion_frame(model, values["expansion_frame_id"])
                 if frame["source_signature"] != values["source_signature"]:
                     raise BackgroundConflictError("Background source changed. Discard the expansion frame and try again")
-                values.update(expansion_frame=folder, model_camera=_camera(frame.get("camera")),
-                              expansion_diagnostics=_expansion_diagnostics(frame["frame_id"]))
+                values.update(expansion_frame=folder, model_camera=_camera(frame.get("camera")))
             elif _contained(model, ".expansion-frame").exists():
                 raise BackgroundConflictError("Confirm or discard the current expansion frame first")
             else:
@@ -2346,7 +2335,7 @@ def _expand_references(job, values):
                 holes[index] = np.asarray(stored.convert("L")) != 0
     with Image.open(_contained(values["expansion_frame"], "frame.png")) as stored:
         refined = stored.convert("RGB")
-    with Image.open(_contained(values["expansion_diagnostics"], "capture.png")) as stored:
+    with Image.open(_expansion_capture(values["expansion_frame"], values["expansion_frame_id"])) as stored:
         values["raw"] = stored.convert("RGB")
     if refined.size != original.size:
         raise ValueError("The approved expansion frame does not match the reconstruction dimensions")
@@ -2354,12 +2343,6 @@ def _expand_references(job, values):
 
 
 def _preview_expansion_frame(job, values):
-    diagnostics = _expansion_diagnostics(job["job_id"])
-    diagnostics.mkdir(parents=True)
-    (diagnostics / "capture.png").write_bytes(_image_bytes(values["raw"]))
-    if "model_camera" in values:
-        (diagnostics / "camera.json").write_bytes(_json_bytes(values["model_camera"]))
-    log_event("expansion_diagnostics", component="CGCreator", job_id=job["job_id"], directory=str(diagnostics))
     model = values["model_directory"]
     with Image.open(_contained(model, "reconstruction", "000000.png")) as stored:
         original = stored.convert("RGB")
@@ -2368,7 +2351,6 @@ def _preview_expansion_frame(job, values):
     settings = _reconstruction_generation(values["settings"], values["model_settings"])
     refined, _ = generate_image(settings, job["job_id"], job["cancel_event"], values["raw"], original,
                                 save_dataset=False, preserve_capture_grid=True)
-    (diagnostics / "qi2_result.png").write_bytes(_image_bytes(refined))
     if refined.size != original.size:
         # Older reconstructions store their cameras in a 16-pixel grid.
         refined = refined.resize(original.size, Image.Resampling.LANCZOS)
@@ -2393,6 +2375,7 @@ def _preview_expansion_frame(job, values):
         with tempfile.TemporaryDirectory(prefix=".expansion-frame-", dir=model) as temporary:
             stage = Path(temporary) / "preview"
             stage.mkdir()
+            (stage / "capture.png").write_bytes(_image_bytes(values["raw"]))
             (stage / "frame.png").write_bytes(_image_bytes(refined))
             (stage / "preview.json").write_bytes(_json_bytes({
                 "frame_id": job["job_id"], "source_signature": values["source_signature"],
@@ -2437,7 +2420,6 @@ def _execute(job, values):
                 temporary_scene_id = job["scene_id"] = scene["scene_id"]
                 scene_directory = factory.resolve_scene_dir(scene["scene_id"])
                 expanding = job["action"] == "expand"
-                diagnostics = _contained(root().parent, "CG_MoGe_Diagnostics", _id(job["job_id"]))
                 cameras = None
                 if expanding:
                     images, capture_holes = _expand_references(job, values)
@@ -2446,7 +2428,7 @@ def _execute(job, values):
                     with Image.open(image_path(job["background_id"], values["image_id"], values["source_variant"])) as source:
                         source_image = source.convert("RGB")
                     images, focal_length, capture_holes, known_views = _generate_refined_moge_views(
-                        job, source_image, _reconstruction_generation(values["settings"], settings), diagnostics,
+                        job, source_image, _reconstruction_generation(values["settings"], settings),
                         preserve_capture=settings["provider"] == "moge")
                 if settings["provider"] == "worldmirror":
                     if settings["camera_source"] == "camera_inputs":
@@ -2459,8 +2441,7 @@ def _execute(job, values):
                 elif use_colmap:
                     _stage(job["job_id"], job["cancel_event"], "calibrating", 0.60,
                            f"Estimating {len(images)} camera poses with COLMAP")
-                    diagnostics.mkdir(parents=True, exist_ok=True)
-                    colmap_views = register_views(images, lambda: runtime._check_cancel(job), diagnostics=diagnostics,
+                    colmap_views = register_views(images, lambda: runtime._check_cancel(job),
                                                   focal_length=None if expanding else focal_length, capture_holes=capture_holes)
                     images, capture_holes, cameras = _generate_moge_scene(job, images, scene, scene_directory,
                         capture_holes=capture_holes, known_views=None if expanding else known_views, colmap_views=colmap_views)

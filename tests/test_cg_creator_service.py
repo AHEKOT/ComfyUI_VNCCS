@@ -408,7 +408,7 @@ def test_side_camera_reaches_the_source_edge_and_preserves_overlap(sign):
 
 
 @pytest.mark.parametrize("reject_first_view", [False, True])
-def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
+def test_moge_refine_views_publishes_model_without_diagnostics(
         workspace, monkeypatch, reject_first_view):
     torch = pytest.importorskip("torch")
     import numpy as np
@@ -495,17 +495,7 @@ def test_moge_refine_views_keeps_diagnostics_and_publishes_only_the_final_model(
     assert len(saved["models"]) == 1 and not saved["cgs"]
     directory = library._model_directory(library.root() / saved["name"], saved["models"][0]["model_id"], saved)
     assert len(list((directory / "reconstruction").glob("[0-9]*.png"))) == len(retained)
-    diagnostics = library.root().parent / "CG_MoGe_Diagnostics" / job["job_id"]
-    with Image.open(diagnostics / "image_1.png") as image:
-        assert image.getpixel((0, 0)) == (255, 0, 0)
-    views = ("01-up", "02-right", "03-left")
-    assert {entry.name for entry in diagnostics.iterdir() if entry.is_dir()} == set(views)
-    for view, pixel in zip(views, seen, strict=True):
-        for file in ("image_2.png", "reconstruction_frame.png"):
-            with Image.open(diagnostics / view / file) as image:
-                assert image.getpixel((0, 0)) == (pixel,) * 3
-        with Image.open(diagnostics / view / "qi2_result.png") as image:
-            assert image.getpixel((0, 0)) == (pixel + 8,) * 3
+    assert not (library.root().parent / "CG_MoGe_Diagnostics").exists()
     assert not list(factory._factory_root().iterdir())
 
 
@@ -549,8 +539,7 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
     if provider_name == "moge":
         monkeypatch.setattr(runtime, "_model_operation_lock", lambda: service.threading.RLock(), raising=False)
 
-        def register(images, _check_cancel, **options):
-            assert options["diagnostics"].is_dir()
+        def register(images, _check_cancel, *, focal_length, capture_holes):
             tracks = np.column_stack((np.arange(8) + .5, np.arange(8) + .5, np.ones(8)))
             return np.array(cameras["intrinsics"][0]), np.repeat(pose[None], len(images), axis=0), [tracks] * len(images)
 
@@ -598,6 +587,7 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
     service.start_job(background_id, job_payload(document, "expand", model_camera=CAMERA), png(color="yellow"))
     frame = workspace.run_pending()
     assert frame["status"] == "completed", frame["error"]
+    assert not (library.root().parent / "CG_MoGe_Diagnostics").exists()
     frame_id = frame["result"]["expansion_frame_id"]
     saved_model = service.public_model(background_id, model_id)
     assert saved_model["expansion_frame_id"] == frame_id
@@ -611,6 +601,7 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
         assert response.status == 200
         with Image.open(response.path) as image:
             assert image.getpixel((0, 0)) == pixel
+    assert not (library.root().parent / "CG_Expansion_Diagnostics").exists()
     if save is None:
         response = call(routes, "DELETE", url + "/frame", Request(info=frame_info))
         assert response.status == 200, response.text
@@ -634,8 +625,6 @@ def test_expansion_keeps_references_and_geometry_private_until_save(workspace, m
             register.assert_not_called()
             assert torch.equal(torch.cat(inferred), calls[-1])
             assert align.call_args.args[1] == CAMERA
-        diagnostics = library.root().parent / "CG_Expansion_Diagnostics" / frame_id
-        assert (diagnostics / "capture.png").is_file() and (diagnostics / "qi2_result.png").is_file()
     elif camera_source == "camera_inputs":
         captured = worldmirror_batches[-1]
         assert captured["world_to_camera"][:5] == cameras["world_to_camera"]
@@ -1024,7 +1013,6 @@ def test_worldmirror_model_job_saves_native_splats_and_cameras(workspace, monkey
     assert refine.call_args.args[1].getpixel((0, 0)) == (255, 255, 0)
     assert refine.call_args.args[2]["resolution_mp"] == 1.5
     assert refine.call_args.args[2]["generation"]["cache_device"] == "off"
-    assert refine.call_args.args[-1].name == job["job_id"]
     if camera_source == "camera_inputs":
         torch.testing.assert_close(options.pop("camera_poses"), poses)
         torch.testing.assert_close(options.pop("camera_intrinsics"),

@@ -2,7 +2,6 @@
 
 import json
 import math
-from itertools import combinations
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -168,30 +167,16 @@ def render_shifted_views(mesh, intrinsics, check_cancel, *, turn_camera=True):
     return views, calibration, poses
 
 
-def _colmap_matches(colmap, database):
-    with colmap.Database.open(database) as db:
-        images = sorted(db.read_all_images(), key=lambda image: image.name)
-        keypoints = {image.name: db.num_keypoints_for_image(image.image_id) for image in images}
-        pairs = []
-        for first, second in combinations(images, 2):
-            ids = first.image_id, second.image_id
-            geometry = db.read_two_view_geometry(*ids) if db.exists_two_view_geometry(*ids) else None
-            pairs.append({"views": [first.name, second.name],
-                          "inliers": len(geometry.inlier_matches) if geometry is not None else 0,
-                          "geometry": colmap.TwoViewGeometryConfiguration(geometry.config).name if geometry is not None else None})
-    return {"keypoints": keypoints, "pairs": pairs}
-
-
-def register_views(images, check_cancel, *, diagnostics=None, focal_length=None, capture_holes=None):
+def register_views(images, check_cancel, *, focal_length=None, capture_holes=None):
     colmap = require_colmap()
-    if diagnostics is not None and len(images) == len(REFINED_MOGE_VIEWS) + 1 and focal_length is not None:
+    if len(images) == len(REFINED_MOGE_VIEWS) + 1 and focal_length is not None:
         labels = ["original", *(name for name, _ in REFINED_MOGE_VIEWS)]
         names = [f"{index:02}-{label}.png" for index, label in enumerate(labels)]
     else:
         names = [f"{index:02}.png" for index in range(len(images))]
     with TemporaryDirectory(prefix="vnccs-colmap-") as temporary:
         root = Path(temporary)
-        image_dir = root / "views" if diagnostics is None else diagnostics / "colmap"
+        image_dir = root / "views"
         image_dir.mkdir()
         for name, image in zip(names, images):
             check_cancel()
@@ -220,7 +205,6 @@ def register_views(images, check_cancel, *, diagnostics=None, focal_length=None,
         options.mapper.abs_pose_min_inlier_ratio = 0.20
         options.mapper.filter_max_reproj_error = verification.ransac.max_error
         options.triangulation.ignore_two_view_tracks = False
-        report_path = diagnostics / "colmap_report.json" if diagnostics is not None else None
         attempts = ("full", "masked") if capture_holes else ("full",)
         for attempt in attempts:
             if attempt == "masked":
@@ -239,29 +223,15 @@ def register_views(images, check_cancel, *, diagnostics=None, focal_length=None,
             check_cancel()
             colmap.match_exhaustive(database, matching_options=matching, verification_options=verification, device=colmap.Device.cpu)
             check_cancel()
-            if report_path is not None:
-                attempt_report = _colmap_matches(colmap, database)
-                if attempt == "full":
-                    report = attempt_report
-                else:
-                    report["masked_retry"] = attempt_report
-                report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             reconstructions = colmap.incremental_mapping(database, image_dir, root / attempt, options=options)
             check_cancel()
-            if report_path is not None:
-                attempt_report["registered_models"] = [
-                    sorted(model.image(image_id).name for image_id in model.reg_image_ids())
-                    for model in reconstructions.values()
-                ]
-                report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
             reconstruction = next((model for model in reconstructions.values() if model.num_reg_images() == len(names)), None)
             if reconstruction is not None:
                 registered = {image.name: image for image in map(reconstruction.image, reconstruction.reg_image_ids())}
                 break
         else:
-            failure = f"COLMAP could not register all {len(names)} views in one scene."
-            detail = f"See {report_path}." if report_path is not None else "The generated views must share consistent scene details."
-            raise ValueError(f"{failure} {detail}")
+            raise ValueError(f"COLMAP could not register all {len(names)} views in one scene. "
+                             "The generated views must share consistent scene details.")
 
         calibration = registered[names[0]].camera.calibration_matrix()
         if not np.isfinite(calibration).all() or min(calibration[0, 0], calibration[1, 1]) <= 0:
