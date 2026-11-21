@@ -1,0 +1,328 @@
+{
+  "id": "88fa1f42-af35-48d8-b12d-a941143c4906",
+  "revision": 0,
+  "last_node_id": 8,
+  "last_link_id": 14,
+  "nodes": [
+    {
+      "id": 3,
+      "type": "VNCCS_PoseManager",
+      "pos": [
+        -1540,
+        2310
+      ],
+      "size": [
+        1280,
+        940
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "pose_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "label": "images",
+          "name": "images",
+          "shape": 6,
+          "type": "IMAGE",
+          "links": [
+            10
+          ]
+        },
+        {
+          "name": "lighting_prompt",
+          "shape": 6,
+          "type": "STRING",
+          "links": [
+            14
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "04b2e9b58813626336f83807ccbb13a266240108",
+        "Node name for S&R": "VNCCS_PoseManager"
+      },
+      "widgets_values": [
+        "{\"schema_version\":3,\"active_character_id\":\"character-1\",\"characters\":[{\"id\":\"character-1\",\"slot\":0,\"name\":\"Main Character\",\"color\":\"#ffffff\",\"transform\":{\"x\":-1.4886344405371559,\"y\":-0.013884824083190512,\"z\":-0.19524445437885898,\"zoom\":1.1546367799412471},\"mesh\":{\"age\":40,\"gender\":1,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.650410479139609,\"shoulder_r_length\":0.7133715392187348,\"hip_l_length\":0.5367653461281827,\"hip_r_length\":0.5367653461281863,\"upper_arm_l_length\":0.7778374522400651,\"upper_arm_r_length\":0.7778374849264595,\"forearm_l_length\":0.580264299551644,\"forearm_r_length\":0.5803557825724879,\"thigh_l_length\":0.5389402346320282,\"thigh_r_length\":0.5376690409224409,\"shin_l_length\":0.503642854371424,\"shin_r_length\":0.5018714987440629,\"spine_length\":0.5},\"poses\":[{\"bones\":{\"pelvis\":[1.0417834499636074,-26.25011853773214,-1.7592364176438673],\"spine_01\":[-9.684146799145633,4.1935967927529285,-6.967368769888006],\"spine_02\":[6.393717711515076,9.757355399978096,0.6347440887599537],\"spine_03\":[0.9752771963806349,3.8357986398378308,0.1814738851470719],\"thigh_l\":[-5.9607295451650595,-4.251313617144135,10.752019344565955],\"thigh_r\":[-3.0971621713894346,-16.39291148127592,17.093288996944896],\"calf_l\":[7.952667179870394,-0.17213309777513858,-0.34689232584850244],\"calf_r\":[-2.3314886696567347,1.1244152281305504,-2.002178654636155],\"clavicle_l\":[-11.975724070566983,-19.975026474864077,24.948814629011533],\"clavicle_r\":[-5.210247341252678,-37.574645893006384,-54.92613622657387],\"foot_l\":[13.095514627080515,14.954784079101886,-16.699579021770965],\"foot_r\":[23.95015160649524,28.540666253878957,1.7382942189975337],\"neck_01\":[29.89381858543333,22.791941094087605,-8.335071463907157],\"upperarm_l\":[-86.98806103228921,-23.603438296177686,34.61813486073639],\"upperarm_r\":[-116.27738961605938,21.081654871619126,-29.643668567387145],\"head\":[-28.899490781582767,-22.826354311387654,-30.24818502155172],\"lowerarm_l\":[-87.6426632004355,5.754044784215508,-57.43605494713794],\"lowerarm_r\":[-74.08404312546654,-0.39273269018539064,50.62872203265255],\"hand_l\":[7.693550460625385,-44.79206791465353,44.66750093236684],\"hand_r\":[-6.322097765655189,35.42340785858185,-33.15498487925674],\"index_01_l\":[16.4765073419932,7.050380869672542,-2.1349331674282204],\"index_01_r\":[23.706096225310485,-3.9328649590642417,6.69546449231346],\"index_02_l\":[11.011779035786546,-2.956775933172067,-13.24027979335999],\"index_02_r\":[10.095013402624717,5.964724977908232,22.550405159222898],\"index_03_l\":[1.9191491617505587,5.132247129209304,-1.5303226199999724],\"index_03_r\":[1.5347609535923314,-4.1393941108568715,1.2189051327962614],\"middle_01_l\":[10.567768126066186,2.745818965780221,-33.133157981359595],\"middle_01_r\":[20.506917671053703,-3.949871617843263,36.67936253852436],\"middle_02_l\":[28.422950372632915,1.902277591312472,-24.495046632668704],\"middle_02_r\":[30.894824406640105,-2.9726198027724697,25.862585523705214],\"middle_03_l\":[1.2983037167693459,7.556831085307865,-2.607734271491945],\"middle_03_r\":[1.1817904224875089,-6.958421389786774,2.392845467799013],\"pinky_01_l\":[-3.220482242629728,9.591939235266244,-20.98115661021635],\"pinky_01_r\":[3.5739660699090066,-15.246080283062629,34.533695252252436],\"pinky_02_l\":[16.565230055471147,6.520813893181,-21.435539288171352],\"pinky_02_r\":[27.23919556823678,-10.640754481136375,28.544469226452065],\"pinky_03_l\":[-1.7902319224711736,8.792525578142097,-2.695454246150616],\"pinky_03_r\":[-2.9106760073820075,-15.578231418911164,4.627136399862441],\"ring_01_l\":[-1.553853277723068,2.551588457691307,-31.923234562456802],\"ring_01_r\":[-5.636128693817532,-2.706924911912692,31.670396578537538],\"ring_02_l\":[24.699322697119012,2.090642205612718,-28.278835376104677],\"ring_02_r\":[34.227933247337404,-6.471801213695539,31.051826752165816],\"ring_03_l\":[0.5888981084967043,6.092275577683519,-2.2619020037969393],\"ring_03_r\":[0.9609544808704179,-9.009376572350524,3.3815313326243586],\"thumb_01_l\":[-1.9441224352252728,13.743042424574933,0.7049552358192431],\"thumb_01_r\":[2.8074201813047632,-9.417858076001165,4.123091646177169],\"thumb_02_l\":[5.206174373548931,0.021344110257770908,-5.006644651954755],\"thumb_02_r\":[-0.5491283908557814,-2.6652128245027127,1.4541016454448843],\"thumb_03_l\":[-0.7975631251091557,-0.1866995467410886,-0.2392444134507179],\"thumb_03_r\":[1.5777523906022695,-0.37962720762242885,-0.4661735636104405]},\"bonePositions\":{\"Root\":[0,-8.18482780456543,-0.26244157552719116]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[-1.4886344405371559,0.6306141583818476,-0.15289648304823572],\"hand_l\":[2.0080122242960474,9.092052159319405,-0.22826840115087288],\"hand_r\":[1.1822906894735543,10.015625304087411,-1.0931879878317523],\"foot_l\":[1.5592272364480075,-8.617959394468802,1.8862740685112156],\"foot_r\":[-2.1475121937664086,-8.685970293651765,0.8395458242796519],\"head\":[-0.25415694080189233,7.499985876688818,1.0029819114575815],\"upperarm_l\":[1.4907980229478515,6.309105119952435,1.0980329278532177],\"upperarm_r\":[-1.6700555827242767,7.7241735854965965,-1.0966203237783076]},\"poleTargetPositions\":{\"leftArm\":[4.024607455481141,3.4861863121769097,-0.9403509527166412],\"rightArm\":[-3.265582991335331,3.2149593653842286,0.4100954736439355],\"leftLeg\":[0.4350122545693399,-3.9426516539462044,2.777691762718085],\"rightLeg\":[-3.138866797996954,0.23676849535004452,4.485865183268858]},\"hipBonePosition\":{\"hips\":[0,8.743011116981506,0.2991180196404457]},\"cameraParams\":{\"offset_x\":-1.4886344405371559,\"offset_y\":-0.013884824083190512,\"offset_z\":-0.19524445437885898,\"zoom\":1.1546367799412471,\"yaw_deg\":0,\"pitch_deg\":0,\"fov_deg\":30,\"distance\":45,\"maintain_subject_size\":false,\"view\":null},\"prompt\":\"\"}],\"animation\":null}],\"timeline\":{\"fps\":12,\"duration\":2,\"frameCount\":24,\"currentFrame\":0,\"loop\":true},\"pose_prompts\":[\"\"],\"mesh\":{\"age\":40,\"gender\":1,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.650410479139609,\"shoulder_r_length\":0.7133715392187348,\"hip_l_length\":0.5367653461281827,\"hip_r_length\":0.5367653461281863,\"upper_arm_l_length\":0.7778374522400651,\"upper_arm_r_length\":0.7778374849264595,\"forearm_l_length\":0.580264299551644,\"forearm_r_length\":0.5803557825724879,\"thigh_l_length\":0.5389402346320282,\"thigh_r_length\":0.5376690409224409,\"shin_l_length\":0.503642854371424,\"shin_r_length\":0.5018714987440629,\"spine_length\":0.5},\"export\":{\"view_width\":640,\"view_height\":1536,\"cam_zoom\":1.1546367799412471,\"cam_offset_x\":-1.4886344405371559,\"cam_offset_y\":-0.013884824083190512,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"cam_fov_deg\":30,\"cam_distance\":45,\"cam_maintain_subject_size\":false,\"cam_view\":null,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keep_models_loaded\":false,\"keepOriginalLighting\":false,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"manager\",\"manager_auto_analyze_proportions\":true,\"capture_image_size\":false,\"editor_mode\":\"image\",\"animation_image_batch\":false,\"hand_controls_v2\":true,\"directional_skydome_enabled\":false},\"poses\":[{\"bones\":{\"pelvis\":[1.0417834499636074,-26.25011853773214,-1.7592364176438673],\"spine_01\":[-9.684146799145633,4.1935967927529285,-6.967368769888006],\"spine_02\":[6.393717711515076,9.757355399978096,0.6347440887599537],\"spine_03\":[0.9752771963806349,3.8357986398378308,0.1814738851470719],\"thigh_l\":[-5.9607295451650595,-4.251313617144135,10.752019344565955],\"thigh_r\":[-3.0971621713894346,-16.39291148127592,17.093288996944896],\"calf_l\":[7.952667179870394,-0.17213309777513858,-0.34689232584850244],\"calf_r\":[-2.3314886696567347,1.1244152281305504,-2.002178654636155],\"clavicle_l\":[-11.975724070566983,-19.975026474864077,24.948814629011533],\"clavicle_r\":[-5.210247341252678,-37.574645893006384,-54.92613622657387],\"foot_l\":[13.095514627080515,14.954784079101886,-16.699579021770965],\"foot_r\":[23.95015160649524,28.540666253878957,1.7382942189975337],\"neck_01\":[29.89381858543333,22.791941094087605,-8.335071463907157],\"upperarm_l\":[-86.98806103228921,-23.603438296177686,34.61813486073639],\"upperarm_r\":[-116.27738961605938,21.081654871619126,-29.643668567387145],\"head\":[-28.899490781582767,-22.826354311387654,-30.24818502155172],\"lowerarm_l\":[-87.6426632004355,5.754044784215508,-57.43605494713794],\"lowerarm_r\":[-74.08404312546654,-0.39273269018539064,50.62872203265255],\"hand_l\":[7.693550460625385,-44.79206791465353,44.66750093236684],\"hand_r\":[-6.322097765655189,35.42340785858185,-33.15498487925674],\"index_01_l\":[16.4765073419932,7.050380869672542,-2.1349331674282204],\"index_01_r\":[23.706096225310485,-3.9328649590642417,6.69546449231346],\"index_02_l\":[11.011779035786546,-2.956775933172067,-13.24027979335999],\"index_02_r\":[10.095013402624717,5.964724977908232,22.550405159222898],\"index_03_l\":[1.9191491617505587,5.132247129209304,-1.5303226199999724],\"index_03_r\":[1.5347609535923314,-4.1393941108568715,1.2189051327962614],\"middle_01_l\":[10.567768126066186,2.745818965780221,-33.133157981359595],\"middle_01_r\":[20.506917671053703,-3.949871617843263,36.67936253852436],\"middle_02_l\":[28.422950372632915,1.902277591312472,-24.495046632668704],\"middle_02_r\":[30.894824406640105,-2.9726198027724697,25.862585523705214],\"middle_03_l\":[1.2983037167693459,7.556831085307865,-2.607734271491945],\"middle_03_r\":[1.1817904224875089,-6.958421389786774,2.392845467799013],\"pinky_01_l\":[-3.220482242629728,9.591939235266244,-20.98115661021635],\"pinky_01_r\":[3.5739660699090066,-15.246080283062629,34.533695252252436],\"pinky_02_l\":[16.565230055471147,6.520813893181,-21.435539288171352],\"pinky_02_r\":[27.23919556823678,-10.640754481136375,28.544469226452065],\"pinky_03_l\":[-1.7902319224711736,8.792525578142097,-2.695454246150616],\"pinky_03_r\":[-2.9106760073820075,-15.578231418911164,4.627136399862441],\"ring_01_l\":[-1.553853277723068,2.551588457691307,-31.923234562456802],\"ring_01_r\":[-5.636128693817532,-2.706924911912692,31.670396578537538],\"ring_02_l\":[24.699322697119012,2.090642205612718,-28.278835376104677],\"ring_02_r\":[34.227933247337404,-6.471801213695539,31.051826752165816],\"ring_03_l\":[0.5888981084967043,6.092275577683519,-2.2619020037969393],\"ring_03_r\":[0.9609544808704179,-9.009376572350524,3.3815313326243586],\"thumb_01_l\":[-1.9441224352252728,13.743042424574933,0.7049552358192431],\"thumb_01_r\":[2.8074201813047632,-9.417858076001165,4.123091646177169],\"thumb_02_l\":[5.206174373548931,0.021344110257770908,-5.006644651954755],\"thumb_02_r\":[-0.5491283908557814,-2.6652128245027127,1.4541016454448843],\"thumb_03_l\":[-0.7975631251091557,-0.1866995467410886,-0.2392444134507179],\"thumb_03_r\":[1.5777523906022695,-0.37962720762242885,-0.4661735636104405]},\"bonePositions\":{\"Root\":[0,-8.18482780456543,-0.26244157552719116]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[-1.4886344405371559,0.6306141583818476,-0.15289648304823572],\"hand_l\":[2.0080122242960474,9.092052159319405,-0.22826840115087288],\"hand_r\":[1.1822906894735543,10.015625304087411,-1.0931879878317523],\"foot_l\":[1.5592272364480075,-8.617959394468802,1.8862740685112156],\"foot_r\":[-2.1475121937664086,-8.685970293651765,0.8395458242796519],\"head\":[-0.25415694080189233,7.499985876688818,1.0029819114575815],\"upperarm_l\":[1.4907980229478515,6.309105119952435,1.0980329278532177],\"upperarm_r\":[-1.6700555827242767,7.7241735854965965,-1.0966203237783076]},\"poleTargetPositions\":{\"leftArm\":[4.024607455481141,3.4861863121769097,-0.9403509527166412],\"rightArm\":[-3.265582991335331,3.2149593653842286,0.4100954736439355],\"leftLeg\":[0.4350122545693399,-3.9426516539462044,2.777691762718085],\"rightLeg\":[-3.138866797996954,0.23676849535004452,4.485865183268858]},\"hipBonePosition\":{\"hips\":[0,8.743011116981506,0.2991180196404457]},\"cameraParams\":{\"offset_x\":-1.4886344405371559,\"offset_y\":-0.013884824083190512,\"offset_z\":-0.19524445437885898,\"zoom\":1.1546367799412471,\"yaw_deg\":0,\"pitch_deg\":0,\"fov_deg\":30,\"distance\":45,\"maintain_subject_size\":false,\"view\":null},\"prompt\":\"\"}],\"lights\":[{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":2,\"x\":10,\"y\":20,\"z\":30},{\"type\":\"ambient\",\"color\":\"#505050\",\"intensity\":1,\"x\":0,\"y\":0,\"z\":0}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_3\",\"lighting_prompts\":[\"Draw character from image2\"],\"background_url\":null}",
+        false,
+        ""
+      ],
+      "widgets_values_named": {
+        "pose_data": "{\"schema_version\":3,\"active_character_id\":\"character-1\",\"characters\":[{\"id\":\"character-1\",\"slot\":0,\"name\":\"Main Character\",\"color\":\"#ffffff\",\"transform\":{\"x\":-1.4886344405371559,\"y\":-0.013884824083190512,\"z\":-0.19524445437885898,\"zoom\":1.1546367799412471},\"mesh\":{\"age\":40,\"gender\":1,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.650410479139609,\"shoulder_r_length\":0.7133715392187348,\"hip_l_length\":0.5367653461281827,\"hip_r_length\":0.5367653461281863,\"upper_arm_l_length\":0.7778374522400651,\"upper_arm_r_length\":0.7778374849264595,\"forearm_l_length\":0.580264299551644,\"forearm_r_length\":0.5803557825724879,\"thigh_l_length\":0.5389402346320282,\"thigh_r_length\":0.5376690409224409,\"shin_l_length\":0.503642854371424,\"shin_r_length\":0.5018714987440629,\"spine_length\":0.5},\"poses\":[{\"bones\":{\"pelvis\":[1.0417834499636074,-26.25011853773214,-1.7592364176438673],\"spine_01\":[-9.684146799145633,4.1935967927529285,-6.967368769888006],\"spine_02\":[6.393717711515076,9.757355399978096,0.6347440887599537],\"spine_03\":[0.9752771963806349,3.8357986398378308,0.1814738851470719],\"thigh_l\":[-5.9607295451650595,-4.251313617144135,10.752019344565955],\"thigh_r\":[-3.0971621713894346,-16.39291148127592,17.093288996944896],\"calf_l\":[7.952667179870394,-0.17213309777513858,-0.34689232584850244],\"calf_r\":[-2.3314886696567347,1.1244152281305504,-2.002178654636155],\"clavicle_l\":[-11.975724070566983,-19.975026474864077,24.948814629011533],\"clavicle_r\":[-5.210247341252678,-37.574645893006384,-54.92613622657387],\"foot_l\":[13.095514627080515,14.954784079101886,-16.699579021770965],\"foot_r\":[23.95015160649524,28.540666253878957,1.7382942189975337],\"neck_01\":[29.89381858543333,22.791941094087605,-8.335071463907157],\"upperarm_l\":[-86.98806103228921,-23.603438296177686,34.61813486073639],\"upperarm_r\":[-116.27738961605938,21.081654871619126,-29.643668567387145],\"head\":[-28.899490781582767,-22.826354311387654,-30.24818502155172],\"lowerarm_l\":[-87.6426632004355,5.754044784215508,-57.43605494713794],\"lowerarm_r\":[-74.08404312546654,-0.39273269018539064,50.62872203265255],\"hand_l\":[7.693550460625385,-44.79206791465353,44.66750093236684],\"hand_r\":[-6.322097765655189,35.42340785858185,-33.15498487925674],\"index_01_l\":[16.4765073419932,7.050380869672542,-2.1349331674282204],\"index_01_r\":[23.706096225310485,-3.9328649590642417,6.69546449231346],\"index_02_l\":[11.011779035786546,-2.956775933172067,-13.24027979335999],\"index_02_r\":[10.095013402624717,5.964724977908232,22.550405159222898],\"index_03_l\":[1.9191491617505587,5.132247129209304,-1.5303226199999724],\"index_03_r\":[1.5347609535923314,-4.1393941108568715,1.2189051327962614],\"middle_01_l\":[10.567768126066186,2.745818965780221,-33.133157981359595],\"middle_01_r\":[20.506917671053703,-3.949871617843263,36.67936253852436],\"middle_02_l\":[28.422950372632915,1.902277591312472,-24.495046632668704],\"middle_02_r\":[30.894824406640105,-2.9726198027724697,25.862585523705214],\"middle_03_l\":[1.2983037167693459,7.556831085307865,-2.607734271491945],\"middle_03_r\":[1.1817904224875089,-6.958421389786774,2.392845467799013],\"pinky_01_l\":[-3.220482242629728,9.591939235266244,-20.98115661021635],\"pinky_01_r\":[3.5739660699090066,-15.246080283062629,34.533695252252436],\"pinky_02_l\":[16.565230055471147,6.520813893181,-21.435539288171352],\"pinky_02_r\":[27.23919556823678,-10.640754481136375,28.544469226452065],\"pinky_03_l\":[-1.7902319224711736,8.792525578142097,-2.695454246150616],\"pinky_03_r\":[-2.9106760073820075,-15.578231418911164,4.627136399862441],\"ring_01_l\":[-1.553853277723068,2.551588457691307,-31.923234562456802],\"ring_01_r\":[-5.636128693817532,-2.706924911912692,31.670396578537538],\"ring_02_l\":[24.699322697119012,2.090642205612718,-28.278835376104677],\"ring_02_r\":[34.227933247337404,-6.471801213695539,31.051826752165816],\"ring_03_l\":[0.5888981084967043,6.092275577683519,-2.2619020037969393],\"ring_03_r\":[0.9609544808704179,-9.009376572350524,3.3815313326243586],\"thumb_01_l\":[-1.9441224352252728,13.743042424574933,0.7049552358192431],\"thumb_01_r\":[2.8074201813047632,-9.417858076001165,4.123091646177169],\"thumb_02_l\":[5.206174373548931,0.021344110257770908,-5.006644651954755],\"thumb_02_r\":[-0.5491283908557814,-2.6652128245027127,1.4541016454448843],\"thumb_03_l\":[-0.7975631251091557,-0.1866995467410886,-0.2392444134507179],\"thumb_03_r\":[1.5777523906022695,-0.37962720762242885,-0.4661735636104405]},\"bonePositions\":{\"Root\":[0,-8.18482780456543,-0.26244157552719116]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[-1.4886344405371559,0.6306141583818476,-0.15289648304823572],\"hand_l\":[2.0080122242960474,9.092052159319405,-0.22826840115087288],\"hand_r\":[1.1822906894735543,10.015625304087411,-1.0931879878317523],\"foot_l\":[1.5592272364480075,-8.617959394468802,1.8862740685112156],\"foot_r\":[-2.1475121937664086,-8.685970293651765,0.8395458242796519],\"head\":[-0.25415694080189233,7.499985876688818,1.0029819114575815],\"upperarm_l\":[1.4907980229478515,6.309105119952435,1.0980329278532177],\"upperarm_r\":[-1.6700555827242767,7.7241735854965965,-1.0966203237783076]},\"poleTargetPositions\":{\"leftArm\":[4.024607455481141,3.4861863121769097,-0.9403509527166412],\"rightArm\":[-3.265582991335331,3.2149593653842286,0.4100954736439355],\"leftLeg\":[0.4350122545693399,-3.9426516539462044,2.777691762718085],\"rightLeg\":[-3.138866797996954,0.23676849535004452,4.485865183268858]},\"hipBonePosition\":{\"hips\":[0,8.743011116981506,0.2991180196404457]},\"cameraParams\":{\"offset_x\":-1.4886344405371559,\"offset_y\":-0.013884824083190512,\"offset_z\":-0.19524445437885898,\"zoom\":1.1546367799412471,\"yaw_deg\":0,\"pitch_deg\":0,\"fov_deg\":30,\"distance\":45,\"maintain_subject_size\":false,\"view\":null},\"prompt\":\"\"}],\"animation\":null}],\"timeline\":{\"fps\":12,\"duration\":2,\"frameCount\":24,\"currentFrame\":0,\"loop\":true},\"pose_prompts\":[\"\"],\"mesh\":{\"age\":40,\"gender\":1,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0.5,\"firmness\":0.5,\"show_genitals\":false,\"penis_len\":0.5,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"foot_size\":1,\"shoulder_l_length\":0.650410479139609,\"shoulder_r_length\":0.7133715392187348,\"hip_l_length\":0.5367653461281827,\"hip_r_length\":0.5367653461281863,\"upper_arm_l_length\":0.7778374522400651,\"upper_arm_r_length\":0.7778374849264595,\"forearm_l_length\":0.580264299551644,\"forearm_r_length\":0.5803557825724879,\"thigh_l_length\":0.5389402346320282,\"thigh_r_length\":0.5376690409224409,\"shin_l_length\":0.503642854371424,\"shin_r_length\":0.5018714987440629,\"spine_length\":0.5},\"export\":{\"view_width\":640,\"view_height\":1536,\"cam_zoom\":1.1546367799412471,\"cam_offset_x\":-1.4886344405371559,\"cam_offset_y\":-0.013884824083190512,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"cam_fov_deg\":30,\"cam_distance\":45,\"cam_maintain_subject_size\":false,\"cam_view\":null,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keep_models_loaded\":false,\"keepOriginalLighting\":false,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"interface_mode\":\"manager\",\"manager_auto_analyze_proportions\":true,\"capture_image_size\":false,\"editor_mode\":\"image\",\"animation_image_batch\":false,\"hand_controls_v2\":true,\"directional_skydome_enabled\":false},\"poses\":[{\"bones\":{\"pelvis\":[1.0417834499636074,-26.25011853773214,-1.7592364176438673],\"spine_01\":[-9.684146799145633,4.1935967927529285,-6.967368769888006],\"spine_02\":[6.393717711515076,9.757355399978096,0.6347440887599537],\"spine_03\":[0.9752771963806349,3.8357986398378308,0.1814738851470719],\"thigh_l\":[-5.9607295451650595,-4.251313617144135,10.752019344565955],\"thigh_r\":[-3.0971621713894346,-16.39291148127592,17.093288996944896],\"calf_l\":[7.952667179870394,-0.17213309777513858,-0.34689232584850244],\"calf_r\":[-2.3314886696567347,1.1244152281305504,-2.002178654636155],\"clavicle_l\":[-11.975724070566983,-19.975026474864077,24.948814629011533],\"clavicle_r\":[-5.210247341252678,-37.574645893006384,-54.92613622657387],\"foot_l\":[13.095514627080515,14.954784079101886,-16.699579021770965],\"foot_r\":[23.95015160649524,28.540666253878957,1.7382942189975337],\"neck_01\":[29.89381858543333,22.791941094087605,-8.335071463907157],\"upperarm_l\":[-86.98806103228921,-23.603438296177686,34.61813486073639],\"upperarm_r\":[-116.27738961605938,21.081654871619126,-29.643668567387145],\"head\":[-28.899490781582767,-22.826354311387654,-30.24818502155172],\"lowerarm_l\":[-87.6426632004355,5.754044784215508,-57.43605494713794],\"lowerarm_r\":[-74.08404312546654,-0.39273269018539064,50.62872203265255],\"hand_l\":[7.693550460625385,-44.79206791465353,44.66750093236684],\"hand_r\":[-6.322097765655189,35.42340785858185,-33.15498487925674],\"index_01_l\":[16.4765073419932,7.050380869672542,-2.1349331674282204],\"index_01_r\":[23.706096225310485,-3.9328649590642417,6.69546449231346],\"index_02_l\":[11.011779035786546,-2.956775933172067,-13.24027979335999],\"index_02_r\":[10.095013402624717,5.964724977908232,22.550405159222898],\"index_03_l\":[1.9191491617505587,5.132247129209304,-1.5303226199999724],\"index_03_r\":[1.5347609535923314,-4.1393941108568715,1.2189051327962614],\"middle_01_l\":[10.567768126066186,2.745818965780221,-33.133157981359595],\"middle_01_r\":[20.506917671053703,-3.949871617843263,36.67936253852436],\"middle_02_l\":[28.422950372632915,1.902277591312472,-24.495046632668704],\"middle_02_r\":[30.894824406640105,-2.9726198027724697,25.862585523705214],\"middle_03_l\":[1.2983037167693459,7.556831085307865,-2.607734271491945],\"middle_03_r\":[1.1817904224875089,-6.958421389786774,2.392845467799013],\"pinky_01_l\":[-3.220482242629728,9.591939235266244,-20.98115661021635],\"pinky_01_r\":[3.5739660699090066,-15.246080283062629,34.533695252252436],\"pinky_02_l\":[16.565230055471147,6.520813893181,-21.435539288171352],\"pinky_02_r\":[27.23919556823678,-10.640754481136375,28.544469226452065],\"pinky_03_l\":[-1.7902319224711736,8.792525578142097,-2.695454246150616],\"pinky_03_r\":[-2.9106760073820075,-15.578231418911164,4.627136399862441],\"ring_01_l\":[-1.553853277723068,2.551588457691307,-31.923234562456802],\"ring_01_r\":[-5.636128693817532,-2.706924911912692,31.670396578537538],\"ring_02_l\":[24.699322697119012,2.090642205612718,-28.278835376104677],\"ring_02_r\":[34.227933247337404,-6.471801213695539,31.051826752165816],\"ring_03_l\":[0.5888981084967043,6.092275577683519,-2.2619020037969393],\"ring_03_r\":[0.9609544808704179,-9.009376572350524,3.3815313326243586],\"thumb_01_l\":[-1.9441224352252728,13.743042424574933,0.7049552358192431],\"thumb_01_r\":[2.8074201813047632,-9.417858076001165,4.123091646177169],\"thumb_02_l\":[5.206174373548931,0.021344110257770908,-5.006644651954755],\"thumb_02_r\":[-0.5491283908557814,-2.6652128245027127,1.4541016454448843],\"thumb_03_l\":[-0.7975631251091557,-0.1866995467410886,-0.2392444134507179],\"thumb_03_r\":[1.5777523906022695,-0.37962720762242885,-0.4661735636104405]},\"bonePositions\":{\"Root\":[0,-8.18482780456543,-0.26244157552719116]},\"modelRotation\":[0,0,0],\"ikEffectorPositions\":{\"pelvis\":[-1.4886344405371559,0.6306141583818476,-0.15289648304823572],\"hand_l\":[2.0080122242960474,9.092052159319405,-0.22826840115087288],\"hand_r\":[1.1822906894735543,10.015625304087411,-1.0931879878317523],\"foot_l\":[1.5592272364480075,-8.617959394468802,1.8862740685112156],\"foot_r\":[-2.1475121937664086,-8.685970293651765,0.8395458242796519],\"head\":[-0.25415694080189233,7.499985876688818,1.0029819114575815],\"upperarm_l\":[1.4907980229478515,6.309105119952435,1.0980329278532177],\"upperarm_r\":[-1.6700555827242767,7.7241735854965965,-1.0966203237783076]},\"poleTargetPositions\":{\"leftArm\":[4.024607455481141,3.4861863121769097,-0.9403509527166412],\"rightArm\":[-3.265582991335331,3.2149593653842286,0.4100954736439355],\"leftLeg\":[0.4350122545693399,-3.9426516539462044,2.777691762718085],\"rightLeg\":[-3.138866797996954,0.23676849535004452,4.485865183268858]},\"hipBonePosition\":{\"hips\":[0,8.743011116981506,0.2991180196404457]},\"cameraParams\":{\"offset_x\":-1.4886344405371559,\"offset_y\":-0.013884824083190512,\"offset_z\":-0.19524445437885898,\"zoom\":1.1546367799412471,\"yaw_deg\":0,\"pitch_deg\":0,\"fov_deg\":30,\"distance\":45,\"maintain_subject_size\":false,\"view\":null},\"prompt\":\"\"}],\"lights\":[{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":2,\"x\":10,\"y\":20,\"z\":30},{\"type\":\"ambient\",\"color\":\"#505050\",\"intensity\":1,\"x\":0,\"y\":0,\"z\":0}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_3\",\"lighting_prompts\":[\"Draw character from image2\"],\"background_url\":null}",
+        "animation_image_batch": false,
+        "pose_studio_ui": ""
+      },
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 4,
+      "type": "VNCCS_ControlCenter",
+      "pos": [
+        -2680,
+        2310
+      ],
+      "size": [
+        680,
+        940
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "links": [
+            11
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "3.0.0",
+        "Node name for S&R": "VNCCS_ControlCenter"
+      },
+      "widgets_values": [
+        "MIUProject/VNCCS_v3.0",
+        "{\"output_slot_names\":[],\"selected_models\":{\"QI2:unet\":\"Qwen Image 2.1 Turbo INT8 ConvRot\"},\"selected_model\":\"Qwen Image 2.1 Turbo INT8 ConvRot\",\"selected_type\":\"unet\",\"collapsed\":{\"controlnet\":true,\"clip_vae\":false},\"loras\":[{\"name\":\"Qwen Image 2.1 Viggle Turbo\",\"auto_apply\":false,\"strength\":1}],\"model_params\":{\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":null},\"active_kind\":\"QI2\",\"selected_types_by_kind\":{\"QI2\":\"unet\"},\"model_params_by_kind\":{\"QI2\":{\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":null}},\"qi2_cache\":{\"device\":\"gpu\",\"dtype\":\"int8\"}}",
+        "{}"
+      ],
+      "widgets_values_named": {
+        "repo_id": "MIUProject/VNCCS_v3.0",
+        "node_state": "{\"output_slot_names\":[],\"selected_models\":{\"QI2:unet\":\"Qwen Image 2.1 Turbo INT8 ConvRot\"},\"selected_model\":\"Qwen Image 2.1 Turbo INT8 ConvRot\",\"selected_type\":\"unet\",\"collapsed\":{\"controlnet\":true,\"clip_vae\":false},\"loras\":[{\"name\":\"Qwen Image 2.1 Viggle Turbo\",\"auto_apply\":false,\"strength\":1}],\"model_params\":{\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":null},\"active_kind\":\"QI2\",\"selected_types_by_kind\":{\"QI2\":\"unet\"},\"model_params_by_kind\":{\"QI2\":{\"steps\":8,\"cfg\":1,\"sampler\":\"euler\",\"scheduler\":\"simple\",\"turbo_previous_settings\":null}},\"qi2_cache\":{\"device\":\"gpu\",\"dtype\":\"int8\"}}",
+        "cc_widget": "{}"
+      },
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 7,
+      "type": "VNCCS_AdditionalPoses",
+      "pos": [
+        -1990,
+        2310
+      ],
+      "size": [
+        440,
+        940
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "links": [
+            8,
+            9
+          ]
+        },
+        {
+          "name": "sheets_path",
+          "type": "STRING",
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "background",
+          "type": "*",
+          "links": [
+            13
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "04b2e9b58813626336f83807ccbb13a266240108",
+        "Node name for S&R": "VNCCS_AdditionalPoses"
+      },
+      "widgets_values": [
+        "{\"character\":\"Alex\",\"costume\":\"Naked\",\"emotion\":\"Neutral\",\"sprite\":\"sprite_pose_0013.png\"}",
+        ""
+      ],
+      "widgets_values_named": {
+        "widget_data": "{\"character\":\"Alex\",\"costume\":\"Naked\",\"emotion\":\"Neutral\",\"sprite\":\"sprite_pose_0013.png\"}",
+        "additional_poses_ui": ""
+      },
+      "color": "#323",
+      "bgcolor": "#535"
+    },
+    {
+      "id": 8,
+      "type": "VNCCS_AdditionalPosesGenerator",
+      "pos": [
+        -2680,
+        1040
+      ],
+      "size": [
+        2420,
+        1210
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "poses",
+          "type": "IMAGE",
+          "link": 10
+        },
+        {
+          "name": "character",
+          "type": "IMAGE",
+          "link": 9
+        },
+        {
+          "name": "pipe",
+          "type": "VNCCS_PIPE",
+          "link": 11
+        },
+        {
+          "name": "background",
+          "type": "STRING",
+          "link": 13
+        },
+        {
+          "name": "sheets_path",
+          "type": "STRING",
+          "link": 12
+        },
+        {
+          "name": "prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "prompt"
+          },
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sheet",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "faces",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "pose_generation",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "upscaled",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "vnccs",
+        "ver": "04b2e9b58813626336f83807ccbb13a266240108",
+        "Node name for S&R": "VNCCS_AdditionalPosesGenerator"
+      },
+      "widgets_values": [
+        "",
+        "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":1024,\"override_resolution\":false,\"resolution\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"from_generator\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"pose_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"vae_decode\":{\"tile_size\":512,\"overlap\":64,\"temporal_size\":64,\"temporal_overlap\":8},\"emotion_generation\":{\"task_batch_size\":0,\"target_size\":2048,\"face_denoise\":0.55,\"use_sam\":false,\"bbox_model\":\"bbox/face_yolov8m.pt\",\"segm_model\":\"bbox/face_yolov8m.pt\",\"sam_model\":\"sam_vit_b_01ec64.pth\",\"sam_device_mode\":\"AUTO\",\"guide_size\":1536,\"guide_size_for\":true,\"max_size\":1536,\"inherit_pipe_sampler\":true,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"feather\":50,\"noise_mask\":true,\"force_inpaint\":true,\"bbox_threshold\":0.5,\"bbox_dilation\":50,\"qi2_prompt_template\":\"Upscale face image.\\nMake character's face emotion {emotion}\\nChange only face. Keep original neck colour, clothes and hairs\\nkeep character's clothes\",\"bbox_crop_factor\":3,\"sam_detection_hint\":\"center-1\",\"sam_dilation\":0,\"sam_threshold\":0.93,\"sam_bbox_expansion\":0,\"sam_mask_hint_threshold\":0.7,\"sam_mask_hint_use_negative\":\"False\",\"drop_size\":10,\"cycle\":1,\"inpaint_model\":false,\"noise_mask_feather\":20,\"tiled_encode\":true,\"tiled_decode\":true,\"matte_expand_radius\":8,\"matte_feather_radius\":4,\"chroma_context\":16},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\",\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"White\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"remove_clothes_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors\",\"vae\":\"ema_vae_fp16.safetensors\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"inherit_pipe_seed\":true,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":true,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":false,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"preset\":\"balanced\",\"use_sam3_details_recovery\":false,\"use_preset_values\":true,\"tolerance\":0.15,\"softness\":0.12,\"despill_strength\":0.65,\"edge_width\":3,\"matte_cleanup\":0.1,\"foreground_recover\":0.35,\"edge_decontaminate\":0.75,\"edge_choke\":0.08,\"matte_method\":\"screen_matte\",\"screen_mode\":\"from_background\",\"output_mode\":\"straight_rgba\",\"sam3_model\":\"\",\"sam3_segmentor\":\"image\",\"sam3_device\":\"auto\",\"sam3_precision\":\"bf16\",\"sam3_prompt\":\"face, clothes, accessories, hat, boots, eyes\",\"sam3_threshold\":0.4,\"sam3_add_background\":\"none\",\"sam3_detection_limit\":-1,\"sam3_erode_radius\":4,\"sam3_min_foreground_overlap\":0.55},\"ui\":{\"selected_preview\":\"bg_remove\",\"user_selected_preview\":false,\"resolution_model_key\":\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 Turbo INT8 ConvRot\\\"]\",\"resolution_by_model\":{\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 Turbo INT8 ConvRot\\\"]\":{\"target_size\":1024,\"updated_at\":0}},\"resolution_model_kind\":\"qi2\",\"additional_poses_scope\":\"mwqv3ls9-vrohbmbxnw-zxq18718yp\",\"progress_scope\":\"mwpf4hkp-i19srqx2hl8-9n7c0qpwgp:mwqsx7r3-gdq9629rqfd-k1peskyabc:VNCCS_AdditionalPosesGenerator:8:mwqv3ls9-vrohbmbxnw-zxq18718yp\"},\"character_name\":\"Alex\",\"additional_poses_source\":\"[\\\"Alex\\\",\\\"Naked\\\",\\\"Neutral\\\",\\\"sprite_pose_0013.png\\\"]\",\"gender\":\"male\"}",
+        ""
+      ],
+      "widgets_values_named": {
+        "prompt": "",
+        "widget_data": "{\"nsfw_enabled\":true,\"emotion_pairs\":[],\"common\":{\"target_size\":1024},\"pose_generation\":{\"target_size\":1024,\"override_resolution\":false,\"resolution\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"from_generator\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"pose_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"vae_decode\":{\"tile_size\":512,\"overlap\":64,\"temporal_size\":64,\"temporal_overlap\":8},\"emotion_generation\":{\"task_batch_size\":0,\"target_size\":2048,\"face_denoise\":0.55,\"use_sam\":false,\"bbox_model\":\"bbox/face_yolov8m.pt\",\"segm_model\":\"bbox/face_yolov8m.pt\",\"sam_model\":\"sam_vit_b_01ec64.pth\",\"sam_device_mode\":\"AUTO\",\"guide_size\":1536,\"guide_size_for\":true,\"max_size\":1536,\"inherit_pipe_sampler\":true,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"feather\":50,\"noise_mask\":true,\"force_inpaint\":true,\"bbox_threshold\":0.5,\"bbox_dilation\":50,\"qi2_prompt_template\":\"Upscale face image.\\nMake character's face emotion {emotion}\\nChange only face. Keep original neck colour, clothes and hairs\\nkeep character's clothes\",\"bbox_crop_factor\":3,\"sam_detection_hint\":\"center-1\",\"sam_dilation\":0,\"sam_threshold\":0.93,\"sam_bbox_expansion\":0,\"sam_mask_hint_threshold\":0.7,\"sam_mask_hint_use_negative\":\"False\",\"drop_size\":10,\"cycle\":1,\"inpaint_model\":false,\"noise_mask_feather\":20,\"tiled_encode\":true,\"tiled_decode\":true,\"matte_expand_radius\":8,\"matte_feather_radius\":4,\"chroma_context\":16},\"remove_clothes\":{\"prompt\":\"Dress character: White underwear\",\"target_size\":1024,\"upscale_method\":\"lanczos\",\"crop_method\":\"disabled\",\"image1_name\":\"image 1\",\"image2_name\":\"image 2\",\"image3_name\":\"image 3\",\"weight1\":1,\"weight2\":1,\"weight3\":1,\"vl_size\":384,\"background_color\":\"White\",\"latent_image_index\":1,\"instruction\":\"Describe the character and their key features (body shape, physical characteristics, clothing, items, accessories). Then explain how the user's text instruction should alter or modify the character. Generate a new image that meets the user's requirements while maintaining consistency with the original character where appropriate.\"},\"remove_clothes_sampler\":{\"inherit_pipe\":true,\"seed\":0,\"steps\":20,\"cfg\":1,\"sampler_name\":\"euler\",\"scheduler\":\"simple\",\"denoise\":1},\"upscaler\":{\"mode\":\"seedvr\",\"model\":\"seedvr2_7b_sharp_fp8_e4m3fn_mixed_block35_fp16.safetensors\",\"vae\":\"ema_vae_fp16.safetensors\",\"device\":\"cuda:0\",\"offload_device\":\"cpu\",\"seed\":42,\"inherit_pipe_seed\":true,\"resolution\":2048,\"max_resolution\":3840,\"batch_size\":1,\"uniform_batch_size\":false,\"color_correction\":\"lab\",\"temporal_overlap\":0,\"prepend_frames\":0,\"input_noise_scale\":0,\"latent_noise_scale\":0,\"blocks_to_swap\":0,\"swap_io_components\":false,\"cache_dit\":true,\"attention_mode\":\"sdpa\",\"attention_mode_manual\":false,\"encode_tiled\":true,\"encode_tile_size\":1024,\"encode_tile_overlap\":128,\"decode_tiled\":true,\"decode_tile_size\":1024,\"decode_tile_overlap\":128,\"tile_debug\":\"false\",\"cache_vae\":false,\"enable_debug\":false},\"bg_remove\":{\"preset\":\"balanced\",\"use_sam3_details_recovery\":false,\"use_preset_values\":true,\"tolerance\":0.15,\"softness\":0.12,\"despill_strength\":0.65,\"edge_width\":3,\"matte_cleanup\":0.1,\"foreground_recover\":0.35,\"edge_decontaminate\":0.75,\"edge_choke\":0.08,\"matte_method\":\"screen_matte\",\"screen_mode\":\"from_background\",\"output_mode\":\"straight_rgba\",\"sam3_model\":\"\",\"sam3_segmentor\":\"image\",\"sam3_device\":\"auto\",\"sam3_precision\":\"bf16\",\"sam3_prompt\":\"face, clothes, accessories, hat, boots, eyes\",\"sam3_threshold\":0.4,\"sam3_add_background\":\"none\",\"sam3_detection_limit\":-1,\"sam3_erode_radius\":4,\"sam3_min_foreground_overlap\":0.55},\"ui\":{\"selected_preview\":\"bg_remove\",\"user_selected_preview\":false,\"resolution_model_key\":\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 Turbo INT8 ConvRot\\\"]\",\"resolution_by_model\":{\"[\\\"qi2\\\",\\\"unet\\\",\\\"Qwen Image 2.1 Turbo INT8 ConvRot\\\"]\":{\"target_size\":1024,\"updated_at\":0}},\"resolution_model_kind\":\"qi2\",\"additional_poses_scope\":\"mwqv3ls9-vrohbmbxnw-zxq18718yp\",\"progress_scope\":\"mwpf4hkp-i19srqx2hl8-9n7c0qpwgp:mwqsx7r3-gdq9629rqfd-k1peskyabc:VNCCS_AdditionalPosesGenerator:8:mwqv3ls9-vrohbmbxnw-zxq18718yp\"},\"character_name\":\"Alex\",\"additional_poses_source\":\"[\\\"Alex\\\",\\\"Naked\\\",\\\"Neutral\\\",\\\"sprite_pose_0013.png\\\"]\",\"gender\":\"male\"}",
+        "character_generator_ui": ""
+      }
+    }
+  ],
+  "links": [
+    [
+      8,
+      7,
+      0,
+      3,
+      0,
+      "IMAGE"
+    ],
+    [
+      9,
+      7,
+      0,
+      8,
+      1,
+      "IMAGE"
+    ],
+    [
+      10,
+      3,
+      0,
+      8,
+      0,
+      "IMAGE"
+    ],
+    [
+      11,
+      4,
+      0,
+      8,
+      2,
+      "VNCCS_PIPE"
+    ],
+    [
+      12,
+      7,
+      1,
+      8,
+      4,
+      "STRING"
+    ],
+    [
+      13,
+      7,
+      2,
+      8,
+      3,
+      "STRING"
+    ],
+    [
+      14,
+      3,
+      1,
+      8,
+      5,
+      "STRING"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "vnccs_workflow_id": "mwqsx7r3-gdq9629rqfd-k1peskyabc",
+    "ds": {
+      "scale": 0.5559917313492307,
+      "offset": [
+        4222.012588863519,
+        -856.9047730864083
+      ]
+    },
+    "frontendVersion": "1.58.5",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4,
+  "seed_widgets": {}
+}

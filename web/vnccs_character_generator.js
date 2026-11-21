@@ -1319,6 +1319,7 @@ class CharacterGeneratorWidget {
         this.node = node;
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
+        this.isAdditionalPoses = Boolean(options.isAdditionalPoses);
         this.isEmotions = Boolean(options.isEmotions);
         this.isBackground = Boolean(options.isBackground);
         this.qi2EmotionDefaultsPending = this.isEmotions;
@@ -1433,7 +1434,7 @@ class CharacterGeneratorWidget {
             this.syncStagesFromData();
             this.syncModelResolution();
             writeData(this.node, this.data);
-            return this.validateNativeSeedvr(true);
+            return this.validateNativeSeedvr(true) && this.validateSeedvrModels();
         };
         registerCleanup(this.node, () => delete this.node._vnccsCharacterGeneratorSyncBeforeQueue);
 
@@ -1484,6 +1485,7 @@ class CharacterGeneratorWidget {
             const detail = event.detail || {};
             if (this.isBackground && detail.background_id && detail.background_id !== this.data.background_id) return;
             if (String(detail.node_id) !== String(this.node.id)) return;
+            if (this.isAdditionalPoses && this.syncCharacterSourceData()) writeData(this.node, this.data);
             if (this._sourceCharacter === "" || (detail.character_name != null && detail.character_name !== (this.data.character_name || ""))) return;
             const scope = this.progressScope();
             if (detail.scope && detail.scope !== scope) return;
@@ -1597,6 +1599,9 @@ class CharacterGeneratorWidget {
                     }
                 }
                 this.updateRegenerateProgress(stage, status);
+                if (this.isAdditionalPoses && stage === "bg_remove" && status === "done") {
+                    this.additionalPosesSource?._vnccsAdditionalPoses?.load(true);
+                }
             }
             if (this.viewer?.open) this.syncViewerImage();
             this.renderPreview();
@@ -1767,7 +1772,7 @@ class CharacterGeneratorWidget {
     }
 
     bgRemoveModes() {
-        return this.data.ui?.bg_remove_model_kind === "qi2"
+        return !this.isAdditionalPoses && this.data.ui?.bg_remove_model_kind === "qi2"
             ? BG_REMOVE_MODES
             : BG_REMOVE_MODES.filter(mode => mode !== "Native");
     }
@@ -2025,6 +2030,11 @@ class CharacterGeneratorWidget {
                     number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
                 ],
             });
+        }
+        if (this.isAdditionalPoses) {
+            return groups.map(group => ({ ...group, fields: group.fields.filter(field =>
+                !(field.section === "pose_generation" && field.key === "background_color")
+                && !(field.section === "bg_remove" && field.key === "screen_mode")) }));
         }
         return groups;
     }
@@ -2312,6 +2322,40 @@ class CharacterGeneratorWidget {
         return false;
     }
 
+    async validateSeedvrModels() {
+        if (this.isEmotions || (!this.isBackground && (this.data.upscaler?.mode || "seedvr") !== "seedvr")) return true;
+        const { model, vae, mode } = this.data.upscaler;
+        const files = [
+            ["diffusion model", "UNETLoader", "unet_name", model],
+            ["VAE", "VAELoader", "vae_name", vae],
+        ];
+        const unselected = files.find(([, , , name]) => typeof name !== "string" || !name.trim());
+        if (unselected) {
+            this.showModal("SeedVR2 Model Required", `Select a SeedVR2 ${unselected[0]} in Generator Settings.`);
+            return false;
+        }
+        const isCurrent = () => !this._disposed && this.data.upscaler?.model === model
+            && this.data.upscaler?.vae === vae && this.data.upscaler?.mode === mode;
+        try {
+            const available = await Promise.all(files.map(async ([, loader, key, name]) => {
+                const info = await checkedJSON(`/object_info/${loader}`);
+                const options = info?.[loader]?.input?.required?.[key]?.[0];
+                if (!Array.isArray(options)) throw new Error(`Unable to read ${loader} model choices.`);
+                const selected = name.replace(/\\/g, "/");
+                return options.some(option => typeof option === "string" && option.replace(/\\/g, "/") === selected);
+            }));
+            if (!isCurrent()) return false;
+            const missing = files.filter((_, index) => !available[index]);
+            if (!missing.length) return true;
+            const names = missing.map(([label, , , name]) => `${label}: ${name}`).join("\n");
+            this.showModal("SeedVR2 Model Required",
+                `SeedVR2 files are missing:\n${names}\n\nInstall the missing files or select installed models in Generator Settings.`);
+        } catch (error) {
+            if (isCurrent()) this.showModal("SeedVR2 Model Check Failed", `Unable to verify installed SeedVR2 files. ${error.message}`);
+        }
+        return false;
+    }
+
     closeModal() {
         this.modalEl?.remove();
         this.modalEl = null;
@@ -2491,7 +2535,7 @@ class CharacterGeneratorWidget {
         }
         this.rememberModelResolution();
 
-        if (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove())) {
+        if (!this.isAdditionalPoses && (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove()))) {
             const preset = String(this.data.bg_remove?.preset || "balanced");
             if (kind === "qi2") {
                 if (preset.toLowerCase() !== "native") {
@@ -2566,8 +2610,10 @@ class CharacterGeneratorWidget {
             const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
             return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
         };
-        const sourceType = this.isClone ? "CharacterCloner" : (this.isClothes ? "ClothesDesigner" : "CharacterCreatorV2");
-        const displayName = this.isClone ? "VNCCS Character Cloner" : (this.isClothes ? "VNCCS Clothes Designer" : "VNCCS Character Creator V2");
+        const sourceType = this.isAdditionalPoses ? "VNCCS_AdditionalPoses"
+            : this.isClone ? "CharacterCloner" : (this.isClothes ? "ClothesDesigner" : "CharacterCreatorV2");
+        const displayName = this.isAdditionalPoses ? "VNCCS Additional Poses"
+            : this.isClone ? "VNCCS Character Cloner" : (this.isClothes ? "VNCCS Clothes Designer" : "VNCCS Character Creator V2");
         const graph = this.node.graph || app.graph;
         const pending = [this.node];
         const visited = new Set();
@@ -2581,13 +2627,33 @@ class CharacterGeneratorWidget {
                 source = candidate;
                 break;
             }
-            for (const input of candidate.inputs || []) {
+            const inputs = candidate.inputs || [];
+            for (const input of this.isAdditionalPoses && candidate === this.node ? inputs.filter(item => item.name === "sheets_path") : inputs) {
                 const link = input.link == null ? null : graph?.links?.[input.link];
                 const upstream = graph?.getNodeById?.(link?.origin_id);
                 if (upstream) pending.push(upstream);
             }
         }
         const widget = source?.widgets?.find(w => w.name === "widget_data");
+        if (this.isAdditionalPoses) {
+            this.additionalPosesSource = source;
+            let selection = [];
+            try {
+                const payload = JSON.parse(widget?.value || "{}");
+                selection = [payload.character, payload.costume, payload.emotion, payload.sprite];
+            } catch { /* Selector reports failed restoration. */ }
+            const signature = selection.length && selection.every(Boolean) ? JSON.stringify(selection) : "";
+            const changed = signature !== (this.data.additional_poses_source || "");
+            if (changed) {
+                this.data.additional_poses_source = signature;
+                this.data.ui.additional_poses_scope = cacheIdentity();
+            }
+            const sourceGender = source?._vnccsGetPoseStudioValues?.()?.gender;
+            const gender = sourceGender === 1 ? "male" : sourceGender === 0 ? "female" : "";
+            const genderChanged = gender !== (this.data.gender || "");
+            if (genderChanged) this.data.gender = gender;
+            return this.syncSourceCharacter(signature ? selection[0] : "", changed) || genderChanged;
+        }
         const liveState = this.isClone ? source?._vnccsGetClonerState?.() : null;
         if (!widget?.value && !liveState) return;
         let changed = false;
@@ -2621,9 +2687,9 @@ class CharacterGeneratorWidget {
         return changed;
     }
 
-    syncSourceCharacter(character) {
+    syncSourceCharacter(character, reset = false) {
         this._sourceCharacter = character;
-        if (this.data.character_name === character) return false;
+        if (!reset && this.data.character_name === character) return false;
         this.data.character_name = character;
         if (this.stageState) {
             this.resetStagesFrom(this.stages[0]?.[0]);
@@ -2741,7 +2807,9 @@ class CharacterGeneratorWidget {
     }
 
     progressScope() {
-        return workflowScope(this.node);
+        const scope = workflowScope(this.node);
+        const selection = this.isAdditionalPoses && this.data.ui?.additional_poses_scope;
+        return scope && selection ? `${scope}:${selection}` : scope;
     }
 
     prepareQueuedRun() {
@@ -3927,7 +3995,7 @@ class CharacterGeneratorWidget {
                 if (displaysPlaceholder) placeholder.style.opacity = "";
             }
             tile.classList.toggle("is-empty", !tile.dataset.src && !tile._previewSource && !showPlaceholders && !backgroundPending);
-            const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
+            const canRegenerate = !this.isAdditionalPoses && state.status === "done" && !this.regenerateState && Boolean(images[index]);
             let regen = tile.querySelector(".vnccs-pipe-img-regen");
             if (canRegenerate && !regen) {
                 regen = document.createElement("button");
@@ -4375,7 +4443,7 @@ class CharacterGeneratorWidget {
                 l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;
                 stage.appendChild(l);
             }
-            if (status === "done" && !this.regenerateState) {
+            if (!this.isAdditionalPoses && status === "done" && !this.regenerateState) {
                 const actions = document.createElement("div");
                 actions.className = "vnccs-pipe-stage-actions";
                 const regen = document.createElement("button");
@@ -4793,7 +4861,7 @@ app.registerExtension({
         app.queuePrompt = async function (...args) {
             const nodes = (app.graph?._nodes || []).filter(node => node.mode !== 2 && node.mode !== 4);
             for (const node of nodes) {
-                if (node._vnccsCharacterGeneratorSyncBeforeQueue?.() === false) return;
+                if (await node._vnccsCharacterGeneratorSyncBeforeQueue?.() === false) return;
             }
             for (const node of nodes) node._vnccsCharacterGeneratorWidget?.prepareQueuedRun();
             return originalQueuePrompt(...args);
@@ -4801,11 +4869,12 @@ app.registerExtension({
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const isBaseGenerator = nodeData.name === "VNCCS_CharacterGenerator";
+        const isAdditionalPosesGenerator = nodeData.name === "VNCCS_AdditionalPosesGenerator";
         const isCloneGenerator = nodeData.name === "VNCCS_CharacterCloneGenerator";
         const isClothesGenerator = nodeData.name === "VNCCS_ClothesGenerator";
         const isEmotionsGenerator = nodeData.name === "VNCCS_EmotionsGenerator";
         const isBackgroundGenerator = nodeData.name === "VNCCS_BackgroundGenerator";
-        if (!isBaseGenerator && !isCloneGenerator && !isClothesGenerator && !isEmotionsGenerator && !isBackgroundGenerator) return;
+        if (!isBaseGenerator && !isAdditionalPosesGenerator && !isCloneGenerator && !isClothesGenerator && !isEmotionsGenerator && !isBackgroundGenerator) return;
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -4814,9 +4883,10 @@ app.registerExtension({
             this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this, {
                 isClone: isCloneGenerator,
                 isClothes: isClothesGenerator,
+                isAdditionalPoses: isAdditionalPosesGenerator,
                 isEmotions: isEmotionsGenerator,
                 isBackground: isBackgroundGenerator,
-                title: isBackgroundGenerator ? "VNCCS Background Generator" : isCloneGenerator
+                title: isAdditionalPosesGenerator ? "VNCCS Additional Poses Generator" : isBackgroundGenerator ? "VNCCS Background Generator" : isCloneGenerator
                     ? "VNCCS Character Clone Generator"
                     : (isClothesGenerator ? "VNCCS Clothes Generator" : (isEmotionsGenerator ? "VNCCS Emotions Generator" : "VNCCS Character Generator")),
             });

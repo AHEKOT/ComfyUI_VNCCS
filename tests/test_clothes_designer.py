@@ -282,6 +282,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
 
     monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
     utils.save_costume_info("Alice", "Dress", {})
+    config = utils.load_config("Alice")
+    config["character_info"] = {"style": "custom", "custom_style": "Dense dramatic shadows"}
+    utils.save_config("Alice", config)
 
     reference_channels = 4 if kind == "QI2" else 3
     reference = torch.zeros((1, 96, 64, reference_channels))
@@ -426,7 +429,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
             assert "Attribute Disentanglement at Full Strength" in enhancer["prompt"]
             assert enhancer["image"].shape == (1, 96, 64, 3)
             assert enhancer["image"][0, 0, 0].tolist() == pytest.approx([0, 0, 1])
+            assert "Dense dramatic shadows" in enhancer["prompt"]
             assert calls["TextEncodeQwenImage21"]["prompt"].startswith("Dress the character in the image with the requested outfit precisely.")
+            assert "Dense dramatic shadows" in calls["TextEncodeQwenImage21"]["prompt"]
             assert "<image1>" not in calls["TextEncodeQwenImage21"]["prompt"]
         assert "Transparent background with alpha channel." in calls["TextEncodeQwenImage21"]["prompt"]
         if clone:
@@ -522,6 +527,15 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         assert call_names.count(encoder_name) == previous_calls + 1
         assert "Updated edit rules." in calls["TextGenerate"]["prompt"]
 
+        old_signature = node.IS_CHANGED(widget_data=data)
+        config["character_info"]["style_description"] = "Soft pencil shading"
+        utils.save_config("Alice", config)
+        assert node.IS_CHANGED(widget_data=data) != old_signature
+        node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
+        assert call_names.count(encoder_name) == previous_calls + 2
+        assert "Soft pencil shading" in calls["TextGenerate"]["prompt"]
+        assert "Soft pencil shading" in calls[encoder_name]["prompt"]
+
         text_calls = call_names.count("TextGenerate")
         encoder_calls = call_names.count(encoder_name)
         data["gen_settings"]["qi2_prompt_enhancement"] = False
@@ -602,12 +616,13 @@ class TestQI2EditRewriter:
         assert source in kwargs["prompt"]
         assert kwargs["image"] is image
         assert expected in result
-        assert "pose, framing and rendering medium" in result
+        assert "skin color and its texture" in result
+        assert "pose, framing and the original image artistic style" in result
+        assert "Align clothing render" not in result
         assert "<think>" not in result
         assert '"wh_ratio"' not in result
         assert result.startswith("Change the outfit decisively." if "Change the outfit decisively." in response else source)
         assert "restore, upscale and refine character's hairs" not in kwargs["prompt"]
-        assert "of the image" in result
         assert "<image1>" not in result
         assert "<image2>" not in result
 

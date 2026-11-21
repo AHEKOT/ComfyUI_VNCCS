@@ -234,3 +234,17 @@ def _vnccs_register_pose_sets():
 
 
 _vnccs_register_pose_sets()
+
+
+def _vnccs_register_additional_poses():
+    try:
+        from server import PromptServer
+    except ImportError:
+        return
+    if getattr(PromptServer.instance, "app", None) is None:
+        return
+    from .api.additional_poses_catalog import register_routes
+    register_routes(PromptServer.instance.routes)
+
+
+_vnccs_register_additional_poses()
