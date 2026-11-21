@@ -9,6 +9,7 @@ from ..operation_logger import log_event, log_stage, logged_operation, log_promp
 from .generator_context import _LIVE_GENERATOR_CONTEXTS, _generator_context_key, _remember_generator_context, _get_generator_context, scoped_cache_dir, _forget_generator_context, generator_execution_lock, serialized_generator
 from .progress_state import begin_progress, record_progress, progress_snapshot, PROGRESS_EPOCH
 from .preview_runtime import run_preview_job
+from .additional_poses import destination as additional_poses_destination, sprite_paths as additional_pose_sprite_paths
 
 import base64
 import gc
@@ -76,6 +77,7 @@ from ..utils import (
     ensure_safe_name,
     is_path_under,
     load_character_info,
+    load_config,
     require_existing_costume,
     normalize_filesystem_path,
     safe_join_under,
@@ -1106,6 +1108,8 @@ def _qi2_scale(target_size):
 class VNCCS_CharacterGenerator:
     OUTPUT_NODE = True
     INPUT_IS_LIST = True
+    _generator_type = "VNCCS_CharacterGenerator"
+    _archive_original_sprites = True
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -2880,7 +2884,7 @@ class VNCCS_CharacterGenerator:
             background = self._unwrap_scalar(background)
             sheets_path = self._unwrap_scalar(sheets_path)
             cache_dir = _character_cache_dir_from_sheets_path(sheets_path, widget_payload.get("character_name", ""), unique_id, self._progress_scope)
-            _remember_generator_context(unique_id, "VNCCS_CharacterGenerator", cache_dir, pipe, self._progress_scope)
+            _remember_generator_context(unique_id, self._generator_type, cache_dir, pipe, self._progress_scope)
             if regenerate_from:
                 cached_inputs = _load_run_inputs(cache_dir)
                 poses = cached_inputs.get("poses", poses)
@@ -2981,7 +2985,7 @@ class VNCCS_CharacterGenerator:
             self._save_stage(cache_dir, "bg_remove", final_images, normalized=bg_disabled)
             saved_paths = self._save_final_sprites(final_images, sheets_path, character_name, version_existing=not regenerate_from, normalized=bg_disabled)
             character_root = _character_root_from_sheets_path(sheets_path, character_name)
-            if saved_paths and character_root:
+            if saved_paths and character_root and self._archive_original_sprites:
                 original_root = safe_join_under(character_root, "Sprites", "Original")
                 for source_dir in (
                     safe_join_under(original_root, "Neutral"),
@@ -2997,6 +3001,72 @@ class VNCCS_CharacterGenerator:
             _forget_generator_context(unique_id, getattr(self, "_progress_scope", None))
             self._emit(unique_id, "error", "error", message=str(exc))
             raise
+
+
+class VNCCS_AdditionalPosesGenerator(VNCCS_CharacterGenerator):
+    DESCRIPTION = "Generate and append poses to the character, costume and emotion selected in VNCCS Additional Poses."
+    _generator_type = "VNCCS_AdditionalPosesGenerator"
+    _archive_original_sprites = False
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        inputs = super().INPUT_TYPES()
+        inputs["required"].update(inputs.pop("optional"))
+        inputs["required"]["background"] = ("STRING", {"forceInput": True})
+        return inputs
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("NaN")
+
+    def process(self, poses, character, pipe, prompt, background="Green", widget_data="{}", sheets_path="", unique_id=None):
+        sheets_path = self._unwrap_scalar(sheets_path)
+        selection = additional_poses_destination(sheets_path)
+        with character_storage_lock(character_dir(selection[0])):
+            if load_config(selection[0], strict=True) is None:
+                raise FileNotFoundError(f"Character '{selection[0]}' has no saved configuration.")
+            additional_pose_sprite_paths(*selection)
+        data = self._widget_data(widget_data)
+        if self._regenerate_from(data) or self._regenerate_index(data) is not None:
+            raise ValueError("Queue Additional Poses Generator to add new poses.")
+        data["character_name"] = selection[0]
+        data.setdefault("pose_generation", {})["background_color"] = "from_generator"
+        bg_remove = data.setdefault("bg_remove", {})
+        bg_remove["screen_mode"] = "from_background"
+        background = str(self._unwrap_scalar(background) or "Green").strip()
+        if background.casefold() in {"alpha", "transparent"}:
+            if self._is_qi2_pipe(self._extract_pipe(self._unwrap_scalar(pipe))):
+                bg_remove["preset"] = "Native"
+            else:
+                background = "Green"
+                bg_remove["preset"] = "balanced"
+        elif self._is_native_bg_remove(bg_remove):
+            bg_remove["preset"] = "balanced"
+        return super().process(poses, character, pipe, prompt, background, json.dumps(data), sheets_path, unique_id)
+
+    def _save_final_sprites(self, images, sheets_path, character_name="", sprite_set="Naked", version_existing=True, normalized=False):
+        character, costume, emotion = additional_poses_destination(sheets_path)
+        root = character_dir(character)
+        batch = self._image_list(images)
+        if not batch:
+            raise ValueError("No additional poses to publish.")
+        with character_storage_lock(root):
+            if load_config(character, strict=True) is None:
+                raise FileNotFoundError(f"Character '{character}' has no saved configuration.")
+            directory = additional_pose_sprite_paths(character, costume, emotion)[0].parent
+            # Use pose filenames even for emotions, whose per-neutral variants reserve sprite_<emotion>_<index>.
+            numbers = (re.search(r"_(\d+)$", entry.stem) for entry in directory.iterdir())
+            start = 1 + max((int(match[1]) for match in numbers if match), default=0)
+            saved = []
+            with staged_image_batch(directory, version_existing=False, lock_root=root) as stage:
+                for index, image in enumerate(batch, start):
+                    filename = f"sprite_pose_{index:04d}.png"
+                    path = os.path.join(stage, filename)
+                    self._tensor_item_to_pil(image[0]).save(path, format="PNG")
+                    with Image.open(path) as verification:
+                        verification.verify()
+                    saved.append(str(directory / filename))
+            return saved
 
 
 class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
@@ -5280,6 +5350,7 @@ if server is not None:
 NODE_CLASS_MAPPINGS = {
     "VNCCS_BackgroundGenerator": VNCCS_BackgroundGenerator,
     "VNCCS_CharacterGenerator": VNCCS_CharacterGenerator,
+    "VNCCS_AdditionalPosesGenerator": VNCCS_AdditionalPosesGenerator,
     "VNCCS_CharacterCloneGenerator": VNCCS_CharacterCloneGenerator,
     "VNCCS_ClothesGenerator": VNCCS_ClothesGenerator,
     "VNCCS_EmotionsGenerator": VNCCS_EmotionsGenerator,
@@ -5288,6 +5359,7 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_BackgroundGenerator": "VNCCS Background Generator",
     "VNCCS_CharacterGenerator": "VNCCS Character Generator",
+    "VNCCS_AdditionalPosesGenerator": "VNCCS Additional Poses Generator",
     "VNCCS_CharacterCloneGenerator": "VNCCS Character Clone Generator",
     "VNCCS_ClothesGenerator": "VNCCS Clothes Generator",
     "VNCCS_EmotionsGenerator": "VNCCS Emotions Generator",

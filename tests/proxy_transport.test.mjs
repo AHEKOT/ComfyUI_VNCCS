@@ -446,6 +446,7 @@ async function queueHarness() {
     h.context.window = { addEventListener() {}, removeEventListener() {} };
     h.widget.bindEvents();
     h.widget.validateNativeSeedvr = () => true;
+    h.widget.validateSeedvrModels = () => true;
     h.node._vnccsCharacterGeneratorWidget = h.widget;
     h.context.app.graph = { _nodes: [h.node] };
     h.submission = { run: async () => true };

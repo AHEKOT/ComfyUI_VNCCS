@@ -766,6 +766,7 @@ export function createSpritePreviewNavigator({
     prevButton,
     nextButton,
     countLabel,
+    onSelect,
     onLoaded,
     onMissing,
     onError,
@@ -780,6 +781,7 @@ export function createSpritePreviewNavigator({
         requestId: 0,
     };
     let disposed = false;
+    let spriteUrls = null;
     let cancelImageLoad = () => {};
     const isCurrent = (requestId) => !disposed && requestId === state.requestId && isSelectionCurrent(state);
     const invalidate = () => {
@@ -796,9 +798,9 @@ export function createSpritePreviewNavigator({
     };
 
     const updateNav = () => {
-        const visible = state.count > 1;
+        const visible = state.count > 1 || (state.count > 0 && state.index < 0);
         nav?.classList.toggle("is-visible", visible);
-        if (countLabel) countLabel.textContent = visible ? `${state.index + 1}/${state.count}` : "";
+        if (countLabel) countLabel.textContent = visible ? `${state.index < 0 ? "–" : state.index + 1}/${state.count}` : "";
     };
 
     const hideNav = () => {
@@ -808,6 +810,7 @@ export function createSpritePreviewNavigator({
     };
 
     const spriteUrl = (character, index, costume = "") => {
+        if (spriteUrls) return mediaURL(spriteUrls[index]);
         const params = new URLSearchParams({
             character,
             index: String(index),
@@ -828,14 +831,15 @@ export function createSpritePreviewNavigator({
         onLoaded?.(url, { ...state });
     };
 
-    const applyMissing = (message = "No preview available") => {
+    const applyMissing = (message = "No preview available", keepNavigation = false) => {
         setLoading(false);
         if (image && interactions) interactions.emptyPreview(image, placeholder, state.character, message);
         else {
             if (image) image.style.display = "none";
             if (placeholder) placeholder.style.display = "flex";
         }
-        hideNav();
+        if (keepNavigation) updateNav();
+        else hideNav();
         onMissing?.({ ...state });
     };
 
@@ -901,24 +905,39 @@ export function createSpritePreviewNavigator({
         const url = spriteUrl(state.character, normalized, state.costume);
         state.requestId = requestId;
         state.index = normalized;
-        setLoading(true);
+        onSelect?.(normalized);
         updateNav();
+        if (spriteUrls && url && image?.getAttribute("src") === url && image.style.display !== "none") return;
 
+        const unavailable = () => {
+            if (spriteUrls) applyMissing("Sprite preview is unavailable.", true);
+            else showFallback(state.fallbackUrl);
+            onError?.({ ...state });
+        };
+        if (!url) { unavailable(); return; }
+        setLoading(true);
         loadImage(url, requestId, () => {
             setLoading(false);
             applyImage(url);
             updateNav();
             prefetch(normalized - 1);
             prefetch(normalized + 1);
-        }, () => {
-            showFallback(state.fallbackUrl);
-            onError?.({ ...state });
-        });
+        }, unavailable);
+    };
+
+    const loadList = (character, urls, index, message) => {
+        if (disposed) return;
+        invalidate();
+        spriteUrls = urls;
+        Object.assign(state, { character, count: urls.length, index });
+        if (index < 0 || !urls.length) applyMissing(message, true);
+        else show(index);
     };
 
     const load = async (character, { costume = "", index, fallbackUrl = "" } = {}) => {
         if (disposed) return;
         invalidate();
+        spriteUrls = null;
         const sameSelection = character === state.character && costume === state.costume;
         const currentIndex = sameSelection ? state.index : 0;
         if (interactions && !sameSelection) {
@@ -960,12 +979,13 @@ export function createSpritePreviewNavigator({
         }
     };
 
-    prevButton?.addEventListener("click", () => show(state.index - 1));
+    prevButton?.addEventListener("click", () => show(state.index < 0 ? 0 : state.index - 1));
     nextButton?.addEventListener("click", () => show(state.index + 1));
     updateNav();
 
     return {
         load,
+        loadList,
         invalidate,
         show,
         showFallback,
