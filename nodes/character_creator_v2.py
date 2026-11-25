@@ -1044,6 +1044,8 @@ def _character_is_nsfw(info):
 def _character_clothing_prompt(info):
     if _character_is_nsfw(info):
         return "penis, naked, nude" if info.get("sex", "female") == "male" else "naked, nude, vagina, nipples"
+    if info.get("sex", "female") == "female" and int(info.get("age", 18)) < 13:
+        return "wear a white sleep tank top and panties"
     return "bare chest, wear white boxers" if info.get("sex", "female") == "male" else "wear white bra and panties"
 
 
