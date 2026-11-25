@@ -84,7 +84,7 @@ def test_single_image_regeneration_preserves_published_sprites(tmp_path, monkeyp
     before = {path.name: path.read_bytes() for path in target.glob("*.png")}
     assert len(before) == 3
     stage = "original_bg_remove" if mode == "clone" else "bg_remove"
-    cache_path = next(root.rglob(f"{stage}.pt"))
+    cache_path = next(root.rglob(f"{stage}.images")) / "0001.png"
     if cache_state == "missing":
         cache_path.unlink()
     elif cache_state == "damaged":
@@ -314,7 +314,7 @@ def test_normal_emotion_run_prunes_excluded_tasks_only_after_success(tmp_path, m
     images = torch.ones(3, 8, 8, 3)
     node.process(images, object(), tasks, widget_data=json.dumps(state), unique_id="prune")
     cache = root / "cache" / "poses" / "prune" / "_stage_cache"
-    old = {path.name: path.read_bytes() for path in cache.glob("emotion*.pt")}
+    old = {path: path.read_bytes() for path in cache.glob("emotion*.images/*.png")}
     assert len(old) == 6
     published = {path: path.read_bytes() for group in ("Sprites", "Faces")
                  for path in (root / group).rglob("*.png")}
@@ -324,12 +324,12 @@ def test_normal_emotion_run_prunes_excluded_tasks_only_after_success(tmp_path, m
     monkeypatch.setattr(node, "_run_emotion_generation_one", fail)
     with pytest.raises(RuntimeError, match="generation failed"):
         node.process(images[:1], object(), tasks[:1], widget_data=json.dumps(state), unique_id="prune")
-    assert {path.name: path.read_bytes() for path in cache.glob("emotion*.pt")} == old
+    assert {path: path.read_bytes() for path in cache.glob("emotion*.images/*.png")} == old
     assert all(path.read_bytes() == contents for path, contents in published.items())
     monkeypatch.setattr(node, "_run_emotion_generation_one", generate)
     node.process(images[:1], object(), tasks[:1], widget_data=json.dumps(state), unique_id="prune")
-    assert {path.name for path in cache.glob("emotion*.pt")} == {
-        "emotion_0001__item_0001.pt", "emotion_0001_detailer_mask__item_0001.pt"}
+    assert {path.name for path in cache.glob("emotion*.images")} == {
+        "emotion_0001__item_0001.images", "emotion_0001_detailer_mask__item_0001.images"}
     assert all(path.exists() for path in published)
 
 

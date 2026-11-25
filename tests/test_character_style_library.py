@@ -272,7 +272,7 @@ def test_flattening_keeps_opaque_rgb_pixels_and_matches_card_colors():
     background = library.flatten_style_preview(Image.new("RGBA", (32, 32), (255, 0, 0, 0)))
     assert background.getpixel((0, 0)) == (41, 32, 52)
     assert background.getpixel((31, 31)) == (23, 19, 31)
-    css = (ROOT / "web/vnccs_character_creator_v2.js").read_text()
+    css = (ROOT / "web/character_styles.mjs").read_text()
     assert "background: linear-gradient(145deg, #292034, #17131f)" in css
 
 

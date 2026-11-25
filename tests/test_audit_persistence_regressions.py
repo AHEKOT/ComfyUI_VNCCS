@@ -89,7 +89,7 @@ def test_cloner_restored_workflow_saves_its_authored_settings(monkeypatch, tmp_p
     assert current["costumes"] == config["costumes"]
 
 
-def test_recreated_costume_rejects_its_deleted_editors_revision(clothes_paths, monkeypatch):
+def test_recreated_costume_accepts_settings_from_an_unchanged_workflow(clothes_paths, monkeypatch):
     monkeypatch.setattr(clothes_paths.web, "json_response", lambda data, status=200, **kwargs:
                         SimpleNamespace(data=data, status=status, **kwargs), raising=False)
     info = {"top": "cotton"}
@@ -98,12 +98,11 @@ def test_recreated_costume_rejects_its_deleted_editors_revision(clothes_paths, m
     utils.delete_costume("Alice", "Dress")
     utils.save_costume_info("Alice", "Dress", info)
     assert utils.load_costume_snapshot("Alice", "Dress")[1] != old_revision
-    original = Path(utils.config_path("Alice")).read_bytes()
     response = asyncio.run(clothes_paths.vnccs_save_costume(costume_request({
-        "character": "Alice", "costume": "Dress", "info": {"top": "old editor"}, "revision": old_revision,
+        "character": "Alice", "costume": "Dress", "info": {"top": "workflow settings"}, "revision": old_revision,
     })))
-    assert response.status == 409
-    assert Path(utils.config_path("Alice")).read_bytes() == original
+    assert response.status == 200
+    assert utils.load_costume_info("Alice", "Dress") == {"top": "workflow settings"}
 
 
 def test_preview_read_waits_for_publication_without_blocking_http(clothes_paths, monkeypatch):
@@ -134,17 +133,17 @@ def test_preview_read_waits_for_publication_without_blocking_http(clothes_paths,
         worker.join(2)
 
 
-def test_stale_style_edit_preserves_newer_prompt_and_disk_bytes(tmp_path):
+@pytest.mark.parametrize("revision", [None, "obsolete-revision"])
+def test_style_saves_do_not_require_a_current_workflow_revision(tmp_path, revision):
     styles = _preload_node("character_styles")
     path = tmp_path / "styles.json"
     old = styles.save_user_style({"label": "Style", "prompt": "old prompt"}, path)
     newer = styles.save_user_style({**old, "prompt": "new prompt"}, path)
-    original = path.read_bytes()
-    with pytest.raises(utils.StorageConflictError):
-        styles.save_user_style({**old, "label": "Renamed"}, path)
-    assert path.read_bytes() == original
-    current = styles.save_user_style({**newer, "label": "Renamed"}, path)
-    assert current["prompt"] == "new prompt"
+    payload = {**old, "label": "Renamed", "revision": revision}
+    saved = styles.save_user_style(payload, path)
+    assert saved["label"] == "Renamed" and saved["prompt"] == "old prompt"
+    assert styles.load_user_styles(path) == [saved]
+    assert saved["revision"] != newer["revision"]
     assert "revision" not in json.loads(path.read_text())["styles"][0]
 
 

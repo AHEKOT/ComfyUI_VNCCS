@@ -1,0 +1,219 @@
+{
+  "version": 7,
+  "default_style": "none",
+  "groups": [
+    {
+      "label": "Anime and Illustrated Backgrounds",
+      "styles": [
+        {
+          "id": "bg_1990s_hand_painted_cel_anime",
+          "label": "1990s Hand-Painted Cel Anime",
+          "prompt": "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain",
+          "description": "1990s hand-painted cel anime, painted gouache backgrounds, soft film grain",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_ghibli_pastoral_fantasy_anime",
+          "label": "Ghibli Pastoral Fantasy Anime",
+          "prompt": "Studio Ghibli-inspired pastoral fantasy anime, lush hand-painted detail, warm natural colors",
+          "description": "Studio Ghibli-inspired pastoral fantasy anime, lush hand-painted detail, warm natural colors",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_shinkai_cinematic_anime",
+          "label": "Shinkai Cinematic Anime",
+          "prompt": "Makoto Shinkai-inspired cinematic anime, luminous skies, precise architecture, sparkling reflections",
+          "description": "Makoto Shinkai-inspired cinematic anime, luminous skies, precise architecture, sparkling reflections",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_japanese_psychological_horror_anime",
+          "label": "Japanese Psychological Horror Anime",
+          "prompt": "Japanese psychological horror anime, muted colors, oppressive framing, unsettling environmental detail",
+          "description": "Japanese psychological horror anime, muted colors, oppressive framing, unsettling environmental detail",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_realistic_contemporary_anime",
+          "label": "Realistic Contemporary Anime",
+          "prompt": "Realistic contemporary anime, restrained linework, physically believable materials, photographic perspective",
+          "description": "Realistic contemporary anime, restrained linework, physically believable materials, photographic perspective",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_1980s_cyberpunk_anime",
+          "label": "1980s Cyberpunk Anime",
+          "prompt": "1980s cyberpunk anime, dense mechanical detail, airbrushed shadows, electric neon accents",
+          "description": "1980s cyberpunk anime, dense mechanical detail, airbrushed shadows, electric neon accents",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_1970s_space_opera_anime",
+          "label": "1970s Space Opera Anime",
+          "prompt": "1970s space opera anime, bold painted shapes, analog machinery, retro science-fiction design",
+          "description": "1970s space opera anime, bold painted shapes, analog machinery, retro science-fiction design",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_2000s_slice_of_life_anime",
+          "label": "2000s Slice-of-Life Anime",
+          "prompt": "2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail",
+          "description": "2000s slice-of-life anime, clean digital linework, soft pastel colors, gentle everyday detail",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_watercolor_travel_anime",
+          "label": "Watercolor Travel Anime",
+          "prompt": "Watercolor travel anime, translucent pigment washes, delicate pencil outlines, textured paper",
+          "description": "Watercolor travel anime, translucent pigment washes, delicate pencil outlines, textured paper",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_minimalist_iyashikei_anime",
+          "label": "Minimalist Iyashikei Anime",
+          "prompt": "Minimalist iyashikei anime, spacious composition, restrained detail, subdued seasonal colors",
+          "description": "Minimalist iyashikei anime, spacious composition, restrained detail, subdued seasonal colors",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_noir_anime",
+          "label": "Noir Anime",
+          "prompt": "Noir anime, hard-edged shadows, desaturated colors, dramatic architectural silhouettes",
+          "description": "Noir anime, hard-edged shadows, desaturated colors, dramatic architectural silhouettes",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_ukiyo_e_anime",
+          "label": "Ukiyo-e Anime",
+          "prompt": "Ukiyo-e-inspired anime, woodblock textures, flat color fields, elegant contour lines",
+          "description": "Ukiyo-e-inspired anime, woodblock textures, flat color fields, elegant contour lines",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_taisho_romantic_anime",
+          "label": "Taisho Romantic Anime",
+          "prompt": "Taisho romantic anime, delicate ink lines, ornate period design, muted jewel colors",
+          "description": "Taisho romantic anime, delicate ink lines, ornate period design, muted jewel colors",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_gothic_dark_fantasy_anime",
+          "label": "Gothic Dark Fantasy Anime",
+          "prompt": "Gothic dark fantasy anime, intricate stonework, dramatic painted lighting, weathered textures",
+          "description": "Gothic dark fantasy anime, intricate stonework, dramatic painted lighting, weathered textures",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_cozy_fantasy_anime",
+          "label": "Cozy Fantasy Anime",
+          "prompt": "Cozy fantasy anime, rounded architecture, tactile painted surfaces, soft magical illumination",
+          "description": "Cozy fantasy anime, rounded architecture, tactile painted surfaces, soft magical illumination",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_dieselpunk_adventure_anime",
+          "label": "Dieselpunk Adventure Anime",
+          "prompt": "Dieselpunk adventure anime, riveted machinery, bold perspective, smoky earth-tone palette",
+          "description": "Dieselpunk adventure anime, riveted machinery, bold perspective, smoky earth-tone palette",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_solarpunk_anime",
+          "label": "Solarpunk Anime",
+          "prompt": "Solarpunk anime, airy architectural illustration, lush vegetation, optimistic natural colors",
+          "description": "Solarpunk anime, airy architectural illustration, lush vegetation, optimistic natural colors",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_nature_reclaimed_post_apocalyptic_anime",
+          "label": "Nature-Reclaimed Post-Apocalyptic Anime",
+          "prompt": "Nature-reclaimed post-apocalyptic anime, detailed environmental storytelling, faded colors, soft atmospheric light",
+          "description": "Nature-reclaimed post-apocalyptic anime, detailed environmental storytelling, faded colors, soft atmospheric light",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_surreal_dreamscape_anime",
+          "label": "Surreal Dreamscape Anime",
+          "prompt": "Surreal dreamscape anime, precise ordinary details, impossible spatial relationships, quiet pastel atmosphere",
+          "description": "Surreal dreamscape anime, precise ordinary details, impossible spatial relationships, quiet pastel atmosphere",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_psychedelic_science_fiction_anime",
+          "label": "Psychedelic Science-Fiction Anime",
+          "prompt": "Psychedelic science-fiction anime, saturated complementary colors, organic geometry, luminous painted gradients",
+          "description": "Psychedelic science-fiction anime, saturated complementary colors, organic geometry, luminous painted gradients",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_franco_belgian_ligne_claire_comic",
+          "label": "Franco-Belgian Ligne Claire Comic",
+          "prompt": "Franco-Belgian ligne claire comic, uniform clean outlines, flat colors, meticulous perspective",
+          "description": "Franco-Belgian ligne claire comic, uniform clean outlines, flat colors, meticulous perspective",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_european_watercolor_graphic_novel",
+          "label": "European Watercolor Graphic Novel",
+          "prompt": "European watercolor graphic novel, expressive ink contours, earthy washes, visible paper grain",
+          "description": "European watercolor graphic novel, expressive ink contours, earthy washes, visible paper grain",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_american_superhero_comic",
+          "label": "American Superhero Comic",
+          "prompt": "American superhero comic, bold inks, halftone shading, dynamic architectural perspective",
+          "description": "American superhero comic, bold inks, halftone shading, dynamic architectural perspective",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_black_white_japanese_manga",
+          "label": "Black-and-White Japanese Manga",
+          "prompt": "Black-and-white Japanese manga, detailed pen backgrounds, screentone gradients, crisp cross-hatching",
+          "description": "Black-and-white Japanese manga, detailed pen backgrounds, screentone gradients, crisp cross-hatching",
+          "reference": "",
+          "image": ""
+        },
+        {
+          "id": "bg_art_nouveau_fantasy_comic",
+          "label": "Art Nouveau Fantasy Comic",
+          "prompt": "Art Nouveau fantasy comic, flowing ink contours, botanical ornament, muted metallic accents",
+          "description": "Art Nouveau fantasy comic, flowing ink contours, botanical ornament, muted metallic accents",
+          "reference": "",
+          "image": ""
+        }
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "name": "VNCCS Backgrounds Dataset",
+      "credit": "25 unique style prompts selected from the user-provided anime background prompt dataset.",
+      "style_count": 25
+    }
+  ],
+  "aliases": {}
+}

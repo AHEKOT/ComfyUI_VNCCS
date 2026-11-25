@@ -112,12 +112,13 @@ def prune_workflow_caches(cache_dir, *, touch=False):
     directory = os.path.abspath(cache_dir)
     workflows = os.path.dirname(directory)
     node_root = os.path.dirname(workflows)
-    poses = os.path.dirname(node_root)
-    cache_root = os.path.dirname(poses)
+    cache_group = os.path.dirname(node_root)
+    cache_root = os.path.dirname(cache_group)
     if (not re.fullmatch(r"[a-f0-9]{64}", os.path.basename(directory))
             or os.path.basename(workflows) != "workflows"
-            or os.path.basename(poses) != "poses" or os.path.basename(cache_root) != "cache"
-            or any(os.path.islink(path) for path in (directory, workflows, node_root, poses, cache_root))):
+            or os.path.basename(cache_group) not in {"poses", "generator"}
+            or os.path.basename(cache_root) != "cache"
+            or any(os.path.islink(path) for path in (directory, workflows, node_root, cache_group, cache_root))):
         return
     # Hold the registry lock during removal so a new execution cannot start
     # using an inactive directory between the protection check and deletion.

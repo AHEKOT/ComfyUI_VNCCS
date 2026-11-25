@@ -1,4 +1,5 @@
 import { app } from "../../scripts/app.js";
+import { fitPreviewGrid } from "./preview_grid_layout.mjs?v=pose-manager-11";
 import { createSakuraInteractions, mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 import { vnccsApi as api, mediaURL, checkedJSON, storage, workflowScope, cacheIdentity, watchConnection } from "./vnccs_transport.js";
 import { SAKURA_THEME_CSS, SAKURA_INTERACTION_CSS, showModal as showCommonModal, showModelDownloadDialog, registerCleanup, syncDOMWidgetWidth, syncDOMWidgetWidthSoon, enableMiddleMouseCanvasPan, attachHelpTooltips, setHelpText, resolutionScaleMegapixels, finiteResolutionScaleValue, resolutionScaleText, RESOLUTION_SCALE_MIN_MP, RESOLUTION_SCALE_MAX_MP, RESOLUTION_SCALE_STEP_MP } from "./vnccs_common.js";
@@ -206,6 +207,8 @@ const CLOTHES_STAGES = [
     ["upscaler", "Upscaler"],
     ["bg_remove", "BG Remove"],
 ];
+
+const BACKGROUND_STAGES = [["source_upscaler", "Source Upscaler"], ["background_generation", "Background Generation"], ["upscaler", "Variant Upscaler"]];
 
 const DEFAULT_EMOTION_STAGES = [
     ["emotion_0001_bg_remove", "Emotion"],
@@ -1202,6 +1205,7 @@ ${SAKURA_THEME_CSS}
 .vnccs-seedvr-card[data-download-status="downloading"] .vnccs-seedvr-card-status, .vnccs-seedvr-card[data-download-status="queued"] .vnccs-seedvr-card-status { color: var(--accent-lavender); }
 .vnccs-seedvr-download { height: 30px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; box-sizing: border-box; }
 .vnccs-pipe-preview { position: relative; }
+.vnccs-pipe-img-label { position:absolute; top:8px; left:8px; right:8px; z-index:3; width:fit-content; max-width:calc(100% - 16px); padding:5px 9px; border-radius:var(--radius-sm); background:rgba(10,10,17,.82); color:var(--text-primary); font:500 11px var(--font); overflow-wrap:anywhere; pointer-events:none; }
 .vnccs-pipe-disclosure { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms ease; }
 .vnccs-pipe-disclosure.is-open { grid-template-rows: 1fr; opacity: 1; }
 .vnccs-pipe-disclosure-clip { min-height: 0; overflow: hidden; }
@@ -1315,7 +1319,9 @@ class CharacterGeneratorWidget {
         this.node = node;
         this.isClone = Boolean(options.isClone);
         this.isClothes = Boolean(options.isClothes);
+        this.isAdditionalPoses = Boolean(options.isAdditionalPoses);
         this.isEmotions = Boolean(options.isEmotions);
+        this.isBackground = Boolean(options.isBackground);
         this.qi2EmotionDefaultsPending = this.isEmotions;
         this.title = options.title || "VNCCS Character Generator";
         this.data = readData(node);
@@ -1428,7 +1434,7 @@ class CharacterGeneratorWidget {
             this.syncStagesFromData();
             this.syncModelResolution();
             writeData(this.node, this.data);
-            return this.validateNativeSeedvr(true);
+            return this.validateNativeSeedvr(true) && this.validateSeedvrModels();
         };
         registerCleanup(this.node, () => delete this.node._vnccsCharacterGeneratorSyncBeforeQueue);
 
@@ -1477,7 +1483,9 @@ class CharacterGeneratorWidget {
         this.onStage = (event) => {
             if (this._disposed) return;
             const detail = event.detail || {};
+            if (this.isBackground && detail.background_id && detail.background_id !== this.data.background_id) return;
             if (String(detail.node_id) !== String(this.node.id)) return;
+            if (this.isAdditionalPoses && this.syncCharacterSourceData()) writeData(this.node, this.data);
             if (this._sourceCharacter === "" || (detail.character_name != null && detail.character_name !== (this.data.character_name || ""))) return;
             const scope = this.progressScope();
             if (detail.scope && detail.scope !== scope) return;
@@ -1577,6 +1585,7 @@ class CharacterGeneratorWidget {
                     processing_index: detail.processing_index,
                     processing_indices: detail.processing_indices,
                     preview_aspect: detail.preview_aspect ?? previousStageState.preview_aspect,
+                    labels: detail.labels ?? previousStageState.labels,
                 };
                 if (!this.userSelectedPreview && (status === "running" || status === "done" || detail.images)) {
                     if (stage !== this.selectedPreview && this.hasPendingPreviewReveal()) {
@@ -1590,6 +1599,9 @@ class CharacterGeneratorWidget {
                     }
                 }
                 this.updateRegenerateProgress(stage, status);
+                if (this.isAdditionalPoses && stage === "bg_remove" && status === "done") {
+                    this.additionalPosesSource?._vnccsAdditionalPoses?.load(true);
+                }
             }
             if (this.viewer?.open) this.syncViewerImage();
             this.renderPreview();
@@ -1760,7 +1772,7 @@ class CharacterGeneratorWidget {
     }
 
     bgRemoveModes() {
-        return this.data.ui?.bg_remove_model_kind === "qi2"
+        return !this.isAdditionalPoses && this.data.ui?.bg_remove_model_kind === "qi2"
             ? BG_REMOVE_MODES
             : BG_REMOVE_MODES.filter(mode => mode !== "Native");
     }
@@ -1972,6 +1984,11 @@ class CharacterGeneratorWidget {
             });
         }
 
+        if (this.isBackground) return groups.map(group => {
+            if (group.fields[0]?.section !== "pose_generation") return { ...group, title: group.title.replace("Pose Generation", "Background Generation") };
+            return { title: "Background Generation", fields: [resolutionScale("pose_generation")] };
+        });
+
         groups.push({
             title: "VNCCS Chroma Key",
             fields: [
@@ -2013,6 +2030,11 @@ class CharacterGeneratorWidget {
                     number("bg_remove", "sam3_min_foreground_overlap", "minimum foreground overlap", 0, 1, 0.01),
                 ],
             });
+        }
+        if (this.isAdditionalPoses) {
+            return groups.map(group => ({ ...group, fields: group.fields.filter(field =>
+                !(field.section === "pose_generation" && field.key === "background_color")
+                && !(field.section === "bg_remove" && field.key === "screen_mode")) }));
         }
         return groups;
     }
@@ -2287,7 +2309,7 @@ class CharacterGeneratorWidget {
     }
 
     validateNativeSeedvr(showModal = false) {
-        if ((this.data.upscaler?.mode || "seedvr") !== "seedvr") return true;
+        if (!this.isBackground && (this.data.upscaler?.mode || "seedvr") !== "seedvr") return true;
         // Do not block Queue while /object_info is still loading.
         if (this.nativeSeedvrAvailable !== false) return true;
         if (showModal) {
@@ -2296,6 +2318,40 @@ class CharacterGeneratorWidget {
                 "ComfyUI Update Required",
                 `Native SeedVR2 is not available in this ComfyUI installation. Update ComfyUI to the latest release and restart it before using SeedVR upscaling.${missing}`,
             );
+        }
+        return false;
+    }
+
+    async validateSeedvrModels() {
+        if (this.isEmotions || (!this.isBackground && (this.data.upscaler?.mode || "seedvr") !== "seedvr")) return true;
+        const { model, vae, mode } = this.data.upscaler;
+        const files = [
+            ["diffusion model", "UNETLoader", "unet_name", model],
+            ["VAE", "VAELoader", "vae_name", vae],
+        ];
+        const unselected = files.find(([, , , name]) => typeof name !== "string" || !name.trim());
+        if (unselected) {
+            this.showModal("SeedVR2 Model Required", `Select a SeedVR2 ${unselected[0]} in Generator Settings.`);
+            return false;
+        }
+        const isCurrent = () => !this._disposed && this.data.upscaler?.model === model
+            && this.data.upscaler?.vae === vae && this.data.upscaler?.mode === mode;
+        try {
+            const available = await Promise.all(files.map(async ([, loader, key, name]) => {
+                const info = await checkedJSON(`/object_info/${loader}`);
+                const options = info?.[loader]?.input?.required?.[key]?.[0];
+                if (!Array.isArray(options)) throw new Error(`Unable to read ${loader} model choices.`);
+                const selected = name.replace(/\\/g, "/");
+                return options.some(option => typeof option === "string" && option.replace(/\\/g, "/") === selected);
+            }));
+            if (!isCurrent()) return false;
+            const missing = files.filter((_, index) => !available[index]);
+            if (!missing.length) return true;
+            const names = missing.map(([label, , , name]) => `${label}: ${name}`).join("\n");
+            this.showModal("SeedVR2 Model Required",
+                `SeedVR2 files are missing:\n${names}\n\nInstall the missing files or select installed models in Generator Settings.`);
+        } catch (error) {
+            if (isCurrent()) this.showModal("SeedVR2 Model Check Failed", `Unable to verify installed SeedVR2 files. ${error.message}`);
         }
         return false;
     }
@@ -2328,6 +2384,7 @@ class CharacterGeneratorWidget {
             return;
         }
         if (!this.stages.some(([key]) => key === stageKey)) return;
+        if (this.isBackground && imageIndex === 0) { stageKey = "source_upscaler"; imageIndex = null; }
         this.syncCharacterSourceData();
         this.syncModelResolution();
         this.syncStagesFromData();
@@ -2478,7 +2535,7 @@ class CharacterGeneratorWidget {
         }
         this.rememberModelResolution();
 
-        if (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove())) {
+        if (!this.isAdditionalPoses && (previousBgKind !== kind || (kind !== "qi2" && this.isNativeBgRemove()))) {
             const preset = String(this.data.bg_remove?.preset || "balanced");
             if (kind === "qi2") {
                 if (preset.toLowerCase() !== "native") {
@@ -2515,14 +2572,48 @@ class CharacterGeneratorWidget {
         });
     }
 
+    syncBackgroundSourceData() {
+        const graph = this.node.graph || app.graph, pending = [this.node], visited = new Set();
+        while (pending.length) {
+            const source = pending.shift();
+            if (!source || visited.has(source)) continue;
+            visited.add(source);
+            if ((source.type || source.comfyClass) === "VNCCS_BackgroundCreator") {
+                try {
+                    const state = JSON.parse(source.widgets?.find(widget => widget.name === "background_data")?.value || "{}");
+                    const names = state.editor?.variants?.map(card => card.name) || ["Morning", "Evening", "Night"];
+                    const imageId = state.selected_image_id || "";
+                    const changed = this.data.background_id !== (state.background_id || "") || this.data.background_source_image_id !== imageId
+                        || JSON.stringify(this.data.background_variants) !== JSON.stringify(names);
+                    if (changed && this.stageState) {
+                        this.stageState = {}; this.finishRegenerate({ render: false }); this.closeViewer();
+                        this.selectedPreview = "source_upscaler"; this.userSelectedPreview = false;
+                    }
+                    this.data.background_id = state.background_id || ""; this.data.background_source_image_id = imageId;
+                    this.data.background_variants = names;
+                    return changed;
+                } catch { return false; }
+            }
+            for (const input of source.inputs || []) {
+                const link = input.link == null ? null : graph?.links?.[input.link];
+                const upstream = graph?.getNodeById?.(link?.origin_id);
+                if (upstream) pending.push(upstream);
+            }
+        }
+        return false;
+    }
+
     syncCharacterSourceData() {
+        if (this.isBackground) return this.syncBackgroundSourceData();
         if (this.isEmotions) return this.syncEmotionStudioSourceData();
         const matchesType = (node, type, displayName = "") => {
             const title = typeof node?.getTitle === "function" ? node.getTitle() : node?.title;
             return node?.type === type || node?.comfyClass === type || node?.constructor?.type === type || title === displayName;
         };
-        const sourceType = this.isClone ? "CharacterCloner" : (this.isClothes ? "ClothesDesigner" : "CharacterCreatorV2");
-        const displayName = this.isClone ? "VNCCS Character Cloner" : (this.isClothes ? "VNCCS Clothes Designer" : "VNCCS Character Creator V2");
+        const sourceType = this.isAdditionalPoses ? "VNCCS_AdditionalPoses"
+            : this.isClone ? "CharacterCloner" : (this.isClothes ? "ClothesDesigner" : "CharacterCreatorV2");
+        const displayName = this.isAdditionalPoses ? "VNCCS Additional Poses"
+            : this.isClone ? "VNCCS Character Cloner" : (this.isClothes ? "VNCCS Clothes Designer" : "VNCCS Character Creator V2");
         const graph = this.node.graph || app.graph;
         const pending = [this.node];
         const visited = new Set();
@@ -2536,13 +2627,33 @@ class CharacterGeneratorWidget {
                 source = candidate;
                 break;
             }
-            for (const input of candidate.inputs || []) {
+            const inputs = candidate.inputs || [];
+            for (const input of this.isAdditionalPoses && candidate === this.node ? inputs.filter(item => item.name === "sheets_path") : inputs) {
                 const link = input.link == null ? null : graph?.links?.[input.link];
                 const upstream = graph?.getNodeById?.(link?.origin_id);
                 if (upstream) pending.push(upstream);
             }
         }
         const widget = source?.widgets?.find(w => w.name === "widget_data");
+        if (this.isAdditionalPoses) {
+            this.additionalPosesSource = source;
+            let selection = [];
+            try {
+                const payload = JSON.parse(widget?.value || "{}");
+                selection = [payload.character, payload.costume, payload.emotion, payload.sprite];
+            } catch { /* Selector reports failed restoration. */ }
+            const signature = selection.length && selection.every(Boolean) ? JSON.stringify(selection) : "";
+            const changed = signature !== (this.data.additional_poses_source || "");
+            if (changed) {
+                this.data.additional_poses_source = signature;
+                this.data.ui.additional_poses_scope = cacheIdentity();
+            }
+            const sourceGender = source?._vnccsGetPoseStudioValues?.()?.gender;
+            const gender = sourceGender === 1 ? "male" : sourceGender === 0 ? "female" : "";
+            const genderChanged = gender !== (this.data.gender || "");
+            if (genderChanged) this.data.gender = gender;
+            return this.syncSourceCharacter(signature ? selection[0] : "", changed) || genderChanged;
+        }
         const liveState = this.isClone ? source?._vnccsGetClonerState?.() : null;
         if (!widget?.value && !liveState) return;
         let changed = false;
@@ -2576,9 +2687,9 @@ class CharacterGeneratorWidget {
         return changed;
     }
 
-    syncSourceCharacter(character) {
+    syncSourceCharacter(character, reset = false) {
         this._sourceCharacter = character;
-        if (this.data.character_name === character) return false;
+        if (!reset && this.data.character_name === character) return false;
         this.data.character_name = character;
         if (this.stageState) {
             this.resetStagesFrom(this.stages[0]?.[0]);
@@ -2595,6 +2706,7 @@ class CharacterGeneratorWidget {
     }
 
     mannequinURL() {
+        if (this.isBackground) return "";
         const gender = this.data?.gender ?? this.data?.sex
             ?? this.data?.character_info?.gender ?? this.data?.character_info?.sex;
         return String(gender || "").trim().toLowerCase() === "male"
@@ -2631,6 +2743,7 @@ class CharacterGeneratorWidget {
     }
 
     currentStages() {
+        if (this.isBackground) return BACKGROUND_STAGES;
         if (this.isClone) return this.isCloneNsfwEnabled() ? CLONE_STAGES : CLONE_SFW_STAGES;
         if (this.isEmotions) {
             const pairs = Array.isArray(this.data.emotion_pairs) ? this.data.emotion_pairs : [];
@@ -2645,6 +2758,7 @@ class CharacterGeneratorWidget {
     }
 
     defaultPreviewStage() {
+        if (this.isBackground) return "source_upscaler";
         if (this.isClone) return "original_pose_generation";
         if (this.isEmotions) return this.currentStages()[0]?.[0] || "emotion_0001_bg_remove";
         return this.isClothes ? "source_upscaler" : "pose_generation";
@@ -2685,6 +2799,7 @@ class CharacterGeneratorWidget {
         this.root?.classList.toggle("is-clone-sfw", this.isClone && !cloneNsfw);
         this.root?.classList.toggle("is-clothes", this.isClothes);
         this.root?.classList.toggle("is-emotions", this.isEmotions);
+        this.root?.classList.toggle("is-background", this.isBackground);
         this.chainEl?.classList.toggle("is-clone", cloneNsfw);
         this.chainEl?.classList.toggle("is-clone-sfw", this.isClone && !cloneNsfw);
         this.chainEl?.classList.toggle("is-clothes", this.isClothes);
@@ -2692,7 +2807,9 @@ class CharacterGeneratorWidget {
     }
 
     progressScope() {
-        return workflowScope(this.node);
+        const scope = workflowScope(this.node);
+        const selection = this.isAdditionalPoses && this.data.ui?.additional_poses_scope;
+        return scope && selection ? `${scope}:${selection}` : scope;
     }
 
     prepareQueuedRun() {
@@ -2725,7 +2842,7 @@ class CharacterGeneratorWidget {
         return JSON.stringify([
             this.stages.map(([key]) => {
                 const stage = this.stageState[key] || {};
-                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null, stage.processing_index ?? null, stage.processing_indices ?? null, stage.preview_aspect ?? null];
+                return [key, stage.status || "waiting", stage.images || null, stage.message || "", stage.current ?? null, stage.total ?? null, stage.processing_index ?? null, stage.processing_indices ?? null, stage.preview_aspect ?? null, stage.labels ?? null];
             }),
             this.selectedPreview,
             this.regenerateState ? [this.regenerateState.from, this.regenerateState.activeStage, this.regenerateState.imageIndex] : null,
@@ -2778,6 +2895,7 @@ class CharacterGeneratorWidget {
                 return;
             }
             if (snapshot.scope !== scope || String(snapshot.node_id) !== String(this.node.id)) return;
+            if (this.isBackground && snapshot.background_id && snapshot.background_id !== this.data.background_id) return;
             if (snapshot.character_name != null && snapshot.character_name !== (this.data.character_name || "")) return;
             if (!this.acceptsProgressRequest(snapshot.request_id)) return;
             if (snapshot.run_id && snapshot.run_id === this._interruptedProgressRunId) return;
@@ -3059,7 +3177,7 @@ class CharacterGeneratorWidget {
                         wrap.children[index].classList.toggle("is-active", this.data[section][key] === options[index][0]);
                     }
                     this._ui?.syncSelection(wrap);
-                    this.setDisclosureOpen(this.upscalerPanel, this.data.upscaler.mode !== "off");
+                    this.setDisclosureOpen(this.upscalerPanel, this.isBackground || this.data.upscaler.mode !== "off");
                 } else this.renderSettings();
             };
             wrap.appendChild(btn);
@@ -3430,6 +3548,7 @@ class CharacterGeneratorWidget {
                 models: config.models || [],
                 vae: config.vae || [],
             };
+            if (this.syncSeedvrModel()) writeData(this.node, this.data);
             this.renderSettings();
         } catch (error) {
             console.warn("[VNCCS] SeedVR2 model cards unavailable", error);
@@ -3438,6 +3557,14 @@ class CharacterGeneratorWidget {
 
     seedvrRelativePath(entry) {
         return String(entry?.local_path || "").replace(/\\/g, "/").split("/").slice(2).join("/");
+    }
+
+    syncSeedvrModel() {
+        const installed = this.seedvrAssets?.models.filter(entry => entry.status === "installed");
+        if (!installed?.length || this.node._vnccsGeneratorStateError) return false;
+        if (installed.some(entry => this.seedvrRelativePath(entry) === this.data.upscaler.model)) return false;
+        this.data.upscaler.model = this.seedvrRelativePath(installed[0]);
+        return true;
     }
 
     async downloadSeedvrAsset(category, entry) {
@@ -3571,7 +3698,8 @@ class CharacterGeneratorWidget {
             return container;
         }
         const entries = this.seedvrAssets.models || [];
-        const selected = entries.find(entry => this.seedvrRelativePath(entry) === this.data.upscaler.model) || entries[0];
+        const selected = entries.find(entry => entry.status === "installed"
+            && this.seedvrRelativePath(entry) === this.data.upscaler.model) || entries[0];
         if (!selected) return container;
         const picker = document.createElement("div");
         picker.className = `vnccs-seedvr-picker${this.seedvrModelPickerOpen ? " is-open" : ""}`;
@@ -3653,13 +3781,18 @@ class CharacterGeneratorWidget {
                 ]));
             }
         } else {
-            this.settingsEl.appendChild(this.block("Pose Generation", [
+            this.settingsEl.appendChild(this.block(this.isBackground ? "Background Generation" : "Pose Generation", [
                 this.resolutionScaleSlider("pose_generation"),
             ]));
         }
         const upscalerFields = [
             this.modeTabs("upscaler", "mode", [["seedvr", "SeedVR"], ["off", "OFF"]]),
         ];
+        if (this.isBackground) {
+            const note = document.createElement("div"); note.className = "vnccs-pipe-settings-note";
+            note.textContent = "The original is always upscaled first. This switch controls the final upscale of new variants.";
+            upscalerFields.unshift(note);
+        }
         {
             const content = document.createElement("div");
             content.className = "vnccs-pipe-disclosure-content";
@@ -3674,13 +3807,13 @@ class CharacterGeneratorWidget {
                 resolutionFields,
                 this.field("upscaler", "color_correction", "color correction", "select", this.getOptions("SeedVR2PostProcessing", "color_correction_method", SEEDVR_COLOR_CORRECTION_MODES, this.data.upscaler.color_correction)),
             );
-            this.upscalerPanel = this.disclosure(content, this.data.upscaler.mode !== "off");
+            this.upscalerPanel = this.disclosure(content, this.isBackground || this.data.upscaler.mode !== "off");
             upscalerFields.push(this.upscalerPanel);
         }
         const upscalerBlock = this.block("Upscaler", upscalerFields);
         upscalerBlock.classList.add("vnccs-pipe-upscaler-block");
         this.settingsEl.appendChild(upscalerBlock);
-        this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
+        if (!this.isBackground) this.settingsEl.appendChild(this.block("BG Remove", this.bgRemoveFields()));
         if (this._ui) {
             this._ui.syncSelects();
             for (const control of this.root.querySelectorAll(".vnccs-common-ui-select-trigger")) this.protectNativeControl(control);
@@ -3757,11 +3890,13 @@ class CharacterGeneratorWidget {
             : originalPoseImages?.length ? originalPoseImages : this.stages.slice(0, stageIndex).reverse()
                 .map(([key]) => this.stageState[key]?.images).find(images => images?.length) || [];
         const total = Math.max(0, Math.min(512, Number(state.total) || 0));
-        const count = Math.min(512, Math.max(images.length, total, state.status === "done" ? 0 : upstream.length));
+        const backgroundPending = this.isBackground && ["waiting", "running"].includes(state.status);
+        const backgroundCount = backgroundPending ? (this.selectedPreview === "source_upscaler" ? 1 : (this.data.background_variants?.length ?? 3) + 1) : 0;
+        const count = Math.min(512, Math.max(images.length, total, backgroundCount, state.status === "done" ? 0 : upstream.length));
         const busy = state.status === "running" || this.regenerateState?.activeStage === this.selectedPreview;
         const missingPosePreviews = this.selectedPreview.endsWith("pose_generation")
             && images.filter(Boolean).length < count;
-        const showPlaceholders = !this.isEmotions && (busy || state.status === "waiting") && !upstream.some(Boolean)
+        const showPlaceholders = !this.isBackground && !this.isEmotions && (busy || state.status === "waiting") && !upstream.some(Boolean)
             && (missingPosePreviews || this._previewPlaceholderStage === this.selectedPreview);
         const mannequinURL = this.mannequinURL();
         this.previewEl.classList.toggle("is-male-character", mannequinURL === CHARACTER_MANNEQUIN_MALE_URL);
@@ -3799,13 +3934,14 @@ class CharacterGeneratorWidget {
             tile._previewEntrancePending = true;
             const placeholder = document.createElement("img");
             placeholder.className = "vnccs-pipe-img-placeholder";
-            placeholder.src = mannequinURL;
+            if (mannequinURL) placeholder.src = mannequinURL;
             placeholder.alt = "";
             placeholder.draggable = false;
             const scan = document.createElement("span");
             scan.className = "vnccs-pipe-img-placeholder-scan";
             scan.ariaHidden = "true";
-            tile.append(placeholder, scan);
+            if (!this.isBackground) tile.appendChild(placeholder);
+            tile.appendChild(scan);
             tile.onclick = () => { if (tile.dataset.src) this.openViewer(index); };
             tile.onkeydown = event => {
                 if (event.target === tile && ["Enter", " "].includes(event.key)) {
@@ -3854,6 +3990,12 @@ class CharacterGeneratorWidget {
             tile.classList.toggle("is-waiting", Boolean(waiting || (state.status === "waiting" && !this.regenerateState)));
             tile.setAttribute("aria-busy", String(Boolean(processing || waiting)));
             tile.ariaLabel = `${name} image ${index + 1}${processing ? ", processing" : waiting ? ", waiting" : busy && index < completed ? ", processed" : ""}`;
+            if (this.isBackground) {
+                let label = tile.querySelector(".vnccs-pipe-img-label");
+                if (!label) { label = document.createElement("span"); label.className = "vnccs-pipe-img-label"; tile.appendChild(label); }
+                label.textContent = state.labels?.[index] || (index === 0 ? "Original" : this.data.background_variants?.[index - 1] || `Variant ${index}`);
+                tile.ariaLabel = `${label.textContent}${processing ? ", processing" : waiting ? ", waiting" : ""}`;
+            }
             tile.tabIndex = tile.dataset.src ? 0 : -1;
             const displaysPlaceholder = Boolean(showPlaceholders && !tile.dataset.src);
             tile.classList.toggle("is-placeholder", displaysPlaceholder);
@@ -3862,8 +4004,8 @@ class CharacterGeneratorWidget {
                 placeholder.style.visibility = displaysPlaceholder ? "visible" : "hidden";
                 if (displaysPlaceholder) placeholder.style.opacity = "";
             }
-            tile.classList.toggle("is-empty", !tile.dataset.src && !tile._previewSource && !showPlaceholders);
-            const canRegenerate = state.status === "done" && !this.regenerateState && Boolean(images[index]);
+            tile.classList.toggle("is-empty", !tile.dataset.src && !tile._previewSource && !showPlaceholders && !backgroundPending);
+            const canRegenerate = !this.isAdditionalPoses && state.status === "done" && !this.regenerateState && Boolean(images[index]);
             let regen = tile.querySelector(".vnccs-pipe-img-regen");
             if (canRegenerate && !regen) {
                 regen = document.createElement("button");
@@ -4174,40 +4316,20 @@ class CharacterGeneratorWidget {
 
     layoutPreviewGrid(grid) {
         if (!grid?.isConnected || !grid.children.length) return;
-        const gap = 8;
         const availableW = Math.max(1, grid.clientWidth);
         const availableH = Math.max(1, grid.clientHeight);
         const count = grid.children.length;
         const images = [...grid.children].map(tile => tile._clothesRevealBase || tile._previewImage || (tile._pendingImage?._previewReady ? tile._pendingImage : null));
         const known = images.find(image => image?.naturalWidth > 0 && image?.naturalHeight > 0);
         const fixed = Number(this.stageState?.[this.selectedPreview]?.preview_aspect);
-        const fallback = known ? known.naturalWidth / known.naturalHeight : CHARACTER_MANNEQUIN_ASPECT;
+        const fallback = known ? known.naturalWidth / known.naturalHeight : this.isBackground ? 16 / 9 : grid.children[0]._previewAspect || CHARACTER_MANNEQUIN_ASPECT;
         // All cards share one frame, including pending previews and mannequins.
         const aspect = Number.isFinite(fixed) && fixed > 0 ? fixed : fallback;
-        const aspects = images.map(() => aspect);
-        let best = null;
-        for (let cols = 1; cols <= count; cols++) {
-            const rows = Math.ceil(count / cols);
-            const cellW = (availableW - gap * (cols - 1)) / cols;
-            const cellH = (availableH - gap * (rows - 1)) / rows;
-            if (cellW <= 0 || cellH <= 0) continue;
-            const sizes = aspects.map(aspect => {
-                const width = Math.min(cellW, cellH * aspect);
-                return { width, height: width / aspect };
-            });
-            const areas = sizes.map(size => size.width * size.height);
-            const score = Math.min(...areas) * 1000000 + areas.reduce((sum, area) => sum + area, 0);
-            if (!best || score > best.score) best = {
-                cols, rows, cellW, cellH, sizes, score,
-                trackW: Math.max(...sizes.map(size => size.width)),
-                trackH: Math.max(...sizes.map(size => size.height)),
-            };
-        }
+        const best = fitPreviewGrid(count, availableW, availableH, aspect);
         if (!best) return;
         grid.style.gridTemplateColumns = `repeat(${best.cols}, ${best.trackW}px)`;
         grid.style.gridTemplateRows = `repeat(${best.rows}, ${best.trackH}px)`;
-        const lastRowCount = count % best.cols || best.cols;
-        const lastRowOffset = lastRowCount < best.cols ? (best.cols - lastRowCount) * (best.trackW + gap) / 2 : 0;
+        const { lastRowCount, lastRowOffset } = best;
         [...grid.children].forEach((tile, index) => {
             const size = images[index] || tile._previewSource || tile.classList.contains("is-placeholder")
                 ? best.sizes[index] : { width: 0, height: 0 };
@@ -4331,7 +4453,7 @@ class CharacterGeneratorWidget {
                 l.textContent = `LoRA: ${CLOTHES_CORE_LORA_LABEL}`;
                 stage.appendChild(l);
             }
-            if (status === "done" && !this.regenerateState) {
+            if (!this.isAdditionalPoses && status === "done" && !this.regenerateState) {
                 const actions = document.createElement("div");
                 actions.className = "vnccs-pipe-stage-actions";
                 const regen = document.createElement("button");
@@ -4749,7 +4871,7 @@ app.registerExtension({
         app.queuePrompt = async function (...args) {
             const nodes = (app.graph?._nodes || []).filter(node => node.mode !== 2 && node.mode !== 4);
             for (const node of nodes) {
-                if (node._vnccsCharacterGeneratorSyncBeforeQueue?.() === false) return;
+                if (await node._vnccsCharacterGeneratorSyncBeforeQueue?.() === false) return;
             }
             for (const node of nodes) node._vnccsCharacterGeneratorWidget?.prepareQueuedRun();
             return originalQueuePrompt(...args);
@@ -4757,10 +4879,12 @@ app.registerExtension({
     },
     async beforeRegisterNodeDef(nodeType, nodeData) {
         const isBaseGenerator = nodeData.name === "VNCCS_CharacterGenerator";
+        const isAdditionalPosesGenerator = nodeData.name === "VNCCS_AdditionalPosesGenerator";
         const isCloneGenerator = nodeData.name === "VNCCS_CharacterCloneGenerator";
         const isClothesGenerator = nodeData.name === "VNCCS_ClothesGenerator";
         const isEmotionsGenerator = nodeData.name === "VNCCS_EmotionsGenerator";
-        if (!isBaseGenerator && !isCloneGenerator && !isClothesGenerator && !isEmotionsGenerator) return;
+        const isBackgroundGenerator = nodeData.name === "VNCCS_BackgroundGenerator";
+        if (!isBaseGenerator && !isAdditionalPosesGenerator && !isCloneGenerator && !isClothesGenerator && !isEmotionsGenerator && !isBackgroundGenerator) return;
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
@@ -4769,8 +4893,10 @@ app.registerExtension({
             this._vnccsCharacterGeneratorWidget = new CharacterGeneratorWidget(this, {
                 isClone: isCloneGenerator,
                 isClothes: isClothesGenerator,
+                isAdditionalPoses: isAdditionalPosesGenerator,
                 isEmotions: isEmotionsGenerator,
-                title: isCloneGenerator
+                isBackground: isBackgroundGenerator,
+                title: isAdditionalPosesGenerator ? "VNCCS Additional Poses Generator" : isBackgroundGenerator ? "VNCCS Background Generator" : isCloneGenerator
                     ? "VNCCS Character Clone Generator"
                     : (isClothesGenerator ? "VNCCS Clothes Generator" : (isEmotionsGenerator ? "VNCCS Emotions Generator" : "VNCCS Character Generator")),
             });
@@ -4801,6 +4927,7 @@ app.registerExtension({
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();
                 this._vnccsCharacterGeneratorWidget.syncModelResolution();
+                widget.syncSeedvrModel();
                 writeData(this, this._vnccsCharacterGeneratorWidget.data);
                 this._vnccsCharacterGeneratorWidget.renderSettings();
                 this._vnccsCharacterGeneratorWidget.renderPreview();

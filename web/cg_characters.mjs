@@ -1,0 +1,348 @@
+const vector = value => Array.isArray(value) && value.length === 3 && value.every(n => Number.isFinite(n) && Math.abs(n) <= 1e6);
+
+export const MESH_DEFAULTS = Object.freeze({ age: 25, gender: .5, weight: .5, muscle: .5, height: .5 });
+export const LIGHT_DEFAULTS = Object.freeze({ x: 10, y: 20, z: 30, intensity: 1.25, color: "#ffffff" });
+export const CHARACTER_PROMPT_LIMIT = 8000;
+export const CHARACTER_COLORS = Object.freeze({
+    White: "#ffffff", Pink: "#ff73ae", Blue: "#60a5ff", Orange: "#fb923c", Green: "#22c55e",
+    Purple: "#8b5cf6", Yellow: "#facc15", Cyan: "#22d3ee", Red: "#ef4444", Lime: "#a3e635",
+    Brown: "#95582e", Navy: "#273575", Magenta: "#c5238a", Gray: "#808080",
+});
+const colorNames = Object.keys(CHARACTER_COLORS);
+export const CHARACTER_LIMIT = 16 - 2; // QI2 reserves the first two inputs for background and capture.
+
+export function validateCharacters(value) {
+    if (!Array.isArray(value) || value.length > 16) throw new Error("Invalid CG characters.");
+    const ids = new Set();
+    for (const item of value) {
+        if (!item || !/^[a-f0-9]{32}$/.test(item.id) || ids.has(item.id) || !vector(item.position)
+            || !Number.isFinite(item.scale) || item.scale < .001 || item.scale > 1000 || !item.pose || Array.isArray(item.pose))
+            throw new Error("Invalid CG character transform.");
+        ids.add(item.id);
+        if (item.dummyColor != null && (typeof item.dummyColor !== "string" || !Object.hasOwn(CHARACTER_COLORS, item.dummyColor)))
+            throw new Error("Invalid CG mannequin color.");
+        for (const key of ["bones", "bonePositions"]) {
+            const bones = item.pose[key];
+            if (!bones || typeof bones !== "object" || Array.isArray(bones) || Object.keys(bones).length > 256
+                || Object.entries(bones).some(([name, value]) => !/^[A-Za-z0-9_.-]{1,96}$/.test(name) || Object.hasOwn(Object.prototype, name) || !vector(value)))
+                throw new Error("Invalid CG character pose.");
+        }
+        if (item.mesh != null && (!item.mesh || typeof item.mesh !== "object" || Array.isArray(item.mesh)
+            || Object.entries(item.mesh).some(([key, n]) => !Object.hasOwn(MESH_DEFAULTS, key) || !Number.isFinite(n)
+                || n < (key === "age" ? 1 : 0) || n > (key === "age" ? 90 : key === "height" ? 2 : 1))))
+            throw new Error("Invalid CG character mesh.");
+        if (item.light != null && (!item.light || typeof item.light !== "object" || Array.isArray(item.light)
+            || Object.entries(item.light).some(([key, n]) => key === "color" ? !/^#[0-9a-f]{6}$/i.test(n)
+                : !["x", "y", "z", "intensity"].includes(key) || !Number.isFinite(n) || Math.abs(n) > 100
+                    || key === "intensity" && (n < 0 || n > 5)))) throw new Error("Invalid CG character light.");
+        if (item.source != null && (!item.source || typeof item.source !== "object" || Array.isArray(item.source)
+            || Object.entries(item.source).some(([key, value]) => !["character", "costume", "sprite", "emotion"].includes(key)
+                || typeof value !== "string" || value.length > 255 || /[\\/\x00-\x1f]/.test(value) || value === "." || value === "..")))
+            throw new Error("Invalid CG character source.");
+        if (Object.hasOwn(item, "prompt") && (typeof item.prompt !== "string" || item.prompt.length > CHARACTER_PROMPT_LIMIT
+            || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(item.prompt))) throw new Error("Invalid CG character prompt.");
+        if (item.origin != null && !vector(item.origin) || item.baseScale != null && (!Number.isFinite(item.baseScale)
+            || item.baseScale < .001 || item.baseScale > 1000)) throw new Error("Invalid CG character placement.");
+        if (!vector(item.pose.modelRotation)) throw new Error("Invalid CG character rotation.");
+    }
+    return value;
+}
+
+export async function loadCharacterRuntime(viewerURL) {
+    const [core, morph, THREE, controls] = await Promise.all([
+        import(new URL("../pose_studio/core.js", viewerURL).href),
+        import(new URL("../pose_studio/morph_runtime.mjs", viewerURL).href),
+        import(new URL("../vendor/spark/three.module.js", viewerURL).href),
+        import(new URL("../vendor/spark/TransformControls.js", viewerURL).href),
+    ]);
+    const pack = await morph.loadMorphPack(), staticData = morph.buildStaticModelData(pack, false);
+    const modelData = params => {
+        const solved = morph.solveMorph(pack, { ...params, show_genitals: false });
+        return { ...staticData, vertices: solved.vertices,
+        bones: pack.bones.map((bone, index) => {
+            const headPos = Array.from(solved.bonePositions.subarray(index * 6, index * 6 + 3));
+            const tailPos = Array.from(solved.bonePositions.subarray(index * 6 + 3, index * 6 + 6));
+            return { ...bone, headPos, tailPos, length: Math.hypot(...tailPos.map((n, i) => n - headPos[i])) };
+        }) };
+    };
+    const data = modelData(MESH_DEFAULTS);
+    // Studio supplies the rig and IK; Factory owns the only renderer and camera.
+    class ScenePose extends core.PoseViewerCore {
+        constructor(viewer) {
+            super(viewer.canvas, { useHandControlPopover: false, enableTextureSkinning: false, showSkeletonHelper: false });
+            this.viewer = viewer; this.THREE = THREE; this.scene = new THREE.Scene();
+            this.camera = viewer.camera; this.orbit = { target: viewer.controls.target, enabled: true, update() {}, dispose() {} };
+            this._raycaster = new THREE.Raycaster(); this._raycaster.layers.enable(1);
+            // Route pointer input ourselves so Factory cannot also start a camera drag.
+            this.transform = new controls.TransformControls(this.camera, document.createElement("div"));
+            this.transform.setMode("rotate"); this.transform.setSpace("local"); this.transform.setSize(.7);
+            this.scene.add(this.transform.getHelper());
+            this.directDrag = { active: false };
+            this.initialized = true; this.loadData(data, true);
+            this.styleMesh();
+            this.mesh = { ...MESH_DEFAULTS };
+            viewer.camera.layers.enable(1); viewer.captureCamera.layers.enable(1);
+            viewer.scene.add(this.scene);
+        }
+        styleMesh() {
+            const material = this.skinnedMesh.material;
+            this.lightDirection = { value: new THREE.Vector3() };
+            this.lightColor = { value: new THREE.Color() };
+            // Each mannequin shades its own material so other characters' lights cannot change its color.
+            material.onBeforeCompile = shader => {
+                shader.uniforms.cgLightDirection = this.lightDirection;
+                shader.uniforms.cgLightColor = this.lightColor;
+                shader.fragmentShader = shader.fragmentShader
+                    .replace("#include <common>", "#include <common>\nuniform vec3 cgLightDirection;\nuniform vec3 cgLightColor;")
+                    .replace("#include <opaque_fragment>", `
+                        vec3 cgLight = (viewMatrix * vec4(cgLightDirection, 0.0)).xyz;
+                        outgoingLight = diffuseColor.rgb * (vec3(0.55) + cgLightColor * max(0.0, dot(normal, cgLight)));
+                        #include <opaque_fragment>
+                    `);
+            };
+            this.skinnedMesh.traverse(object => object.layers.set(1));
+            this.skeletonHelper.visible = false;
+        }
+        setMesh(params) {
+            const next = { ...MESH_DEFAULTS, ...params };
+            if (JSON.stringify(next) === JSON.stringify(this.mesh)) return;
+            const solved = morph.solveMorph(pack, { ...next, show_genitals: false });
+            this.updateBodyVertices(solved.vertices, solved.bonePositions, solved.landmarks, solved.landmarkIndices);
+            this.mesh = next; this.updateIKEffectorPositions();
+        }
+        setLight(params) {
+            this.light = { ...LIGHT_DEFAULTS, ...params };
+            this.lightDirection.value.set(this.light.x, this.light.y, this.light.z).normalize();
+            this.lightColor.value.set(this.light.color).multiplyScalar(this.light.intensity);
+            this.requestRender();
+        }
+        requestRender() { if (!this._disposed) this.viewer?.invalidate(); }
+        recordState() {} // CG Creator owns one history for the camera and every character.
+        dispose() {
+            this.scene.removeFromParent();
+            super.dispose();
+            this.markerGeoNormal?.dispose(); this.markerGeoFinger?.dispose();
+            this.markerMatNormal?.dispose(); this.markerMatSelected?.dispose(); this.markerMatHandHover?.dispose();
+        }
+    }
+    let minY = Infinity, maxY = -Infinity;
+    for (let i = 1; i < data.vertices.length; i += 3) { minY = Math.min(minY, data.vertices[i]); maxY = Math.max(maxY, data.vertices[i]); }
+    return { THREE, ScenePose, minY, maxY };
+}
+
+export class CGCharacterEditor {
+    constructor(viewer, runtime, { getScene, canEdit, onStart, onChange, onEnd }) {
+        Object.assign(this, { viewer, runtime, getScene, canEdit, onStart, onChange, onEnd });
+        this.entries = new Map(); this.selected = ""; this.mode = "pose"; this.events = new AbortController();
+        const canvas = viewer.canvas;
+        for (const type of ["pointerdown", "pointermove", "pointerup", "pointercancel", "lostpointercapture"])
+            canvas.addEventListener(type, event => this.pointer(event), { capture: true, signal: this.events.signal });
+    }
+    get active() { return this.entries.get(this.selected); }
+    snapshot() {
+        return [...this.entries].map(([id, core]) => {
+            const { bones, bonePositions } = core.getPose(), mesh = core.skinnedMesh;
+            return { id, position: mesh.position.toArray(), scale: mesh.scale.x, dummyColor: core.dummyColor,
+                mesh: { ...core.mesh }, light: { ...core.light }, source: { ...core.source },
+                ...(core.prompt ? { prompt: core.prompt } : {}),
+                origin: [...core.origin], baseScale: core.baseScale,
+                pose: { bones, bonePositions, modelRotation: [mesh.rotation.x, mesh.rotation.y, mesh.rotation.z].map(n => n * 180 / Math.PI) } };
+        });
+    }
+    restore(characters) {
+        validateCharacters(characters);
+        const wanted = new Set(characters.map(item => item.id));
+        const freeColors = colorNames.filter(color => !characters.some(item => item.dummyColor === color));
+        for (const [id, core] of this.entries) if (!wanted.has(id)) { core.dispose(); this.entries.delete(id); }
+        for (const item of characters) {
+            let core = this.entries.get(item.id);
+            if (!core) {
+                core = new this.runtime.ScenePose(this.viewer); this.entries.set(item.id, core);
+                core.transform.addEventListener("objectChange", () => {
+                    if (this.mode === "pose" && core.selectedIKEffector) core.solveIKForEffector();
+                    else if (this.mode === "pose" && core.selectedPoleTarget) core.solveIKForPoleTarget();
+                    core.skinnedMesh.updateMatrixWorld(true); core.updateIKEffectorPositions();
+                    core.requestRender(); this.onChange();
+                });
+            }
+            core.transform.setMode(this.mode === "move" ? "translate" : "rotate");
+            core.source = { ...item.source }; core.origin = [...(item.origin || item.position)]; core.baseScale = item.baseScale || item.scale;
+            core.prompt = item.prompt || "";
+            core.setMesh(item.mesh); core.setLight(item.light);
+            core.dummyColor = item.dummyColor || freeColors.shift() || "White";
+            core.skinnedMesh.material.color.set(CHARACTER_COLORS[core.dummyColor]);
+            core.skinnedMesh.position.fromArray(item.position); core.skinnedMesh.scale.setScalar(item.scale);
+            core.setPose(item.pose, true); core.updateIKEffectorPositions();
+        }
+        this.entries = new Map(characters.map(item => [item.id, this.entries.get(item.id)]));
+        this.select(wanted.has(this.selected) ? this.selected : characters.at(-1)?.id || "");
+    }
+    neutralBasis(scene) {
+        const { Matrix4, Vector3 } = this.runtime.THREE;
+        const basis = new Matrix4();
+        const source = scene?.objects[0]?.source_camera || scene?.camera;
+        if (source && scene.background_settings?.provider === "worldmirror") {
+            // The source camera defines upright in WorldMirror's OpenCV coordinate system.
+            basis.lookAt(new Vector3(...source.position), new Vector3(...source.target), new Vector3(...source.up));
+        }
+        return basis;
+    }
+    neutralPose(basis) {
+        const rotation = new this.runtime.THREE.Euler().setFromRotationMatrix(basis);
+        return { bones: {}, bonePositions: {}, modelRotation: [rotation.x, rotation.y, rotation.z].map(n => n * 180 / Math.PI) };
+    }
+    surfaceDepth(object, camera) {
+        const splat = object?.splat, surface = splat || object?.mesh;
+        if (!surface || !camera) return 0;
+        const { Raycaster, Vector3 } = this.runtime.THREE;
+        const origin = new Vector3(...camera.position);
+        const forward = new Vector3(...camera.target).sub(origin).normalize();
+        const up = new Vector3(...camera.up).projectOnPlane(forward).normalize();
+        const ray = new Raycaster();
+        ray.near = .001;
+        const enableSplatPicking = splat?.raycastable === false;
+        if (enableSplatPicking) splat.raycastable = true;
+        try {
+            for (const offset of [0, -.35]) {
+                const direction = forward.clone().addScaledVector(up, offset * Math.tan(camera.fov * Math.PI / 360)).normalize();
+                ray.set(origin, direction);
+                const hit = ray.intersectObject(surface, !splat)[0];
+                if (hit && Number.isFinite(hit.distance)) return hit.distance * direction.dot(forward);
+            }
+        } finally {
+            if (enableSplatPicking) splat.raycastable = false;
+        }
+        return 0;
+    }
+    add(id) {
+        if (this.entries.size >= CHARACTER_LIMIT) return;
+        const { Vector3 } = this.runtime.THREE;
+        const camera = this.viewer.getCameraState(), scene = this.getScene?.(), item = scene?.objects[0];
+        const object = this.viewer.objects?.get(item?.object_id);
+        const source = item?.asset_kind === "mesh" ? this.viewer.getModelSourceCamera?.(item.object_id) : item?.source_camera || scene?.camera;
+        const sourceDepth = this.surfaceDepth(object, source), currentDepth = this.surfaceDepth(object, camera);
+        const worldMirror = scene?.background_settings?.provider === "worldmirror";
+        // If the current view points into empty space, place the figure in the reconstructed area.
+        const placementView = worldMirror && !currentDepth && sourceDepth ? source : camera;
+        const origin = new Vector3(...placementView.position), look = new Vector3(...placementView.target).sub(origin);
+        const placementDepth = (worldMirror ? .8 : .65) * (currentDepth || sourceDepth) || look.length();
+        // Calibrate size at the source view so a later camera move or FOV change cannot rescale the character.
+        const referenceDepth = sourceDepth || currentDepth;
+        const sizeDepth = worldMirror && referenceDepth ? 1.1 * referenceDepth : sourceDepth ? .65 * sourceDepth : placementDepth;
+        const height = sizeDepth * Math.tan((sourceDepth ? source.fov : camera.fov) * Math.PI / 360);
+        const scale = Math.max(.001, Math.min(1000, height / (this.runtime.maxY - this.runtime.minY)));
+        const basis = this.neutralBasis(scene), up = new Vector3().setFromMatrixColumn(basis, 1);
+        const target = origin.addScaledVector(look.normalize(), placementDepth)
+            .addScaledVector(up, -(this.runtime.minY + this.runtime.maxY) / 2 * scale);
+        const existing = this.snapshot();
+        const dummyColor = colorNames.find(color => !existing.some(item => item.dummyColor === color));
+        const slot = colorNames.indexOf(dummyColor);
+        const right = look.clone().cross(new Vector3(...placementView.up)).normalize();
+        target.addScaledVector(right, [0, .65, -.65][slot % 3] * height);
+        if (slot >= 3) {
+            const groundForward = look.clone().addScaledVector(up, -look.dot(up));
+            target.addScaledVector(groundForward, -.12 * Math.floor(slot / 3) * placementDepth);
+        }
+        this.restore([...existing, { id, position: target.toArray(), scale, dummyColor, pose: this.neutralPose(basis) }]);
+        this.select(id); this.onChange();
+    }
+    select(id) {
+        this.selected = this.entries.has(id) ? id : "";
+        for (const core of this.entries.values()) {
+            core.transform.detach(); core.selectedBone = null; core.selectedIKEffector = null; core.selectedPoleTarget = null;
+        }
+        if (this.mode !== "pose" && this.active) this.active.transform.attach(this.active.skinnedMesh);
+        this.showHelpers(); this.viewer.invalidate();
+    }
+    setMode(mode) {
+        this.mode = mode === "move" || mode === "rotate" ? mode : "pose";
+        for (const core of this.entries.values()) core.transform.setMode(this.mode === "move" ? "translate" : "rotate");
+        this.select(this.selected || this.entries.keys().next().value);
+    }
+    edit(change) {
+        const core = this.active;
+        if (!core || !this.canEdit()) return;
+        this.onStart(); change(core);
+        core.skinnedMesh.updateMatrixWorld(true); core.updateIKEffectorPositions();
+        this.showHelpers(); this.onChange();
+    }
+    reset() {
+        this.edit(core => core.setPose(this.neutralPose(this.neutralBasis(this.getScene?.())), true));
+        this.select(this.selected); this.onEnd();
+    }
+    showHelpers(hidden = false) {
+        for (const [id, core] of this.entries) {
+            const visible = !hidden && id === this.selected;
+            core.jointMarkers.forEach(marker => { marker.visible = visible && this.mode === "pose"; });
+            for (const helper of [...Object.values(core.ikController?.effectors || {}), ...Object.values(core.ikController?.poleTargets || {})]) helper.visible = false;
+            core.transform.getHelper().visible = !hidden && id === this.selected && Boolean(core.transform.object);
+        }
+        this.viewer.invalidate();
+    }
+    async capture(options, { backgroundOnly = false } = {}) {
+        const meshes = backgroundOnly ? [...this.entries.values()].map(core => [core.skinnedMesh, core.skinnedMesh.visible]) : [];
+        this.showHelpers(true);
+        for (const [mesh] of meshes) mesh.visible = false;
+        try { return await this.viewer.capturePreview(options); }
+        finally {
+            for (const [mesh, visible] of meshes) mesh.visible = visible;
+            if (!this.disposed) this.showHelpers();
+        }
+    }
+    pointer(event) {
+        if (!this.canEdit() || !this.active) return;
+        const canvas = this.viewer.canvas, rect = canvas.getBoundingClientRect();
+        const pointer = { x: (event.clientX - rect.left) / rect.width * 2 - 1, y: 1 - (event.clientY - rect.top) / rect.height * 2, button: event.button };
+        const core = this.active;
+        if (event.type === "pointerdown") {
+            if (event.button !== 0) return;
+            core?.transform.pointerHover(pointer);
+            if (!core?.transform.axis) {
+                const ray = new this.runtime.THREE.Raycaster(); ray.layers.enable(1); ray.setFromCamera(pointer, this.viewer.camera);
+                const meshes = [core.skinnedMesh, ...core.jointMarkers.filter(marker => marker.visible)];
+                const hit = ray.intersectObjects(meshes, false)[0]?.object;
+                if (!hit) {
+                    core?.transform.detach();
+                    if (core) { core.selectedBone = core.selectedIKEffector = core.selectedPoleTarget = null; core.updateMarkers(); }
+                    this.showHelpers(); return;
+                }
+            }
+            this.onStart(); this.pointerId = event.pointerId;
+            canvas.focus({ preventScroll: true }); canvas.setPointerCapture(event.pointerId);
+            if (core.transform.axis) core.transform.pointerDown(pointer);
+            else if (this.mode === "pose") core.handlePointerDown(event);
+            else if (this.mode === "move") {
+                this.select(this.selected);
+                this.moveStart = core.skinnedMesh.position.clone();
+                this.movePlane = new this.runtime.THREE.Plane().setFromNormalAndCoplanarPoint(
+                    this.viewer.camera.getWorldDirection(new this.runtime.THREE.Vector3()), this.moveStart);
+                const ray = new this.runtime.THREE.Raycaster(); ray.setFromCamera(pointer, this.viewer.camera);
+                this.moveHit = ray.ray.intersectPlane(this.movePlane, new this.runtime.THREE.Vector3());
+            }
+        } else if (event.type === "pointermove") {
+            if (this.pointerId == null) { core?.transform.pointerHover(pointer); return; }
+            if (event.pointerId !== this.pointerId) return;
+            if (core.transform.dragging) core.transform.pointerMove(pointer);
+            else if (this.mode === "move" && this.moveHit) {
+                const ray = new this.runtime.THREE.Raycaster(); ray.setFromCamera(pointer, this.viewer.camera);
+                const hit = ray.ray.intersectPlane(this.movePlane, new this.runtime.THREE.Vector3());
+                if (hit) { core.skinnedMesh.position.copy(this.moveStart).add(hit.sub(this.moveHit));
+                    core.skinnedMesh.updateMatrixWorld(true); core.updateIKEffectorPositions(); core.requestRender(); this.onChange(); }
+            } else if (this.mode === "pose") { core.handlePointerMove(event); this.onChange(); }
+        } else {
+            if (event.pointerId !== this.pointerId) return;
+            this.pointerId = null;
+            core.transform.pointerUp(pointer);
+            if (this.mode === "pose") core.handlePointerUp(event, { cancelled: event.type !== "pointerup" });
+            this.moveHit = null;
+            if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+            this.onChange(); this.onEnd(); this.showHelpers();
+        }
+        event.preventDefault(); event.stopImmediatePropagation();
+    }
+    dispose() {
+        this.disposed = true; this.events.abort();
+        for (const core of this.entries.values()) core.dispose();
+        this.entries.clear();
+    }
+}

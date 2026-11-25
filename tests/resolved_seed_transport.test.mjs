@@ -78,3 +78,19 @@ test('Creator queue sends the displayed random seed while workflow and widget re
     }
     assert.equal(JSON.parse(widget.value)._vnccs_seed_resolved, undefined);
 });
+
+
+test('Background seed transport keeps random preference and marks only queued inputs resolved', async () => {
+    const raw = JSON.stringify({editor: {generation: {seed_mode: 'randomize', seed: 23}}});
+    const original = {workflow: {widgets_values: [raw]}, output: {
+        '7': {class_type: 'VNCCS_BackgroundCreator', inputs: {background_data: raw}},
+    }};
+    const app = {graph: {_nodes: [{id: 7}]}, async graphToPrompt() { return original; }};
+    const { installResolvedSeedTransport: install } = createWidgetContext({app});
+    install(app, ['VNCCS_BackgroundCreator'], 'background_data');
+    const result = await app.graphToPrompt();
+    assert.equal(JSON.parse(result.output['7'].inputs.background_data)._vnccs_seed_resolved, true);
+    assert.equal(JSON.parse(result.output['7'].inputs.background_data).editor.generation.seed, 23);
+    assert.equal(JSON.parse(result.workflow.widgets_values[0])._vnccs_seed_resolved, undefined);
+    assert.equal(original.output['7'].inputs.background_data, raw);
+});

@@ -4,6 +4,7 @@ Pillow
 opencv-python
 safetensors
 huggingface-hub[torch]>=0.22
+dulwich>=1.2.20,<2
 json_repair
 aiohttp
 pymatting

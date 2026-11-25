@@ -269,7 +269,7 @@ test('missing server progress releases stale running UI without starting another
 });
 
 test('active workflow sources use the shared transport and checked create/save operations', () => {
-    for (const name of ['vnccs_character_creator_v2', 'vnccs_character_cloner', 'vnccs_clothes_designer', 'vnccs_emotion_v2', 'vnccs_character_generator', 'vnccs_control_center']) {
+    for (const name of ['vnccs_character_creator_v2', 'vnccs_character_cloner', 'vnccs_clothes_designer', 'vnccs_emotion_v2', 'vnccs_character_generator', 'vnccs_control_center', 'vnccs_cg_creator']) {
         const text = read(name);
         assert.match(text, /vnccsApi as api/);
         assert.doesNotMatch(text, /(?<![\w.])fetch\(/);
@@ -446,6 +446,7 @@ async function queueHarness() {
     h.context.window = { addEventListener() {}, removeEventListener() {} };
     h.widget.bindEvents();
     h.widget.validateNativeSeedvr = () => true;
+    h.widget.validateSeedvrModels = () => true;
     h.node._vnccsCharacterGeneratorWidget = h.widget;
     h.context.app.graph = { _nodes: [h.node] };
     h.submission = { run: async () => true };

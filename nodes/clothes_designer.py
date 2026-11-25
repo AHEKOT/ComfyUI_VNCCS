@@ -18,7 +18,7 @@ import re
 from ..utils import (
     character_dir, save_costume_info, delete_costume,
     list_pose_preview_files as list_preview_sprite_files,
-    load_costume_info, list_costumes, ensure_costume_structure,
+    load_character_info, load_costume_info, list_costumes, ensure_costume_structure,
     sheets_dir,
     ensure_safe_name, safe_join_under, safe_relative_path, atomic_output_path,
     validate_costume_info, privileged_route, character_storage_lock, load_costume_snapshot,
@@ -35,8 +35,7 @@ from .character_generator import (
 )
 from .vnccs_control_center import _entry_kind, _find_model_on_disk, _apply_lora_standard
 from .h3_still import require_h3_still_support
-from .qwen_vl import _ensure_qwen_vl_assets, QWEN_VL_MODEL_FILENAME
-from .qwen_vl import configure_qwen_text_chat, parse_wizard_json, _validate_gguf_file
+from .qwen_vl import QWEN_VL_MODEL_FILENAME, _local_wizard_model, generate_wizard_text, parse_wizard_json
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 WORKFLOW_SAMPLER_DEFAULTS = {
@@ -108,15 +107,28 @@ def _clothes_background_prompt(background_color):
     )
 
 
-def _rewrite_qi2_clothes_prompt(clip, prompt, reference, background_color, system_prompt):
+def _clothes_style_description(character_name):
+    from .character_creator_v2 import _character_style_prompt
+
+    info = load_character_info(character_name) or {}
+    description = info.get("style_description")
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    return _character_style_prompt({"style": "none", **info})
+
+
+def _rewrite_qi2_clothes_prompt(clip, prompt, reference, background_color, system_prompt, style_description=""):
     from .character_generator import _qi2_reference_image
     from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS, _qi2_rewritten_prompt
 
     constraints = (
         "Edit the outfit of the character in the image using the requested clothing. "
-        "Preserve the identity, face, hair, body proportions, pose, framing and rendering medium of the image. "
+        "Preserve the identity, all face details, hair, body proportions and physique, skin color and its texture, "
+        "pose, framing and the original image artistic style exactly the same. "
         f"{_clothes_background_prompt(background_color)} No background scenery, patterns, or shapes."
     )
+    if style_description:
+        constraints += f" Align clothing render image with character's: {style_description}"
     request = (
         f"{prompt}\n{constraints}\n"
         "This is an outfit edit of the target canvas, preserving its framing and aspect ratio."
@@ -129,7 +141,7 @@ def _rewrite_qi2_clothes_prompt(clip, prompt, reference, background_color, syste
         **QI2_TEXT_GENERATION_DEFAULTS,
     )[0]
     rewritten = _qi2_rewritten_prompt(generated_text, prompt)
-    # Keep application-owned identity and background after PE too.
+    # Keep application-owned constraints after PE too.
     return f"{rewritten}\n{constraints}"
 
 
@@ -236,11 +248,6 @@ def _clone_reference_digest(image_path):
     return digest.hexdigest()
 
 
-def _ensure_clothes_wizard_model():
-    model_path, _mmproj_path = _ensure_qwen_vl_assets(allow_download=False, require_mmproj=False)
-    return model_path
-
-
 def _parse_clothes_wizard_json(content):
     data = parse_wizard_json(content)
     if data is None:
@@ -318,10 +325,15 @@ class ClothesDesigner:
         data = json.loads(widget_data) if isinstance(widget_data, str) else widget_data
         if not isinstance(data, dict):
             return ""
-        source_path = cls.reference_sprite_path(data.get("character", ""), data)
+        character = data.get("character", "")
+        source_path = cls.reference_sprite_path(character, data)
         identity = {"source": _clone_reference_digest(source_path) if source_path else None}
         if data.get("activeTab") == "clone" and data.get("clone_image"):
             identity["donor"] = _clone_reference_digest(resolve_comfy_image_path(data["clone_image"]))
+        settings = data.get("gen_settings", {})
+        if (source_path and data.get("activeTab") != "clone" and isinstance(settings, dict)
+                and settings.get("qi2_prompt_enhancement", True) is not False):
+            identity["style_description"] = _clothes_style_description(character)
         return json.dumps(identity, sort_keys=True)
 
     @staticmethod
@@ -546,6 +558,7 @@ class ClothesDesigner:
                 and gen_settings.get("qi2_prompt_enhancement", True) is not False
             )
             edit_system_prompt = _qi2_edit_system_prompt() if use_qi2_rewriter else None
+            style_description = _clothes_style_description(character_name) if use_qi2_rewriter else ""
 
             # 3. Cache check
             c_img_path, c_info_path = self.get_cache_paths(character_name, costume_name)
@@ -572,7 +585,8 @@ class ClothesDesigner:
                     from .character_creator_v2 import QI2_TEXT_GENERATION_DEFAULTS
 
                     cache_payload["qi2_edit_rewriter"] = {
-                        "version": 1,
+                        "version": 2,
+                        "style_description": style_description,
                         "system_prompt_sha256": hashlib.sha256(edit_system_prompt.encode("utf-8")).hexdigest(),
                         "text_generation": QI2_TEXT_GENERATION_DEFAULTS,
                     }
@@ -627,7 +641,7 @@ class ClothesDesigner:
             if use_qi2_rewriter:
                 positive_prompt = _rewrite_qi2_clothes_prompt(
                     clip, positive_prompt, ref_image,
-                    background_color, edit_system_prompt,
+                    background_color, edit_system_prompt, style_description,
                 )
             log_event("encoder_inputs", component="ClothesDesigner", character=character_name, costume=costume_name,
                       mode=active_tab, model_family=model_kind, clone_reference=image2 is not None)
@@ -823,11 +837,8 @@ async def vnccs_save_costume(request):
                     if costume.casefold() in {"naked", "original"} or any(name.casefold() == costume.casefold() for name in existing):
                         return web.json_response({"error": f"Costume '{costume}' already exists. Choose a new name or edit the existing costume."}, status=409)
                 else:
-                    revision = data.get("revision")
-                    if not isinstance(revision, str) or not revision:
-                        return web.json_response({"error": "Reload the costume before saving. Your local draft has been preserved."}, status=428)
-                    if costume not in existing or revision != load_costume_snapshot(character, costume)[1]:
-                        return web.json_response({"error": "This costume changed or was deleted in another editor. Your local draft has been preserved; reload the costume before saving."}, status=409)
+                    if costume not in existing:
+                        return web.json_response({"error": "This costume no longer exists. Select or create a costume before saving; your local draft is retained."}, status=404)
                 ensure_costume_structure(character, costume)
                 if not save_costume_info(character, costume, info):
                     return web.json_response({"error": f"Could not save costume '{costume}'. Check storage permissions and free space."}, status=500)
@@ -869,36 +880,18 @@ async def vnccs_delete_costume(request):
 @logged_operation("ClothesDesigner", "wizard")
 def _clothes_wizard_response(post):
     try:
-        try:
-            import llama_cpp
-        except Exception as e:
-            return web.json_response({
-                "error": "DEPENDENCY_MISSING",
-                "message": f"llama-cpp-python is required for Clothes Wizard: {e}",
-                "model_name": "llama-cpp-python",
-            }, status=500)
-
         user_description = str(post.get("description", "")).strip()
         if not user_description:
             return web.Response(status=400, text="No clothes description provided")
 
         try:
-            model_path = _ensure_clothes_wizard_model()
+            model = _local_wizard_model()
         except Exception as e:
             return web.json_response({
                 "error": "MODEL_MISSING" if isinstance(e, FileNotFoundError) else "MODEL_INVALID",
                 "message": str(e),
                 "model_name": QWEN_VL_MODEL_FILENAME,
             }, status=500)
-
-        try:
-            _validate_gguf_file(model_path, os.path.basename(model_path))
-        except Exception as e:
-            return web.json_response({
-                "error": "MODEL_INVALID",
-                "message": f"Qwen GGUF model file is invalid or incomplete: {e}",
-                "model_name": os.path.basename(model_path),
-            }, status=422)
 
         system_prompt = (
             "You are a professional anime/game character costume designer. "
@@ -937,28 +930,11 @@ Example for "Santa Claus costume":
 }}
 """
 
-        log_stage("loading_wizard_model", component="ClothesDesigner", model=os.path.basename(model_path))
-        llm = llama_cpp.Llama(
-            model_path=model_path,
-            n_ctx=4096,
-            n_gpu_layers=-1,
-            verbose=False,
-        )
-
-        configure_qwen_text_chat(llm)
+        log_stage("loading_wizard_model", component="ClothesDesigner", model=model["name"])
         log_stage("generating_description")
         log_prompts("Clothes Wizard", system=system_prompt, user=user_prompt)
-        response = llm.create_chat_completion(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_tokens=900,
-            temperature=0.35,
-        )
-
+        content = generate_wizard_text(model, system_prompt, user_prompt, max_length=900, temperature=0.35)
         log_stage("parsing_description")
-        content = response["choices"][0]["message"]["content"]
         log_event("wizard_output", component="ClothesDesigner", level="debug", output=content)
         parsed = _parse_clothes_wizard_json(content or "")
         if parsed is None:

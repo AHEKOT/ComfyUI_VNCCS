@@ -50,13 +50,6 @@ def generated(request, monkeypatch, tmp_path):
 
     monkeypatch.setattr(node, "_run_pose_generation", poses)
     monkeypatch.setattr(node, "_run_seedvr_upscale_batch", upscale)
-    save_tensor = cg._save_cached_tensor
-
-    def save(cache, key, tensor):
-        assert key not in cg.UPSCALER_STAGES, "Upscale images must not be duplicated in a .pt file"
-        return save_tensor(cache, key, tensor)
-
-    monkeypatch.setattr(cg, "_save_cached_tensor", save)
     images = torch.stack([torch.full((8, 6, 4), value / 255) for value in (30, 80, 130)])
     images[..., 3] = torch.arange(8).reshape(1, 8, 1) / 7
     state = {"character_name": "Alice", "nsfw_enabled": mode == "naked",
@@ -71,7 +64,8 @@ def generated(request, monkeypatch, tmp_path):
     run()
     stage = prefix + "upscaler"
     cache = Path(cg._get_generator_context("png-test", state["ui"]["progress_scope"])["cache_dir"])
-    assert not [p for p in root.rglob("*.pt") if p.stem in cg.UPSCALER_STAGES]
+    assert not list(root.rglob("*.pt"))
+    assert not (cache / "_stage_cache" / f"{stage}.images").exists()
     return SimpleNamespace(node=node, run=run, state=state, stage=stage, prefix=prefix,
                            cache=cache, calls=calls, events=events, change=change, root=root,
                            mode=mode, images=images, pipe=pipe)
@@ -86,18 +80,12 @@ def test_regenerate_uses_pngs_and_preserves_other_upscaled_images(generated, mon
     # Existing installations may still have an obsolete tensor. It is never read.
     legacy = g.cache / "_stage_cache" / (g.stage + ".pt")
     legacy.write_bytes(b"obsolete tensor must be ignored")
-    load = cg._safe_torch_load_tensor
-
-    def load_tensor(path):
-        assert Path(path).stem not in cg.UPSCALER_STAGES
-        return load(path)
-
-    monkeypatch.setattr(cg, "_safe_torch_load_tensor", load_tensor)
     g.calls.clear()
     g.events.clear()
     g.change[0] = 0.1
     g.state.update(regenerate_from=g.prefix + stage, regenerate_index=index)
     g.run()
+    assert legacy.read_bytes() == b"obsolete tensor must be ignored"
 
     target_calls = [count for name, count in g.calls if name == g.stage]
     assert target_calls == ([] if stage == "bg_remove" else [3 if index is None else 1])
@@ -228,7 +216,7 @@ def test_normal_run_rotates_png_batches_and_recomputes_them(generated):
     assert [count for name, count in g.calls if name == g.stage] == [3]
     assert {path.name: path.read_bytes() for path in (g.cache / "V1" / g.stage).glob("*.png")} == before
     assert all(path.read_bytes() != before[path.name] for path in (g.cache / g.stage).glob("*.png"))
-    assert not [path for path in g.cache.rglob("*.pt") if path.stem in cg.UPSCALER_STAGES]
+    assert not list(g.cache.rglob("*.pt"))
 
 
 @pytest.mark.parametrize("generated", ["clothes", "naked"], indirect=True)

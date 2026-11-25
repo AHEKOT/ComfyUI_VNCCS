@@ -452,11 +452,12 @@ def test_qi2_pose_pipeline_matches_reference_encoder_and_decode_nodes(monkeypatc
 def test_qi2_regeneration_preserves_individual_reference_sizes_and_pixels(monkeypatch, tmp_path):
     cache = str(tmp_path / "cache")
     monkeypatch.setattr(cg, "_safe_cache_dir", lambda path: path)
-    monkeypatch.setattr(cg, "_safe_torch_load_tensor", lambda path: torch.load(path, weights_only=True))
     images = [torch.rand(1, 97, 65, 3), torch.rand(1, 72, 151, 4)]
     assert cg._save_run_inputs(cache, poses=images, prompt=["front", "back"])
     restored = cg._load_run_inputs(cache)
     assert restored["prompt"] == ["front", "back"]
     for index, image in enumerate(images):
         result = cg.VNCCS_CharacterGenerator()._slice_batch_item(restored["poses"], index)
-        assert torch.equal(result, image)
+        assert torch.equal(result, (image * 255).to(torch.uint8).float() / 255)
+    assert len(list(tmp_path.rglob("*.png"))) == 2
+    assert not list(tmp_path.rglob("*.pt"))

@@ -4,7 +4,6 @@ import os
 import sys
 import types
 import json
-from pathlib import Path
 
 import pytest
 
@@ -283,6 +282,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
 
     monkeypatch.setattr(utils, "base_output_dir", lambda: str(tmp_path / "characters"))
     utils.save_costume_info("Alice", "Dress", {})
+    config = utils.load_config("Alice")
+    config["character_info"] = {"style": "custom", "custom_style": "Dense dramatic shadows"}
+    utils.save_config("Alice", config)
 
     reference_channels = 4 if kind == "QI2" else 3
     reference = torch.zeros((1, 96, 64, reference_channels))
@@ -365,13 +367,10 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         model_cache_key={"model": {"kind": kind, "name": "Test catalog model"}},
         cfg=cfg,
     )
-    workflow = json.loads((Path(__file__).resolve().parents[1] / "workflows/VNCCS_3.2_Step2_CharacterClothes.json").read_text())
-    designer = next(n for n in workflow["nodes"] if n["type"] == "ClothesDesigner")
-    saved = json.loads(designer["widgets_values"][0])
     if kind == "QI2" and cfg == 1.0:
         pipe.sample_steps, pipe.sampler_name, pipe.scheduler = 8, "euler", "simple"
-    data = {**saved, "character": "Alice", "costume": "Dress", "gen_settings": {
-                **saved["gen_settings"],
+    data = {"character": "Alice", "costume": "Dress", "gen_settings": {
+                "seed": 42,
                 "target_size": size,
                 "background_color": "Transparent" if kind == "QI2" else "Green",
                 "lora_strength": 0 if cfg is None else 0.65,
@@ -414,7 +413,7 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         if cfg == 1.0:
             sampler = calls["KSampler"]
             assert (sampler["seed"], sampler["steps"], sampler["sampler_name"], sampler["scheduler"], sampler["denoise"]) == (
-                saved["gen_settings"]["seed"], 8, "euler", "simple", 1.0,
+                data["gen_settings"]["seed"], 8, "euler", "simple", 1.0,
             )
         assert calls["TextEncodeQwenImage21"]["resolution"] == resolution
         expected_negative = node.construct_prompt(data, model_kind="qi2")[1]
@@ -430,7 +429,9 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
             assert "Attribute Disentanglement at Full Strength" in enhancer["prompt"]
             assert enhancer["image"].shape == (1, 96, 64, 3)
             assert enhancer["image"][0, 0, 0].tolist() == pytest.approx([0, 0, 1])
+            assert "Dense dramatic shadows" in enhancer["prompt"]
             assert calls["TextEncodeQwenImage21"]["prompt"].startswith("Dress the character in the image with the requested outfit precisely.")
+            assert "Dense dramatic shadows" in calls["TextEncodeQwenImage21"]["prompt"]
             assert "<image1>" not in calls["TextEncodeQwenImage21"]["prompt"]
         assert "Transparent background with alpha channel." in calls["TextEncodeQwenImage21"]["prompt"]
         if clone:
@@ -526,6 +527,15 @@ def test_preview_resolution_reaches_model_encoder(tmp_path, monkeypatch, caplog,
         assert call_names.count(encoder_name) == previous_calls + 1
         assert "Updated edit rules." in calls["TextGenerate"]["prompt"]
 
+        old_signature = node.IS_CHANGED(widget_data=data)
+        config["character_info"]["style_description"] = "Soft pencil shading"
+        utils.save_config("Alice", config)
+        assert node.IS_CHANGED(widget_data=data) != old_signature
+        node.process(pipe=pipe, widget_data=json.dumps(data), unique_id="123")
+        assert call_names.count(encoder_name) == previous_calls + 2
+        assert "Soft pencil shading" in calls["TextGenerate"]["prompt"]
+        assert "Soft pencil shading" in calls[encoder_name]["prompt"]
+
         text_calls = call_names.count("TextGenerate")
         encoder_calls = call_names.count(encoder_name)
         data["gen_settings"]["qi2_prompt_enhancement"] = False
@@ -606,12 +616,13 @@ class TestQI2EditRewriter:
         assert source in kwargs["prompt"]
         assert kwargs["image"] is image
         assert expected in result
-        assert "pose, framing and rendering medium" in result
+        assert "skin color and its texture" in result
+        assert "pose, framing and the original image artistic style" in result
+        assert "Align clothing render" not in result
         assert "<think>" not in result
         assert '"wh_ratio"' not in result
         assert result.startswith("Change the outfit decisively." if "Change the outfit decisively." in response else source)
         assert "restore, upscale and refine character's hairs" not in kwargs["prompt"]
-        assert "of the image" in result
         assert "<image1>" not in result
         assert "<image2>" not in result
 

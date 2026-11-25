@@ -62,9 +62,10 @@ def test_style_selector_is_between_framing_and_race_with_custom_first():
 
 
 def test_style_selector_has_readable_character_focused_options():
-    assert ".vnccs-style-gallery" in SOURCE
-    assert "grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr))" in SOURCE
-    assert "white-space: nowrap; overflow: hidden; text-overflow: ellipsis" in SOURCE
+    style_css = (Path(__file__).resolve().parents[1] / "web/character_styles.mjs").read_text()
+    assert ".vnccs-style-gallery" in style_css
+    assert "grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr))" in style_css
+    assert "white-space: nowrap; overflow: hidden; text-overflow: ellipsis" in style_css
     assert "host: container, catalog: styleCatalogForMode(state.gen_settings.generation_mode)" in SOURCE
     assert "els.style?.setCatalog?.(styleCatalogForMode(mode))" in SOURCE
     assert len(ANIMA_STYLE_CATALOG["groups"][0]["styles"]) == 510

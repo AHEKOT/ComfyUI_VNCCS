@@ -437,20 +437,22 @@ def test_emotion_cache_pruning_preserves_active_inputs_unrelated_files_and_links
     cache = tmp_path / "VNCCS" / "Characters" / "Alice" / "cache" / "poses" / "audit"
     stage = cache / "_stage_cache"
     stage.mkdir(parents=True)
-    kept = ["emotion_0001__item_0001.pt", "emotion_0001_detailer_mask__item_0001.pt",
-            "input_images_latest.pt", "inputs.json", "manual.pt"]
-    removed = ["emotion_0001__item_0002.pt", "emotion_0001_detailer_mask__item_0002.pt",
-               "emotion_0002__item_0001.pt", "emotion_0002_detailer_mask__item_0001.pt"]
+    kept = ["emotion_0001__item_0001.images", "emotion_0001_detailer_mask__item_0001.images", "input_images_latest.images"]
+    removed = ["emotion_0001__item_0002.images", "emotion_0001_detailer_mask__item_0002.images",
+               "emotion_0002__item_0001.images", "emotion_0002_detailer_mask__item_0001.images"]
     for name in kept + removed:
-        (stage / name).write_bytes(name.encode())
-    outside = tmp_path / "kept.pt"
-    outside.write_bytes(b"outside cache")
-    link = stage / "emotion_9999__item_0001.pt"
-    link.symlink_to(outside)
+        (stage / name).mkdir()
+    legacy = stage / "emotion_0002__item_0001.pt"
+    legacy.write_bytes(b"old cache")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = stage / "emotion_9999__item_0001.images"
+    link.symlink_to(outside, target_is_directory=True)
     generator_module.VNCCS_EmotionsGenerator()._prune_emotion_cache(str(cache), {"emotion_0001": 1})
-    assert all((stage / name).read_bytes() == name.encode() for name in kept)
+    assert all((stage / name).is_dir() for name in kept)
     assert all(not (stage / name).exists() for name in removed)
-    assert link.is_symlink() and outside.read_bytes() == b"outside cache"
+    assert link.is_symlink() and outside.is_dir()
+    assert legacy.read_bytes() == b"old cache"
 
 
 def test_custom_emotion_added_during_catalog_read_is_available_on_the_next_request(
@@ -947,7 +949,7 @@ def test_generator_paths_reject_links_outside_the_character_storage(generator_mo
 
     if linked_folder == "cache":
         assert generator_module._safe_cache_dir(str(root / "cache")) == ""
-        assert generator_module._cache_tensor_path(str(root / "cache"), "input") == ""
+        assert generator_module._cached_image_dir(str(root / "cache"), "input") == ""
     else:
         prefix = root / linked_folder / "sprite_"
         assert generator_module._safe_emotion_output_prefix(str(prefix), "Alice", linked_folder) == ""
@@ -959,7 +961,7 @@ def test_generator_paths_reject_links_outside_the_character_storage(generator_mo
     assert list(outside.iterdir()) == [original]
 
 
-@pytest.mark.parametrize("operation", ["tensor_path", "metadata_read", "metadata_write"])
+@pytest.mark.parametrize("operation", ["image_dir", "metadata_read", "metadata_write"])
 def test_nested_stage_cache_link_cannot_escape_character_storage(generator_module, monkeypatch, tmp_path, operation):
     base = tmp_path / "VNCCS" / "Characters"
     cache = base / "Alice" / "cache" / "poses" / "audit"
@@ -972,8 +974,8 @@ def test_nested_stage_cache_link_cannot_escape_character_storage(generator_modul
     (cache / "_stage_cache").symlink_to(outside, target_is_directory=True)
     monkeypatch.setattr(generator_module, "base_output_dir", lambda: str(base))
 
-    if operation == "tensor_path":
-        assert generator_module._cache_tensor_path(str(cache), "pose_generation") == ""
+    if operation == "image_dir":
+        assert generator_module._cached_image_dir(str(cache), "pose_generation") == ""
     elif operation == "metadata_read":
         assert generator_module._load_run_inputs(str(cache)) == {}
     else:

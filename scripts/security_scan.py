@@ -34,13 +34,18 @@ SCANNER_RULE_IDS = frozenset({
     "PY_NETWORK_CLIENT",
     "PY_PRIVILEGE_ESCALATION",
     "PY_TEMP_DIRECTORY_ACCESS",
+    "PY_UNSAFE_DESERIALIZATION",
     "PY_URL_COMMAND_EXECUTION",
+    "RUNTIME_CODE_INSTALL",
     "REMOVED_BEN2_CODE",
+    "UNGUARDED_SIDE_EFFECT",
     "ZIP_TOO_LARGE",
 })
 
 COMFY_REGISTRY_ISSUE_TYPES = frozenset({
+    "code-install",
     "contains_blacklisted_url",
+    "insecure-deserialization",
     "python_bytecode_manipulation",
     "python_command_injection_risk",
     "python_dynamic_execution",
@@ -48,6 +53,7 @@ COMFY_REGISTRY_ISSUE_TYPES = frozenset({
     "python_network_operations",
     "python_privilege_escalation",
     "python_url_command_execution",
+    "unauthenticated-side-effect",
     "zip_too_large",
 })
 
@@ -128,12 +134,185 @@ def _call_name(node: ast.AST) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _dotted_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_dotted_name(node.value)}.{node.attr}"
+    return ""
+
+
+def _import_names(nodes: list[ast.AST]) -> dict[str, str]:
+    names = {}
+    for node in nodes:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                names[alias.asname or root] = alias.name if alias.asname else root
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            for alias in node.names:
+                names[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return names
+
+
+def _call_argument(call: ast.Call, name: str, index: int | None = None) -> ast.AST | None:
+    for keyword in call.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    return call.args[index] if index is not None and index < len(call.args) else None
+
+
+def _unsafe_deserialization(name: str, call: ast.Call, qualify) -> bool:
+    if name in {"torch.load", "torch.serialization.load"}:
+        weights_only = _call_argument(call, "weights_only")
+        pickle_module = _call_argument(call, "pickle_module", 2)
+        return (
+            not (isinstance(weights_only, ast.Constant) and weights_only.value is True)
+            or (pickle_module is not None and not (
+                isinstance(pickle_module, ast.Constant) and pickle_module.value is None
+            ))
+            or any(isinstance(arg, ast.Starred) for arg in call.args)
+        )
+    if name in {"numpy.load", "numpy.save"}:
+        allow_pickle = _call_argument(call, "allow_pickle", 2)
+        if allow_pickle is None:
+            return any(keyword.arg is None for keyword in call.keywords) or any(
+                isinstance(arg, ast.Starred) for arg in call.args
+            )
+        return not (isinstance(allow_pickle, ast.Constant) and allow_pickle.value is False)
+    if name in {"yaml.load", "yaml.load_all"}:
+        loader = _call_argument(call, "Loader", 1)
+        return qualify(loader) not in {"yaml.SafeLoader", "yaml.CSafeLoader"}
+    module, _, method = name.rpartition(".")
+    return (
+        module in {"pickle", "_pickle", "dill", "cloudpickle", "joblib"}
+        and method in {"load", "loads", "Unpickler"}
+    ) or name in {
+        "pandas.read_pickle", "shelve.open", "yaml.unsafe_load", "yaml.unsafe_load_all",
+        "torch.serialization.add_safe_globals", "torch.serialization.safe_globals",
+    }
+
+
+PACKAGE_INSTALL_COMMAND_RE = re.compile(
+    r"\b(?:pip(?:3(?:\.\d+)?)?|npm|pnpm|yarn|uv\s+pip)\s+(?:install|add)\b"
+)
+MUTATING_ROUTE_RE = re.compile(
+    r"/(?:create|delete|remove|save|update|publish|reset|clear|cancel)"
+    r"(?:[-_][\w-]+)?(?=/|$)"
+)
+FILE_MUTATION_METHODS = {"write_bytes", "write_text", "unlink", "rmdir"}
+FILE_MUTATION_CALLS = {
+    "os.remove", "os.unlink", "os.rmdir", "os.rename", "os.replace", "shutil.rmtree",
+}
+
+
+def _literal_fragments(node: ast.AST) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(_literal_fragments(value) for value in node.values)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return _literal_fragments(node.left) + _literal_fragments(node.right)
+    return "{}"
+
+
+def _runtime_install(name: str, call: ast.Call) -> bool:
+    if name in {"pip.main", "ensurepip.bootstrap"} or name.startswith("pip._internal."):
+        return True
+    if not (name.startswith("subprocess.") or name in {"os.system", "os.popen"}):
+        return False
+    command = _call_argument(call, "args", 0)
+    if isinstance(command, (ast.List, ast.Tuple)):
+        return bool(PACKAGE_INSTALL_COMMAND_RE.search(" ".join(map(_literal_fragments, command.elts))))
+    return bool(PACKAGE_INSTALL_COMMAND_RE.search(_literal_fragments(command)))
+
+
+def _writes_files(handler: ast.AST, qualify) -> bool:
+    # shortcut: inspect the handler body. Use call-graph analysis if reads and writes can be distinguished there.
+    for call in ast.walk(handler):
+        if not isinstance(call, ast.Call):
+            continue
+        name = qualify(call.func)
+        owner, _, method = name.rpartition(".")
+        if name in FILE_MUTATION_CALLS or method in FILE_MUTATION_METHODS:
+            return True
+        if name == "asyncio.to_thread" and call.args:
+            target = qualify(call.args[0])
+            if target in FILE_MUTATION_CALLS or target.rsplit(".", 1)[-1] in FILE_MUTATION_METHODS:
+                return True
+        if method == "open":
+            mode = _call_argument(call, "mode", 1 if owner in {"", "builtins", "io"} else 0)
+            if isinstance(mode, ast.Constant) and isinstance(mode.value, str):
+                if any(flag in mode.value for flag in "wax+"):
+                    return True
+    return False
+
+
+def _policy_findings(relative: str, tree: ast.Module) -> list[Finding]:
+    nodes = list(ast.walk(tree))
+    imports = _import_names(nodes)
+
+    def qualify(node: ast.AST) -> str:
+        head, sep, tail = _dotted_name(node).partition(".")
+        return imports.get(head, head) + sep + tail
+
+    findings = []
+    if relative == "install.py":
+        findings.append(Finding("RUNTIME_CODE_INSTALL", relative, 1, "Automatic install.py hooks are forbidden"))
+
+    functions = {node.name: node for node in nodes if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    handlers = {
+        decorator: node for node in nodes if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        for decorator in node.decorator_list if isinstance(decorator, ast.Call)
+    }
+    handlers.update({
+        node.func: functions.get(_dotted_name(node.args[0]))
+        for node in nodes if isinstance(node, ast.Call) and isinstance(node.func, ast.Call) and node.args
+    })
+    for call in nodes:
+        if not isinstance(call, ast.Call):
+            continue
+        name = qualify(call.func)
+        if _unsafe_deserialization(name, call, qualify):
+            findings.append(Finding("PY_UNSAFE_DESERIALIZATION", relative, call.lineno, f"Unsafe deserialization: {name}()"))
+        if _runtime_install(name, call):
+            findings.append(Finding("RUNTIME_CODE_INSTALL", relative, call.lineno, f"Runtime code installation: {name}()"))
+
+        owner, _, method = name.rpartition(".")
+        if owner.split(".")[-1] != "routes" and owner != "aiohttp.web":
+            continue
+        if method in {"route", "add_route"}:
+            verb = _literal_fragments(_call_argument(call, "method", 0)).upper()
+            if verb not in {"GET", "HEAD"}:
+                continue
+            path_index = 1
+        elif method in {"get", "head", "add_get", "add_head"}:
+            path_index = 0
+        else:
+            continue
+        path = _call_argument(call, "path", path_index)
+        handler = handlers.get(call)
+        if method.startswith("add_") or owner == "aiohttp.web":
+            handler = functions.get(_dotted_name(_call_argument(call, "handler", path_index + 1)))
+        if path is not None and (
+            MUTATING_ROUTE_RE.search(_literal_fragments(path))
+            or (handler is not None and _writes_files(handler, qualify))
+        ):
+            findings.append(Finding(
+                "UNGUARDED_SIDE_EFFECT", relative, call.lineno,
+                "GET/HEAD routes must not expose write or delete operations",
+            ))
+    return findings
+
+
 def _python_findings(path: Path, relative: str, text: str) -> list[Finding]:
     findings: list[Finding] = []
     try:
         tree = ast.parse(text, filename=relative)
     except SyntaxError as exc:
         return [Finding("PY_DYNAMIC_EXECUTION", relative, exc.lineno or 1, f"Python syntax error: {exc.msg}")]
+
+    findings.extend(_policy_findings(relative, tree))
 
     os_aliases = {"os"}
     importlib_aliases = {"importlib"}

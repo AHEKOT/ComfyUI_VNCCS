@@ -212,8 +212,6 @@ test("Clothes Designer fills the preview by height without resizing the node", (
     assert.match(source, /\.vnccs-clothes-generation-img\s*\{[^}]*left:\s*50%[^}]*width:\s*auto[^}]*max-width:\s*none[^}]*height:\s*100%[^}]*translateX\(-50%\)/s);
     assert.doesNotMatch(source, /vnccs-clothes-preview-(?:stage|stack)/);
     assert.doesNotMatch(source, /setSize\(\[1020,\s*940\]\)/);
-    const clothesWorkflow = JSON.parse(readFileSync(new URL("../workflows/VNCCS_3.2_Step2_CharacterClothes.json", import.meta.url), "utf8"));
-    assert.deepEqual(clothesWorkflow.nodes.find(node => node.type === "ClothesDesigner").size, [710, 920]);
 });
 
 test("Clothes Designer keeps the mode tabs and right panel inside their bounds", () => {

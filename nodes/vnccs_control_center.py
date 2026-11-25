@@ -47,6 +47,7 @@ try:
         validate_privileged_request,
         privileged_route,
         atomic_output_path, character_storage_lock,
+        _link_or_copy,
         safe_join_under,
     )
 except Exception:
@@ -58,6 +59,7 @@ except Exception:
         validate_privileged_request,
         privileged_route,
         atomic_output_path, character_storage_lock,
+        _link_or_copy,
         safe_join_under,
     )
 
@@ -98,7 +100,6 @@ _FOLDER_MAP = {
     "upscale_models": ["upscale_models"],
     "embeddings": ["embeddings"],
     "gguf": ["unet", "diffusion_models"],
-    "diffusion_models": ["diffusion_models", "unet"],
 }
 _MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
 _MIN_MODEL_FILE_SIZE = 1024
@@ -1683,6 +1684,46 @@ def _download_with_progress(model_key, repo_id, filename, revision=None):
                 file_download._get_progress_bar_context = original_context
 
 
+def _install_download(temp_path, target_path, model_key, target_model):
+    backup = None
+    skip_existing = target_model.get("skip_existing")
+    try:
+        if skip_existing:
+            os.link(temp_path, target_path)
+        else:
+            if os.path.lexists(target_path):
+                backup = temp_path + ".previous"
+                if os.path.islink(target_path):
+                    os.symlink(os.readlink(target_path), backup)
+                else:
+                    _link_or_copy(target_path, backup)
+            os.replace(temp_path, target_path)
+
+        try:
+            if skip_existing:
+                os.remove(temp_path)
+            update_installed_version(model_key, target_model.get("version", ""))
+        except BaseException:
+            if backup is None:
+                os.unlink(target_path)
+            else:
+                previous, backup = backup, None
+                try:
+                    os.replace(previous, target_path)
+                except OSError as error:
+                    raise RuntimeError(f"Model rollback failed. Previous model retained at '{previous}'") from error
+            raise
+    finally:
+        if backup is not None:
+            try:
+                os.unlink(backup)
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                log_event("cleanup_warning", component="ControlCenter", level="warning",
+                          message="Could not remove model backup", path=backup, error=str(error))
+
+
 def _download_worker_loop():
     while True:
         task = _DOWNLOAD_QUEUE.get()
@@ -1750,12 +1791,7 @@ def _download_worker_loop():
             _DOWNLOAD_STATUS[model_key]["message"] = "Validating..."
             _validate_downloaded_model_file(temp_path, os.path.basename(target_abs_path))
             _DOWNLOAD_STATUS[model_key]["message"] = "Installing..."
-            if target_model.get("skip_existing"):
-                os.link(temp_path, target_abs_path)
-                os.remove(temp_path)
-            else:
-                os.replace(temp_path, target_abs_path)
-            update_installed_version(model_key, target_model.get("version", ""))
+            _install_download(temp_path, target_abs_path, model_key, target_model)
             _DOWNLOAD_STATUS[model_key] = {"status": "success", "message": "Installed"}
             log_event("download_completed", component="ControlCenter", model=model_key, bytes=total_size,
                       duration_s=round(time.perf_counter() - download_started, 2))

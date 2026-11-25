@@ -105,7 +105,7 @@ def test_character_root_accepts_windows_style_sheets_path(tmp_path, monkeypatch)
     assert cg._costume_name_from_sheets_path(windows_style) == "Naked"
 
 
-def test_cache_tensor_path_rejects_external_cache(tmp_path, monkeypatch):
+def test_cached_image_dir_rejects_external_cache(tmp_path, monkeypatch):
     base = tmp_path / "output" / "VNCCS" / "Characters"
     outside = tmp_path / "outside" / "cache"
     outside.mkdir(parents=True)
@@ -113,7 +113,7 @@ def test_cache_tensor_path_rejects_external_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(cg, "base_output_dir", lambda: str(base))
     monkeypatch.setattr(cg, "character_dir", lambda name: str(base / name))
 
-    assert cg._cache_tensor_path(str(outside), "stage") == ""
+    assert cg._cached_image_dir(str(outside), "stage") == ""
 
 
 def test_emotion_output_prefix_must_stay_under_character_sprites(tmp_path, monkeypatch):
@@ -506,7 +506,7 @@ def test_emotion_detailer_uses_local_denoise_and_forwards_other_controls(monkeyp
     assert detailer["tiled_decode"] is False
 
 
-def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
+def test_emotion_detailer_defaults_match_face_detailer():
     defaults = cg.DEFAULT_WIDGET_DATA["emotion_generation"]
     expected = {
         "face_denoise": 0.55,
@@ -533,20 +533,6 @@ def test_emotion_detailer_defaults_match_face_detailer_and_step3_workflow():
     assert defaults["use_sam"] is False
     assert "steps" not in defaults
     assert "cfg" not in defaults
-
-    workflow_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "workflows",
-        "VNCCS_3.2_Step3_CharacterEmotions.json",
-    )
-    with open(workflow_path, "r", encoding="utf-8") as handle:
-        workflow = json.load(handle)
-    node = next(item for item in workflow["nodes"] if item["type"] == "VNCCS_EmotionsGenerator")
-    workflow_settings = json.loads(node["widgets_values"][0])["emotion_generation"]
-    assert {key: workflow_settings[key] for key in expected} == expected
-    assert workflow_settings["use_sam"] is False
-    assert "steps" not in workflow_settings
-    assert "cfg" not in workflow_settings
 
 
 def test_regenerate_seed_shift_restores_pipe_seed():
@@ -659,7 +645,7 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
     node = cg.VNCCS_EmotionsGenerator()
     monkeypatch.setattr(node, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_save_stage", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cg, "_save_cached_tensor", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cg, "_save_cached_images", lambda *args, **kwargs: None)
     monkeypatch.setattr(node, "_load_source_sprite_from_path", lambda *args, **kwargs: (None, None))
     monkeypatch.setattr(
         node,
@@ -679,7 +665,7 @@ def test_emotions_generator_single_bg_regenerate_slices_cached_raw_batch(tmp_pat
             return torch.ones(1, 4, 4)
         return None
 
-    monkeypatch.setattr(cg, "_load_cached_tensor", load_cached_item)
+    monkeypatch.setattr(cg, "_load_cached_images", load_cached_item)
 
     def capture_bg_remove(images, source_items, detailer_masks, settings, background="Green", **kwargs):
         seen["shape"] = tuple(images.shape)

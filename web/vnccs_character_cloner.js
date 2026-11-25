@@ -2285,86 +2285,13 @@ app.registerExtension({
                             }, { duration: 240, gap: 30, delay: 90, accent: nextSex === "male" ? "#63c7ff" : "#ff8fa3" });
                         } else {
                             console.log("[VNCCS] Auto-Gen Failed. Status:", r.status);
-                            // Check for structured errors (404 for model, 500 for mmproj/other)
-                            let err = null;
-                            try { err = await r.json(); } catch (e) { }
+                            const txt = await r.text();
                             if (!isCurrent()) return;
-
-                            if (err && (err.error === "MODEL_MISSING" || err.error === "MODEL_INVALID" || err.error === "MMPROJ_MISSING" || err.error === "MMPROJ_INVALID" || err.error === "DEPENDENCY_MISSING")) {
-
-                                // CASE A: Dependency Error (llama-cpp-python)
-                                if (err.error === "DEPENDENCY_MISSING") {
-                                    showModal("Dependency Missing", (m) => {
-                                        const d = document.createElement("div");
-                                        d.innerHTML = `
-                                            <div style="font-size:13px; margin-bottom:10px;">
-                                                <b>Missing AI Library</b><br/><br/>
-                                                ${err.message}<br/>
-                                                <b>Model:</b> ${err.model_name}<br/><br/>
-                                                <span style="color:#f88">Correct 'llama-cpp-python' version required.</span><br/>
-                                                Please install the JamePeng fork or a compatible version manually.
-                                            </div>
-                                        `;
-                                        return d;
-                                    }, [
-                                        { text: "OK", class: "vnccs-btn-danger" }
-                                    ]);
-                                    return;
-                                }
-
-                                // CASE B: Regular Missing Model Files
-                                showModal("Model Missing", (m) => {
-                                    const d = document.createElement("div");
-                                    const isInvalid = err.error === "MODEL_INVALID" || err.error === "MMPROJ_INVALID";
-                                    const missingMsg = err.error === "MMPROJ_MISSING"
-                                        ? "The Vision Projector (mmproj) is missing."
-                                        : err.error === "MMPROJ_INVALID"
-                                            ? "The Vision Projector (mmproj) is invalid or incomplete."
-                                            : err.error === "MODEL_INVALID"
-                                                ? `Model file is invalid or incomplete: ${err.model_name || 'QwenVL'}`
-                                                : `Required Model: ${err.model_name || 'QwenVL'}`;
-                                    d.innerHTML = `
-                                        <div style="font-size:13px; margin-bottom:10px;">
-                                            <b>${missingMsg}</b><br/><br/>
-                                            ${isInvalid ? "The existing file will be replaced." : "This component is required for character analysis."} Would you like to download it now?<br/>
-                                            <span style="color:#aaa; font-size:11px;">Verification & Download will start automatically.</span>
-                                        </div>
-                                    `;
-                                    return d;
-                                }, [
-                                    { text: "Cancel" },
-                                    {
-                                        text: "DOWNLOAD & INSTALL", class: "vnccs-btn-success",
-                                        action: async (ol, btn) => {
-                                            // Trigger Download
-                                            try {
-                                                const dl = await api.fetchApi("/vnccs/qwen_vl_download_model", { method: "POST" });
-                                                if (dl.status === 409) {
-                                                    // already downloading
-                                                    ensureQwenVLReady().catch(e => showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]));
-                                                    return false;
-                                                }
-                                                if (dl.ok) {
-                                                    ol.remove(); // Close prompt
-                                                    ensureQwenVLReady().catch(e => showModal("Error", () => { const d = document.createElement("div"); d.innerText = "" + e; return d; }, [{ text: "Close" }]));
-                                                    return false;
-                                                }
-                                            } catch (e) {
-                        if (!isCurrent()) return;
-                                                showModal("Error", () => { const d = document.createElement("div"); d.innerText = "Download trigger failed: " + e; return d; }, [{ text: "Close" }]);
-                                            }
-                                            return true;
-                                        }
-                                    }
-                                ]);
-                                return; // Exit normally
-                            }
-
-                            // Fallback for real errors
-                            const txt = err && err.message ? err.message : (await r.text());
+                            let message = txt;
+                            try { message = JSON.parse(txt)?.message || txt; } catch (_) {}
                             showModal("Error", (m) => {
                                 const d = document.createElement("div");
-                                d.innerText = "Auto-Gen Failed: " + txt;
+                                d.innerText = "Auto-Gen Failed: " + message;
                                 d.style.color = "red";
                                 return d;
                             }, [{ text: "Close" }]);
@@ -2382,7 +2309,7 @@ app.registerExtension({
                 };
 
                 // Helper: Progress Polling
-                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
+                const ensureQwenVLReady = createQwenVLModelLoader(node, () => {
                     const { overlay, modal } = showModal("Downloading Model...", (m) => {
                         const d = document.createElement("div");
                         d.className = "vnccs-cloner-download-modal";
@@ -2400,7 +2327,7 @@ app.registerExtension({
                     const barEl = modal.querySelector("#vnccs-dl-bar");
                     const pctEl = modal.querySelector("#vnccs-dl-pct");
                     return { overlay, statusEl, barEl, pctEl, completedMessage: "Download Complete!" };
-                }, true);
+                });
 
                 // Add Header
                 colAttr.appendChild(attrHeader);

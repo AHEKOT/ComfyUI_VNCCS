@@ -662,7 +662,8 @@ for (const [name, category, render] of [
             widget.dlStatus = {};
             const card = render(widget, entry);
             assert.equal(card.querySelector(".vnccs-cc-download-btn").hidden, true);
-            assert.equal(card.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status").hidden, false);
+            assert.equal(card.querySelector(".vnccs-cc-model-card-status, .vnccs-cc-lora-card-status, .vnccs-cc-turbo-strip-status").hidden,
+                name === "Turbo LoRA" && status === "installed");
             if (status === "installed" && category !== "lora") assert.equal(card._downloadView.label.textContent, "Installed");
         }
     });
@@ -674,7 +675,9 @@ for (const [name, category, render] of [
         widget.config[category].push(entry);
         const card = render(widget, entry);
         widget.scrollArea.appendChild(card);
-        const { slot, label, button, badge } = card._downloadView;
+        const { slot, label, button } = card._downloadView;
+        const badge = card.querySelector(".vnccs-cc-badge");
+        assert.equal(badge.textContent, "↓");
         const key = `cc_${category}_${entry.name}`;
         widget._renderAll = () => assert.fail("Download transitions must not rebuild the interface");
         widget.scrollArea.scrollTop = 170;
@@ -686,6 +689,7 @@ for (const [name, category, render] of [
         assert.equal(pending.length, 1, "Repeated clicks cannot submit a second download");
         assert.equal(document.activeElement, label);
         assert.equal(label.textContent, "Queued");
+        assert.equal(badge.textContent, "…");
         pending[0].resolve({ ok: true, text: async () => '{"status":"queued"}' });
         await request;
 
@@ -699,9 +703,17 @@ for (const [name, category, render] of [
             assert.equal(card._downloadView.label, label);
             assert.equal(card._downloadView.button, button);
             assert.equal(card._downloadView.badge, badge);
+            assert.equal(badge.textContent, { downloading: "⬇", error: "✕", queued: "…", success: "●", installed: "●" }[status]);
+            assert.equal(badge.className, `vnccs-cc-badge vnccs-cc-badge--${status === "success" ? "installed" : status}`);
+            assert.equal(badge.ariaLabel, status === "success" ? "Checking installation" : widget._statusLabel(status));
             assert.equal(widget.scrollArea.scrollTop, 170);
             assert.equal(widget.scrollArea.scrollLeft, 9);
             assert.equal(label.role, "status");
+            if (name === "Turbo LoRA" && status === "installed") {
+                assert.equal(slot.hidden, true);
+                assert.equal(label.tabIndex, -1);
+                assert.equal(document.activeElement, card);
+            }
             const count = document.animations.length;
             widget.dlStatus[key].progress = 38;
             widget._updateDownloadIndicators();
@@ -720,6 +732,35 @@ for (const [name, category, render] of [
         assert.equal(widget._motionAnimations.size, 0);
     });
 }
+
+test("installed Turbo LoRA keeps its switch at the right edge without Active or Installed labels", () => {
+    const { widget, document, serialized } = setup();
+    const entry = widget.config.lora.find(item => item.name === "Turbo");
+    const card = () => widget.scrollArea.querySelector(`[data-download-key="cc_lora_${entry.name}"]`);
+    for (const active of [false, true, false]) {
+        const row = card();
+        const { slot, label } = row._downloadView;
+        const toggle = row.querySelector(".vnccs-cc-toggle");
+        const input = toggle.querySelector("input");
+        assert.equal(slot.hidden, true);
+        assert.equal(label.hidden, true);
+        assert.equal(label.tabIndex, -1);
+        assert.equal(row.children.at(-1), toggle);
+        assert.equal(input.checked, active);
+        assert.equal(input.disabled, false);
+        assert.equal(input.ariaLabel, `Enable ${entry.name}`);
+        if (!active) {
+            input.focus();
+            input.onchange({ target: { checked: true }, stopPropagation() {} });
+            assert.equal(JSON.parse(serialized.value).loras.find(item => item.name === entry.name).auto_apply, true);
+            assert.equal(document.activeElement.dataset.focusKey, input.dataset.focusKey);
+        } else {
+            row.onkeydown(key(" ", { target: row }));
+            assert.equal(JSON.parse(serialized.value).loras.find(item => item.name === entry.name).auto_apply, false);
+        }
+    }
+    assert.match(css, /\.vnccs-cc-download-slot\[hidden\],[\s\S]*?\{ display: none; \}/);
+});
 
 test("download verification preserves cards, open controls and drafts through a failed catalog refresh", async () => {
     const { widget, document, pending, serialized, focused } = setup({}, { repoId: "owner/models" });

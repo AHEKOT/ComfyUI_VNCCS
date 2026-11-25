@@ -327,3 +327,26 @@ test('a failed status read releases the poll guard for a later successful read',
     node.onRemoved();
     assert.equal(timers.size, 0);
 });
+
+test('shared graph navigation preserves an embedded viewport and exposes cleanup', () => {
+    const source = common.slice(common.indexOf('export function enableMiddleMouseCanvasPan('), common.indexOf('// ── CSS Injection')).replace('export ', '');
+    const listeners = new Map();
+    const root = { addEventListener: (name, callback) => listeners.set(name, callback), removeEventListener: name => listeners.delete(name) };
+    const context = vm.createContext({ root, window: { PointerEvent: class {} }, app: {}, document: {} });
+    vm.runInContext(`${source}; globalThis.cleanup = enableMiddleMouseCanvasPan(root);`, context);
+    const event = { button: 1, target: { closest: selector => selector === '[data-vnccs-own-navigation]' ? {} : null },
+        preventDefault() { throw new Error('Viewport navigation was swallowed'); }, stopPropagation() { throw new Error('Viewport navigation was stopped'); } };
+    for (const name of ['pointerdown', 'wheel', 'auxclick']) listeners.get(name)(event);
+    assert.equal(typeof context.cleanup, 'function');
+    context.cleanup();
+    assert.equal(listeners.size, 0);
+    assert.equal(root._vnccsMiddleMouseCanvasPan, undefined);
+});
+
+test('shared cleanup is safe when a host removes the same node twice', () => {
+    const calls = [];
+    const node = { onRemoved() { calls.push('original'); } };
+    const context = vm.createContext({ node, calls, console });
+    vm.runInContext(`${guards}; registerCleanup(node, () => calls.push('cleanup')); node.onRemoved(); node.onRemoved();`, context);
+    assert.deepEqual(calls, ['cleanup', 'original', 'original']);
+});

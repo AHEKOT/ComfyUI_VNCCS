@@ -1,9 +1,137 @@
 import { mountSakuraDialogMotion } from "./sakura_interactions.mjs";
 
+export const STYLE_PICKER_CSS = `
+/* Style library uses the whole node workspace without changing its size. */
+.vnccs-creator-container .vnccs-style-summary {
+    display: flex; gap: 12px; align-items: center; width: 100%; padding: 10px;
+    text-align: left; color: var(--text-primary); background: var(--bg-surface);
+    border: 1px solid var(--accent-border); border-radius: 12px; cursor: pointer;
+}
+.vnccs-creator-container .vnccs-style-placeholder {
+    position: relative; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; aspect-ratio: 1;
+    background: linear-gradient(145deg, #292034, #17131f);
+    color: var(--text-secondary); font-size: 11px; border-radius: 10px;
+}
+.vnccs-style-preview-image {
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+    border-radius: inherit;
+}
+.vnccs-style-summary > .vnccs-style-placeholder { width: 106.4px; flex-shrink: 0; }
+.vnccs-style-selection {
+    display: flex; align-items: stretch; gap: 12px; min-width: 0; padding: 10px;
+    border: 1px solid var(--accent-border); border-radius: 12px; background: var(--bg-surface);
+}
+.vnccs-style-selection > .vnccs-style-summary { flex: 1 1 0; min-width: 0; }
+.vnccs-style-secondary { position: relative; flex: 1 1 0; min-width: 0; }
+.vnccs-style-secondary[hidden], .vnccs-style-secondary-clear[hidden] { display: none; }
+.vnccs-creator-container .vnccs-style-selection > .vnccs-style-summary,
+.vnccs-creator-container .vnccs-style-secondary-trigger {
+    display: flex; align-items: center; gap: 10px; width: 100%; min-height: 88px; padding: 0;
+    border: 0; border-radius: 8px; background: transparent;
+    text-align: left; color: var(--text-primary); cursor: pointer;
+}
+.vnccs-style-secondary-trigger { justify-content: flex-end; height: 100%; }
+.vnccs-style-selection > .vnccs-style-summary > .vnccs-style-placeholder,
+.vnccs-style-secondary-trigger > .vnccs-style-placeholder {
+    width: min(88px, 45%); flex: 0 0 auto;
+}
+.vnccs-style-secondary-trigger > .vnccs-style-placeholder { font-size: 30px; }
+.vnccs-style-selection .vnccs-style-name { overflow-wrap: anywhere; }
+.vnccs-style-secondary-name {
+    flex: 1 1 0; min-width: 0; padding-left: 16px; text-align: right;
+    font-size: 14px; font-weight: 600; overflow-wrap: anywhere;
+}
+.vnccs-style-secondary-name[data-empty="true"] {
+    color: var(--text-secondary); font-size: 11px; font-weight: 400; line-height: 1.4;
+}
+.vnccs-creator-container .vnccs-style-secondary-clear {
+    position: absolute; top: 0; right: 0; width: 28px; height: 28px; padding: 0;
+    border: 1px solid var(--accent-border); border-radius: 50%; background: var(--bg-primary);
+    color: var(--text-primary); font-size: 20px; cursor: pointer;
+}
+.vnccs-style-secondary-clear::after { content: ""; position: absolute; inset: -8px; }
+.vnccs-style-secondary-trigger:hover, .vnccs-style-secondary-clear:hover { border-color: var(--accent); }
+.vnccs-style-secondary-trigger:focus-visible, .vnccs-style-secondary-clear:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.vnccs-style-details { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.vnccs-style-name { font-size: 14px; }
+.vnccs-style-description, .vnccs-style-reference {
+    display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-size: 11px; color: var(--text-secondary);
+}
+.vnccs-creator-container .vnccs-style-gallery {
+    position: absolute; inset: 0; z-index: 100; display: flex; flex-direction: column;
+    padding: 20px; gap: 12px; box-sizing: border-box; border-radius: inherit;
+    background: var(--bg-primary); color: var(--text-primary); overflow: hidden;
+    pointer-events: auto;
+}
+.vnccs-style-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
+.vnccs-style-toolbar input { flex: 1; min-width: 120px; }
+.vnccs-style-toolbar :is(select, .vnccs-common-ui-select-trigger) { width: auto; max-width: 240px; }
+.vnccs-style-heading { font-size: 18px; margin-right: auto; }
+.vnccs-creator-container .vnccs-style-gallery .vnccs-creator-btn {
+    flex: 0 0 auto; background: var(--bg-surface); border: 1px solid var(--accent-border);
+}
+.vnccs-creator-container .vnccs-style-gallery .vnccs-creator-btn:hover:not(:disabled) {
+    background: var(--bg-hover); border-color: var(--accent);
+}
+.vnccs-style-status { color: var(--text-secondary); font-size: 12px; flex-shrink: 0; }
+.vnccs-style-content { flex: 1; min-height: 0; overflow-y: auto; padding: 3px; }
+.vnccs-style-size-controls { display: flex; align-items: center; gap: 12px; flex-shrink: 0; font-size: 12px; color: var(--text-secondary); }
+.vnccs-style-size-slider { width: 180px; max-width: 50%; accent-color: var(--accent); cursor: pointer; }
+.vnccs-style-size-value { min-width: 40px; font-variant-numeric: tabular-nums; }
+.vnccs-style-preview-location { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.vnccs-style-preview-location:empty { display: none; }
+.vnccs-style-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--vnccs-style-card-size, 182px)), 1fr)); gap: 14px; }
+.vnccs-style-tile { position: relative; min-width: 0; }
+.vnccs-creator-container .vnccs-style-card {
+    position: relative; width: 100%; aspect-ratio: 1; padding: 0; overflow: hidden;
+    border-radius: 14px; border: 1px solid var(--accent-border); cursor: pointer;
+    background: var(--bg-surface); color: var(--text-primary); text-align: left;
+}
+.vnccs-style-card > .vnccs-style-placeholder { width: 100%; height: 100%; border-radius: 0; }
+.vnccs-style-editor > .vnccs-style-placeholder {
+    grid-row: 1 / span 5; width: 100%; max-width: 320px; align-self: start; justify-self: center;
+}
+.vnccs-style-card-label {
+    position: absolute; inset: auto 0 0; padding: 26px 12px 12px; font-size: 13px;
+    font-weight: 600; background: linear-gradient(transparent, rgba(0,0,0,.8));
+}
+.vnccs-creator-container .vnccs-style-card[aria-pressed="true"] { border: 2px solid var(--accent); }
+.vnccs-creator-container .vnccs-style-summary:hover,
+.vnccs-creator-container .vnccs-style-card:hover { border-color: var(--accent); }
+.vnccs-creator-container .vnccs-style-edit,
+.vnccs-creator-container .vnccs-style-delete {
+    position: absolute; top: 8px; right: 8px; border: 1px solid var(--accent-border);
+    border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); cursor: pointer;
+}
+.vnccs-creator-container .vnccs-style-edit { right: 44px; }
+.vnccs-creator-container .vnccs-style-delete {
+    width: 28px; height: 28px; padding: 0; font-size: 20px; line-height: 1;
+}
+.vnccs-creator-container .vnccs-style-delete:hover:not(:disabled) { color: var(--error); }
+.vnccs-creator-container .vnccs-style-editor {
+    width: min(100%, 1440px); margin: 0 auto; display: grid;
+    grid-template-columns: minmax(240px, 320px) minmax(0, 1fr); gap: 16px 24px; align-content: start;
+}
+.vnccs-style-editor > .vnccs-creator-field {
+    display: flex; flex-direction: column; gap: 5px; min-width: 0; margin: 0;
+}
+.vnccs-style-editor > .vnccs-style-toolbar { grid-column: 2; }
+.vnccs-style-editor .vnccs-creator-label {
+    color: var(--text-secondary); font-size: 10px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em;
+}
+.vnccs-creator-container .vnccs-style-editor textarea { height: auto; min-height: 160px; resize: vertical; }
+.vnccs-creator-container .vnccs-style-gallery [hidden] { display: none; }
+.vnccs-creator-container .vnccs-style-gallery :focus-visible,
+.vnccs-creator-container .vnccs-style-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+`;
+
 // Style selection stays in widget_data; the user library lives on the server.
 export function createStylePicker({ host, catalog, getInfo, save, fetchApi, cleanup,
     getPreviewPayload, imageURL = value => value, listenPreview, showModal, allowNone = () => false,
-    catalogURL = () => "/vnccs/character_styles", getSecondaryInfo, allowSecondary = () => true }) {
+    catalogURL = () => "/vnccs/character_styles", getSecondaryInfo, allowSecondary = () => true, showGenerateAll = false }) {
     const make = (tag, className, text) => {
         const element = document.createElement(tag);
         element.className = className;
@@ -11,6 +139,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         if (tag === "button") element.type = "button";
         return element;
     };
+    const libraryURL = () => catalogURL().split("?")[0];
     const allStyles = () => catalog.groups.flatMap(group => group.styles.map(style => ({ ...style, group: group.label })));
     const custom = { id: "custom", label: "Custom style", description: "Describe your own visual style", reference: "Your prompt", image: catalog.custom_preview || "" };
     const noStyle = { id: "none", label: "None", description: "", reference: "", prompt: "" };
@@ -72,7 +201,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         element.replaceChildren();
         const fallback = make("span", "", "Preview");
         element.append(fallback);
-        if (style?.image?.startsWith("/vnccs/character_styles/preview?")) {
+        if (style?.image?.startsWith(`${libraryURL()}/preview?`)) {
             const image = make("img", "vnccs-style-preview-image");
             image.alt = "";
             image.loading = "lazy";
@@ -182,8 +311,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
         filter.setAttribute("aria-label", "Style category");
         const add = make("button", "vnccs-creator-btn", "New style");
         const generateAll = make("button", "vnccs-creator-btn", "Generate all previews");
-        generateAll.title = "Render every library style sequentially using current Creator settings and resolution scale. Stop finishes the current image.";
-        generateAll.hidden = true;
+        generateAll.title = "Render every library style sequentially using current generation settings and resolution scale. Stop finishes the current image.";
+        generateAll.hidden = !showGenerateAll || !getPreviewPayload;
         const dismiss = make("button", "vnccs-creator-btn", "Close");
         dismiss.title = "Close the library and stop after the current preview";
         dismiss.onclick = () => close();
@@ -290,8 +419,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                                     const selection = JSON.stringify(getInfo());
                                     const selectionRevision = contextRevision;
                                     try {
-                                        const response = await fetchApi(`/vnccs/character_styles/delete?style=${encodeURIComponent(style.id)}`, {
-                                            method: "POST", headers: { "X-VNCCS-CSRF": "1" },
+                                        const response = await fetchApi(`${libraryURL()}/delete?style=${encodeURIComponent(style.id)}`, {
+                                            method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify({ id: style.id }),
                                         });
                                         const result = await response.json();
                                         if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
@@ -352,7 +481,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             editor.append(preview);
             const fields = {};
             for (const [key, label, limit] of [["label", "Name", 100], ["description", "Short description", 240], ["reference", "Reference", 500], ["prompt", "Style prompt", 16000]]) {
-                const wrapper = make("label", "vnccs-creator-field", label);
+                const wrapper = make("label", "vnccs-creator-field");
+                wrapper.append(make("span", "vnccs-creator-label", label));
                 const input = make(key === "prompt" ? "textarea" : "input", key === "prompt" ? "vnccs-creator-textarea" : "vnccs-creator-input");
                 input.value = style[key] || "";
                 input.maxLength = limit;
@@ -367,7 +497,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             submit.type = "submit";
             const cancel = make("button", "vnccs-creator-btn", "Back to library");
             const generate = make("button", "vnccs-creator-btn", "Generate preview");
-            generate.title = "Save this style and render only its portrait preview with seed 0 and current Creator settings.";
+            generate.title = "Save this style and render only its style preview with seed 0 and current generation settings.";
             generate.hidden = !getPreviewPayload;
             cancel.onclick = () => {
                 editor.hidden = true; grid.hidden = false;
@@ -382,7 +512,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                 const payload = Object.fromEntries(Object.entries(fields).map(([key, input]) => [key, input.value]));
                 if (draft.id) payload.id = draft.id;
                 if (draft.revision) payload.revision = draft.revision;
-                const response = await fetchApi("/vnccs/character_styles", {
+                const response = await fetchApi(libraryURL(), {
                     method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" }, body: JSON.stringify(payload),
                 });
                 const result = await response.json();
@@ -407,7 +537,7 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                     if (!stored) return;
                     if (renderPreview) {
                         const payload = JSON.parse(JSON.stringify(getPreviewPayload()));
-                        payload.gen_settings = { ...payload.gen_settings, seed: 0, seed_mode: "fixed", mode_settings: {} };
+                        if (payload.gen_settings) payload.gen_settings = { ...payload.gen_settings, seed: 0, seed_mode: "fixed", mode_settings: {} };
                         await generatePreviews([stored], payload);
                         if (!disposed && overlay === currentOverlay) paintPreview(preview, draft);
                     } else close();
@@ -436,8 +566,8 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
             try {
                 const payload = JSON.parse(JSON.stringify(requestedPayload || getPreviewPayload()));
                 const styles = requestedStyles || [...allStyles()];
-                if (!requestedStyles && payload.character_info.custom_style?.trim()) styles.push({ ...custom });
-                current = { payload, styles, index: 0, cancelled: false, requestId: "", key: `${Date.now()}-${++requestId}` };
+                if (!requestedStyles && getInfo().custom_style?.trim()) styles.push({ ...custom });
+                current = { library: libraryURL(), payload, styles, index: 0, cancelled: false, requestId: "", key: `${Date.now()}-${++requestId}` };
                 batch = current;
                 for (const [index, style] of styles.entries()) {
                     if (current.cancelled || disposed) break;
@@ -445,14 +575,14 @@ export function createStylePicker({ host, catalog, getInfo, save, fetchApi, clea
                     current.requestId = `${current.key}-${index}`;
                     progressMessage = `Rendering ${index + 1}/${styles.length}: ${style.label}`;
                     updateGallery();
-                    const response = await fetchApi("/vnccs/character_styles/preview", {
+                    const response = await fetchApi(`${current.library}/preview`, {
                         method: "POST", headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
                         body: JSON.stringify({ ...payload, style_id: style.id, request_id: current.requestId }),
                     });
                     if (!response.ok) throw new Error(await response.text());
                     const result = await response.json();
                     if (result.saved !== true) throw new Error("Server did not confirm saving the WebP file to disk");
-                    if (result.style_id !== style.id || !result.image?.startsWith("/vnccs/character_styles/preview?"))
+                    if (result.style_id !== style.id || !result.image?.startsWith(`${current.library}/preview?`))
                         throw new Error("Invalid style preview response");
                     for (const group of catalog.groups) {
                         const item = group.styles.find(item => item.id === style.id);

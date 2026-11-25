@@ -24,18 +24,18 @@ _TEXT_LIMITS = {"label": 100, "description": 240, "reference": 500, "prompt": 16
 STYLE_PREVIEWS_DIR = os.path.join(os.path.dirname(USER_CHARACTER_STYLES_PATH), "style_previews")
 
 
-def style_preview_path(style_id):
+def style_preview_path(style_id, *, directory=None):
     if not isinstance(style_id, str) or not re.fullmatch(r"[a-z0-9_]{1,100}", style_id):
         raise ValueError("Invalid style ID")
-    return safe_join_under(STYLE_PREVIEWS_DIR, style_id + ".webp")
+    return safe_join_under(directory or STYLE_PREVIEWS_DIR, style_id + ".webp")
 
 
-def style_preview_url(style_id):
-    path = style_preview_path(style_id)
+def style_preview_url(style_id, *, directory=None, base_url="/vnccs/character_styles/preview"):
+    path = style_preview_path(style_id, directory=directory)
     if not os.path.isfile(path):
         return ""
     stat = os.stat(path)
-    return f"/vnccs/character_styles/preview?style={style_id}&v={stat.st_mtime_ns}_{stat.st_size}"
+    return f"{base_url}?style={style_id}&v={stat.st_mtime_ns}_{stat.st_size}"
 
 
 def square_style_resolution(target_size):
@@ -61,10 +61,10 @@ def flatten_style_preview(image):
     return background
 
 
-def save_style_preview(style_id, image):
+def save_style_preview(style_id, image, *, directory=None, base_url="/vnccs/character_styles/preview"):
     if image.width != image.height:
         raise ValueError("Style preview must be generated as a square image")
-    path = style_preview_path(style_id)
+    path = style_preview_path(style_id, directory=directory)
     mode = "RGBA" if "A" in image.getbands() or "transparency" in image.info else "RGB"
     image = image.convert(mode)
     if image.width > 1024:
@@ -80,7 +80,7 @@ def save_style_preview(style_id, image):
                 raise OSError("Style preview could not be verified on disk")
         verified = time.perf_counter()
     log_event("preview_saved", component="Styles", style=style_id, width=image.width, height=image.height, encode_s=round(encoded - started, 3), verify_s=round(verified - encoded, 3), publish_s=round(time.perf_counter() - verified, 3))
-    return {"style_id": style_id, "image": style_preview_url(style_id), "width": image.width, "height": image.height, "saved": True, "path": path}
+    return {"style_id": style_id, "image": style_preview_url(style_id, directory=directory, base_url=base_url), "width": image.width, "height": image.height, "saved": True, "path": path}
 
 
 def validate_user_style(value):
@@ -132,9 +132,6 @@ def save_user_style(value, path=None):
         index = next((i for i, item in enumerate(styles) if item["id"] == style["id"]), None)
         if supplied_id and index is None:
             raise ValueError("User style no longer exists; save it as a new style")
-        if index is not None and value.get("revision") != styles[index]["revision"]:
-            if style != validate_user_style(styles[index]):
-                raise StorageConflictError("This style changed in another editor. Your local draft has been preserved; reload the style before saving.")
         if index is None:
             if len(styles) >= 1000:
                 raise ValueError("User style library supports up to 1000 styles")
@@ -150,7 +147,7 @@ def save_user_style(value, path=None):
     return {**style, "revision": json_revision(style)}
 
 
-def delete_user_style(style_id, path=None):
+def delete_user_style(style_id, path=None, *, preview_directory=None):
     if not isinstance(style_id, str) or not re.fullmatch(r"user_[a-f0-9]{32}", style_id):
         raise ValueError("Only user styles can be deleted")
     path = path or USER_CHARACTER_STYLES_PATH
@@ -159,7 +156,7 @@ def delete_user_style(style_id, path=None):
         remaining = [style for style in styles if style["id"] != style_id]
         if len(remaining) == len(styles):
             return False
-        preview = style_preview_path(style_id)
+        preview = style_preview_path(style_id, directory=preview_directory)
         if os.path.islink(preview):
             raise ValueError("Cannot delete a linked style preview")
         previous = None
@@ -184,12 +181,12 @@ def delete_user_style(style_id, path=None):
         return True
 
 
-def save_user_style_preview(style_id, image, revision):
+def save_user_style_preview(style_id, image, revision, *, path=None, directory=None, base_url="/vnccs/character_styles/preview"):
     # A late render must not publish over a deleted or edited style.
     with _STYLE_LOCK:
-        style = next((style for style in load_user_styles() if style["id"] == style_id), None)
+        style = next((style for style in load_user_styles(path) if style["id"] == style_id), None)
         if style is None:
             raise ValueError("User style no longer exists")
         if revision != style["revision"]:
             raise StorageConflictError("This style changed during rendering. Generate its preview again.")
-        return save_style_preview(style_id, image)
+        return save_style_preview(style_id, image, directory=directory, base_url=base_url)

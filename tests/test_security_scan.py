@@ -19,7 +19,7 @@ from scripts.security_scan import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCANNER = PROJECT_ROOT / "scripts" / "security_scan.py"
-EXPECTED_SCANNER_SHA256 = "6f846945f52061d2fef997a9327b37e8a6f81b0954aad65d7d058c3d3fdc0490"
+EXPECTED_SCANNER_SHA256 = "6d6cdf182d1ea39e6e6002895262ff105ed1f6dd32571c8476acd635e96033d6"
 EXPECTED_RULE_IDS = {
     "BLACKLISTED_URL",
     "CREDENTIAL_URL",
@@ -37,12 +37,17 @@ EXPECTED_RULE_IDS = {
     "PY_NETWORK_CLIENT",
     "PY_PRIVILEGE_ESCALATION",
     "PY_TEMP_DIRECTORY_ACCESS",
+    "PY_UNSAFE_DESERIALIZATION",
     "PY_URL_COMMAND_EXECUTION",
+    "RUNTIME_CODE_INSTALL",
     "REMOVED_BEN2_CODE",
+    "UNGUARDED_SIDE_EFFECT",
     "ZIP_TOO_LARGE",
 }
 EXPECTED_COMFY_REGISTRY_ISSUE_TYPES = {
+    "code-install",
     "contains_blacklisted_url",
+    "insecure-deserialization",
     "python_bytecode_manipulation",
     "python_command_injection_risk",
     "python_dynamic_execution",
@@ -50,6 +55,7 @@ EXPECTED_COMFY_REGISTRY_ISSUE_TYPES = {
     "python_network_operations",
     "python_privilege_escalation",
     "python_url_command_execution",
+    "unauthenticated-side-effect",
     "zip_too_large",
 }
 
@@ -129,6 +135,8 @@ import requests
 import subprocess
 import tempfile
 from huggingface_hub import hf_hub_download
+from pip._internal.cli.main import main as pip_main
+from torch import load as read_weights
 
 SECRET_NAMES = {credential_names!r}
 MODEL = {removed_model!r}
@@ -148,6 +156,12 @@ importlib.import_module("example")
 requests.get("https://example.invalid")
 subprocess.run(["tool"])
 hf_hub_download(repo_id="example/project", filename="model.bin")
+pip_main(["install", "example"])
+read_weights("cache.pt")
+
+@routes.get("/vnccs/create_costume")
+async def create_costume(request):
+    pass
 """,
         encoding="utf-8",
     )
@@ -169,6 +183,58 @@ fetch("https://example.invalid/data");
     findings = json.loads(result.stdout)
     found_rule_ids = {finding["rule_id"] for finding in findings}
     assert found_rule_ids == EXPECTED_RULE_IDS
+
+
+def test_security_scanner_distinguishes_registry_policy_cases(tmp_path):
+    sources = {
+        "unsafe_pickle.py": "from pickle import loads as read\nread(payload)\n",
+        "unsafe_numpy.py": "import numpy as np\nnp.load(path, None, True)\n",
+        "unsafe_torch.py": "import torch as pt\npt.load(path, weights_only=False)\n",
+        "unsafe_get_route.py": '@routes.route("GET", "/vnccs/delete/{id}")\nasync def handler(request): pass\n',
+        "unsafe_installer.py": "from ensurepip import bootstrap\nbootstrap()\n",
+        "install.py": "print('automatic installer')\n",
+        "unsafe_http.py": """
+import asyncio
+
+async def handler(request):
+    await asyncio.to_thread(output_path.write_bytes, b"data")
+
+routes.head("/vnccs/item")(handler)
+""",
+        "safe.py": """
+from torch import load
+import numpy as np
+from huggingface_hub import hf_hub_download
+
+load(path, weights_only=True)
+np.load(path)
+np.load(path, allow_pickle=False)
+np.save(path, array, allow_pickle=False)
+hf_hub_download(repo_id="example/model", filename="weights.safetensors", token=False)
+
+@routes.get("/vnccs/item")
+async def read(request):
+    return path.read_bytes()
+
+@routes.post("/vnccs/create")
+async def create(request):
+    path.write_bytes(b"data")
+""",
+    }
+    for name, source in sources.items():
+        (tmp_path / name).write_text(source, encoding="utf-8")
+
+    result = _run_scanner(tmp_path, "--json")
+    assert result.returncode == 1
+    assert [(finding["path"], finding["rule_id"]) for finding in json.loads(result.stdout)] == [
+        ("install.py", "RUNTIME_CODE_INSTALL"),
+        ("unsafe_get_route.py", "UNGUARDED_SIDE_EFFECT"),
+        ("unsafe_http.py", "UNGUARDED_SIDE_EFFECT"),
+        ("unsafe_installer.py", "RUNTIME_CODE_INSTALL"),
+        ("unsafe_numpy.py", "PY_UNSAFE_DESERIALIZATION"),
+        ("unsafe_pickle.py", "PY_UNSAFE_DESERIALIZATION"),
+        ("unsafe_torch.py", "PY_UNSAFE_DESERIALIZATION"),
+    ]
 
 
 def test_security_scanner_scans_repository_tests(tmp_path):

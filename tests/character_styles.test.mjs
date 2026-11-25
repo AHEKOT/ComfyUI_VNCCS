@@ -381,6 +381,8 @@ test("New style creates fields without an existing ID", async () => {
     const overlay = find(ctx.host, "vnccs-style-gallery");
     walk(overlay).find(el => el.textContent === "New style").onclick();
     const editor = find(overlay, "vnccs-style-editor");
+    assert.deepEqual(walk(editor).filter(el => el.className === "vnccs-creator-label").map(el => el.textContent),
+        ["Name", "Short description", "Reference", "Style prompt"]);
     const inputs = walk(editor).filter(el => ["input", "textarea"].includes(el.tagName));
     inputs[0].value = "<b>Mine</b>"; inputs[3].value = "Pencil";
     await editor.onsubmit({ preventDefault() {} });
@@ -583,7 +585,7 @@ test("Custom style opens all fields and generates only its saved preview with se
     assert.equal(editor.hidden, false); assert.equal(grid.hidden, true);
     const fields = walk(editor).filter(el => ["input", "textarea"].includes(el.tagName));
     assert.equal(fields.length, 4);
-    assert.deepEqual(walk(editor).filter(el => el.tagName === "label").map(el => el.textContent),
+    assert.deepEqual(walk(editor).filter(el => el.className === "vnccs-creator-label").map(el => el.textContent),
         ["Name", "Short description", "Reference", "Style prompt"]);
     assert.equal(fields[3].value, "Ink");
     fields[0].value = "My ink"; fields[1].value = "Dry brush"; fields[2].value = "My drawing";
@@ -902,4 +904,63 @@ test("a late deletion preserves an identical character restored into a different
     assert.equal(restored.gen_settings.steps, 42);
     assert.equal(workflow.title, "Restored workflow");
     assert.equal(find(ctx.host, "vnccs-style-gallery"), undefined);
+});
+
+
+test('the complete style collection stays in one scrollable gallery without page navigation', async () => {
+    const library = { groups: [{ label: 'Large library', styles: Array.from({ length: 100 }, (_, index) => ({
+        id: `style_${index}`, label: `Style ${index}`, prompt: `Prompt ${index}`,
+    })) }] };
+    const ctx = setup({ style: 'style_99' }, async () => response(library));
+    await find(ctx.picker.root, 'vnccs-style-summary').onclick();
+    const gallery = find(ctx.host, 'vnccs-style-gallery');
+    assert.equal(find(gallery, 'vnccs-style-grid').children.length, 101);
+    assert.equal(walk(gallery).filter(el => el.tagName === 'button' && ['Previous', 'Next'].includes(el.textContent)).length, 0);
+    const last = walk(gallery).find(el => el.className === 'vnccs-style-card' && el.children.some(child => child.textContent === 'Style 99'));
+    last.onclick();
+    assert.equal(ctx.snapshots.at(-1).style_prompt, 'Prompt 99');
+});
+
+test("Background gallery generates all 25 dataset covers through its own route and restores their URLs", async () => {
+    const data = JSON.parse(readFileSync(new URL("../background_template/background_styles.json", import.meta.url), "utf8"));
+    const styles = data.groups.flatMap(group => group.styles);
+    const base = "/vnccs/background-creator/styles";
+    const calls = [];
+    const payload = { node_id: "7", editor: { scene_description: "An empty room", generation: { model_type: "moss", seed: 17 } } };
+    const info = { style: data.default_style, custom_style: "" };
+    const ctx = setup(info, async (url, options) => {
+        calls.push({ url, options });
+        if (!options) return response(structuredClone(data));
+        const body = JSON.parse(options.body);
+        assert.equal(body.editor.generation.model_type, "moss");
+        assert.equal(body.character_info, undefined);
+        const style = styles.find(style => style.id === body.style_id);
+        style.image = `${base}/preview?style=${style.id}&v=saved`;
+        return response({ saved: true, style_id: style.id, image: style.image, width: 1024, height: 1024 });
+    }, { catalogURL: () => base, getPreviewPayload: () => payload, showGenerateAll: true });
+    await find(ctx.picker.root, "vnccs-style-summary").onclick();
+    const generate = walk(ctx.host).find(el => el.textContent === "Generate all previews");
+    assert.equal(generate.hidden, false);
+    assert.equal(generate.disabled, false);
+    const before = structuredClone(info);
+    assert.equal(await ctx.picker.generatePreviews(), true);
+    assert.equal(calls.filter(call => call.options?.method === "POST").length, 25);
+    assert.ok(calls.every(call => call.url === base || call.url === `${base}/preview`));
+    assert.equal(walk(find(ctx.host, "vnccs-style-grid")).filter(el => el.tagName === "img").length, 25);
+    assert.deepEqual(info, before);
+    assert.equal(payload.editor.generation.seed, 17);
+    ctx.picker.close();
+    await find(ctx.picker.root, "vnccs-style-summary").onclick();
+    assert.equal(walk(find(ctx.host, "vnccs-style-grid")).filter(el => el.tagName === "img").length, 25);
+    ctx.teardown();
+});
+
+test("Background gallery rejects a character-cover acknowledgement", async () => {
+    const ctx = setup(undefined, async (_url, options) => options ? previewResponse("legacy") : response(catalog()), {
+        catalogURL: () => "/vnccs/background-creator/styles", getPreviewPayload: () => ({ editor: {} }),
+    });
+    await find(ctx.picker.root, "vnccs-style-summary").onclick();
+    assert.equal(await ctx.picker.generatePreviews(), false);
+    assert.match(find(ctx.host, "vnccs-style-status").textContent, /Invalid style preview response/);
+    ctx.teardown();
 });

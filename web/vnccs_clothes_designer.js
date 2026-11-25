@@ -1054,7 +1054,7 @@ app.registerExtension({
                 api.addEventListener("vnccs.clothes_designer.validation_error", onValidationError);
                 registerCleanup(node, () => api.removeEventListener("vnccs.clothes_designer.validation_error", onValidationError));
 
-                const ensureQwenVLReady = createQwenVLModelLoader(node, showModal, () => {
+                const ensureQwenVLReady = createQwenVLModelLoader(node, () => {
                     const { overlay, modal } = showModal("Downloading Model...", () => {
                         const d = document.createElement("div");
                         d.className = "cd-wizard-modal";
@@ -1072,48 +1072,9 @@ app.registerExtension({
                     const barEl = modal.querySelector("#cd-dl-bar");
                     const pctEl = modal.querySelector("#cd-dl-pct");
                     return { overlay, statusEl, barEl, pctEl, completedMessage: "Download Complete!" };
-                }, false);
+                });
 
                 const showWizardModelError = (err) => {
-                    if (err?.error === "DEPENDENCY_MISSING") {
-                        showModal("Dependency Missing", () => {
-                            const d = document.createElement("div");
-                            d.className = "cd-wizard-modal-text";
-                            d.innerText = `${err.message}\n\nInstall a compatible llama-cpp-python build manually.`;
-                            return d;
-                        }, [{ text: "OK", class: "vnccs-clothes-btn-danger" }]);
-                        return;
-                    }
-
-                    if (["MODEL_MISSING", "MODEL_INVALID", "MMPROJ_MISSING", "MMPROJ_INVALID", "MODEL_DOWNLOAD_FAILED"].includes(err?.error)) {
-                        showModal("Model Missing", () => {
-                            const d = document.createElement("div");
-                            d.className = "cd-wizard-modal-text";
-                            d.innerText = `${err.message || "Required Qwen model is missing."}\n\nDownload the Qwen model files now?`;
-                            return d;
-                        }, [
-                            { text: "Cancel" },
-                            {
-                                text: "DOWNLOAD & INSTALL",
-                                class: "vnccs-clothes-btn-primary",
-                                action: async () => {
-                                    try {
-                                        const dl = await api.fetchApi("/vnccs/qwen_vl_download_model?vision=false", { method: "POST" });
-                                        if (dl.ok || dl.status === 409) {
-                                            ensureQwenVLReady().catch(e => showInfo("Error", String(e)));
-                                            return false;
-                                        }
-                                        showInfo("Error", await dl.text());
-                                    } catch (e) {
-                                        showInfo("Error", `Download trigger failed: ${e}`);
-                                    }
-                                    return true;
-                                }
-                            }
-                        ]);
-                        return;
-                    }
-
                     showInfo("Clothes Wizard Error", err?.message || err?.raw || "Failed to generate clothes description.");
                 };
 
