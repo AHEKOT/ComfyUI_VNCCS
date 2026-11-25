@@ -110,6 +110,15 @@ def test_empty_library_and_named_document(library):
         storage.create_background("evening café")
 
 
+def test_failed_initial_write_allows_retry_with_the_same_name(library, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "_atomic", mock.Mock(side_effect=OSError("Disk unavailable")))
+        with pytest.raises(OSError, match="Disk unavailable"):
+            storage.create_background("Retry")
+    assert not (library / "Retry").exists()
+    assert storage.create_background("Retry")["name"] == "Retry"
+
+
 def test_delete_background_removes_the_complete_saved_directory(library):
     document = with_image("Delete me")
     directory = document_path(document).parent
@@ -1153,6 +1162,25 @@ def test_http_upload_persists_current_preview_without_browser_cache_staleness(ro
     response = call(routes, "GET", "/backgrounds/{background_id}/images/{image_id}",
                     Request(info={**info, "image_id": "../outside"}))
     assert response.status == 404
+
+
+def test_upload_cannot_publish_if_job_queues_during_decode(routes, workspace, monkeypatch):
+    document = workspace.document
+    background_id = document["background_id"]
+    decode = service._decode_image
+
+    def decode_after_queue(raw):
+        status = service.start_job(background_id, job_payload(document, "background"))
+        assert status["status"] == "queued"
+        return decode(raw)
+
+    monkeypatch.setattr(service, "_decode_image", decode_after_queue)
+    form = {"data": "{}", "image": types.SimpleNamespace(file=io.BytesIO(png()))}
+    response = call(routes, "POST", "/backgrounds/{background_id}/upload",
+                    Request(info={"background_id": background_id}, multipart=form))
+    assert response.status == 409
+    assert storage.load_background(background_id) == document
+    assert workspace.run_pending()["status"] == "completed"
 
 
 def test_http_job_actions_status_cancellation_and_busy_edit_guard(routes, workspace):

@@ -3230,13 +3230,13 @@ class VNCCS_BackgroundGenerator(VNCCS_CharacterGenerator):
                                cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels)
                 self._emit(unique_id, stage, "done", message="Background variants ready", current=len(labels), total=len(labels), labels=labels)
             final = results[order[2]]
-            paths = backgrounds.publish_background_set(background_id, image_id, cards,
-                [self._tensor_item_to_pil(image[0]) for image in final],
+            paths = backgrounds.publish_background_set(background_id, image_id, cards, final,
                 {"upscaler": settings["upscaler"], "generation": settings["pose_generation"],
                  "sampler": self._sampler_settings(values, settings["pose_sampler"]),
                  "model": values.get("model_entry") or {"kind": values["model_kind"]}}, None,
                 regenerate_indices=None if not start else ([selected] if selected is not None else list(range(0 if start == order[0] else 1, len(final)))),
-                expected_source_signature=source_signature)
+                expected_source_signature=source_signature,
+                image_from_item=lambda image: self._tensor_item_to_pil(image[0]))
             for index, (image, path) in enumerate(zip(final, paths)):
                 self._emit(unique_id, order[2], "done", image, "Background set saved", len(labels), len(labels),
                            cache_dir=cache_dir, preview_start=index, replace_images=True, labels=labels, preview_paths=[str(path)])

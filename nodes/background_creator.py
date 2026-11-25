@@ -16,7 +16,7 @@ import time
 import unicodedata
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -296,7 +296,12 @@ def create_background(name, initial_state=None):
             "selected_image_id": "", "generated_sets": [], "models": [], "cgs": [],
         }
         directory.mkdir(parents=True, exist_ok=False)
-        background_storage.publish(directory, document, _atomic)
+        try:
+            background_storage.publish(directory, document, _atomic)
+        except BaseException:
+            with suppress(OSError):
+                directory.rmdir()
+            raise
         return document
 
 
@@ -429,7 +434,8 @@ def _recover_set_publication(directory):
     shutil.rmtree(transaction)
 
 
-def publish_background_set(background_id, source_image_id, cards, images, settings, expected_revision, *, regenerate_indices=None, expected_source_signature=None):
+def publish_background_set(background_id, source_image_id, cards, images, settings, expected_revision, *,
+                           regenerate_indices=None, expected_source_signature=None, image_from_item=None):
     """Publish current images with the same V* archives and staged writes as sprites."""
     cards = normalize_variants(cards)
     if len(images) != len(cards) + 1:
@@ -486,6 +492,8 @@ def publish_background_set(background_id, source_image_id, cards, images, settin
                 for index, (name, image) in enumerate(zip(["Original", *(card["name"] for card in cards)], images)):
                     filename = f"{index:02d}_{_name(name)}.png"
                     if index in indices:
+                        if image_from_item is not None:
+                            image = image_from_item(image)
                         path = _contained(Path(stage), filename)
                         _atomic(path, _image_bytes(image))
                         with Image.open(path) as verification:
@@ -1572,14 +1580,14 @@ def start_job(background_id, payload, raw_image=None):
             raise ValueError("Describe the background for the wizard")
     if action == "background":
         editor = _resolve_editor_seed(editor, payload.get("_vnccs_seed_resolved") is True)
-    document = load_background(background_id)
-    if document.get("_recovery"):
-        raise BackgroundStorageError("Recovered background metadata is read-only")
-    if document.get("archived"):
-        raise ValueError("Background is archived")
-    values = {**payload, "editor": editor, "revision": document["revision"], "description": description}
     with _JOBS_LOCK:
         ensure_idle(background_id)
+        document = load_background(background_id)
+        if document.get("_recovery"):
+            raise BackgroundStorageError("Recovered background metadata is read-only")
+        if document.get("archived"):
+            raise ValueError("Background is archived")
+        values = {**payload, "editor": editor, "revision": document["revision"], "description": description}
         for old_id in list(_JOBS):
             if len(_JOBS) < 64:
                 break
@@ -1774,24 +1782,28 @@ def register_routes(routes):
     @routes.patch(base + "/backgrounds/{background_id}")
     @respond
     def save(info, payload, image):
-        ensure_idle(info["background_id"])
-        state = normalize_editor(payload.get("editor", {}))
-        if "selected_image_id" in payload:
-            state["selected_image_id"] = payload["selected_image_id"]
-        return public_document(save_background(info["background_id"], state))
+        with _JOBS_LOCK:
+            ensure_idle(info["background_id"])
+            state = normalize_editor(payload.get("editor", {}))
+            if "selected_image_id" in payload:
+                state["selected_image_id"] = payload["selected_image_id"]
+            return public_document(save_background(info["background_id"], state))
 
     @routes.delete(base + "/backgrounds/{background_id}")
     @respond
     def delete(info, payload, image):
-        ensure_idle(info["background_id"])
-        return delete_background(info["background_id"])
+        with _JOBS_LOCK:
+            ensure_idle(info["background_id"])
+            return delete_background(info["background_id"])
 
     @routes.post(base + "/backgrounds/{background_id}/upload")
     @respond
     def upload(info, payload, image):
         ensure_idle(info["background_id"])
-        decoded = _decode_image(image or b"").convert("RGB")
-        return public_document(add_image(info["background_id"], decoded, {"source": "upload"}))
+        decoded = _decode_image(image or b"")
+        with _JOBS_LOCK:
+            ensure_idle(info["background_id"])
+            return public_document(add_image(info["background_id"], decoded, {"source": "upload"}))
 
     @routes.post(base + "/backgrounds/{background_id}/jobs")
     @respond

@@ -3548,6 +3548,7 @@ class CharacterGeneratorWidget {
                 models: config.models || [],
                 vae: config.vae || [],
             };
+            if (this.syncSeedvrModel()) writeData(this.node, this.data);
             this.renderSettings();
         } catch (error) {
             console.warn("[VNCCS] SeedVR2 model cards unavailable", error);
@@ -3556,6 +3557,14 @@ class CharacterGeneratorWidget {
 
     seedvrRelativePath(entry) {
         return String(entry?.local_path || "").replace(/\\/g, "/").split("/").slice(2).join("/");
+    }
+
+    syncSeedvrModel() {
+        const installed = this.seedvrAssets?.models.filter(entry => entry.status === "installed");
+        if (!installed?.length || this.node._vnccsGeneratorStateError) return false;
+        if (installed.some(entry => this.seedvrRelativePath(entry) === this.data.upscaler.model)) return false;
+        this.data.upscaler.model = this.seedvrRelativePath(installed[0]);
+        return true;
     }
 
     async downloadSeedvrAsset(category, entry) {
@@ -3689,7 +3698,8 @@ class CharacterGeneratorWidget {
             return container;
         }
         const entries = this.seedvrAssets.models || [];
-        const selected = entries.find(entry => this.seedvrRelativePath(entry) === this.data.upscaler.model) || entries[0];
+        const selected = entries.find(entry => entry.status === "installed"
+            && this.seedvrRelativePath(entry) === this.data.upscaler.model) || entries[0];
         if (!selected) return container;
         const picker = document.createElement("div");
         picker.className = `vnccs-seedvr-picker${this.seedvrModelPickerOpen ? " is-open" : ""}`;
@@ -4917,6 +4927,7 @@ app.registerExtension({
                 this._vnccsCharacterGeneratorWidget.syncCharacterSourceData();
                 this._vnccsCharacterGeneratorWidget.syncStagesFromData();
                 this._vnccsCharacterGeneratorWidget.syncModelResolution();
+                widget.syncSeedvrModel();
                 writeData(this, this._vnccsCharacterGeneratorWidget.data);
                 this._vnccsCharacterGeneratorWidget.renderSettings();
                 this._vnccsCharacterGeneratorWidget.renderPreview();

@@ -96,6 +96,9 @@ def test_character_previews_use_exact_indices_and_survive_sprite_deletion(tmp_pa
         index: costume / f"sprite_pose_{index:04d}.png" for index in (1, 2)
     }
     data = {**record(), "preview_source": {"character": "Alice", "costume": "Dress"}}
+    def reject_second_encoding(_preview):
+        pytest.fail("Preview from a local sprite was already encoded")
+    monkeypatch.setattr(library, "preview_bytes", reject_second_encoding)
     saved = library.save_set(data)
     for i, expected in enumerate([(255, 0, 0), (0, 0, 255)]):
         image = Image.open(io.BytesIO(base64.b64decode(saved["previews"][i]))).convert("RGB")
