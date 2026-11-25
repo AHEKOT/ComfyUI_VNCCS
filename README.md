@@ -18,35 +18,29 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 
 ---
 
-VNCCS is NOT just another workflow for creating consistent characters, it is a complete pipeline for creating sprites for any purpose. It allows you to create unique characters with a consistent appearance across all images, organise them, manage emotions, clothing, poses, and conduct a full cycle of work with characters.
+VNCCS is a complete pipeline for creating consistent characters, backgrounds, and CGs. You can create unique characters, organise their sprites, give them new poses, outfits, and expressions, and bring them together in scenes for your story.
 
 ## Description
 
-Many people want to use neural networks to create graphics, but making a unique character that looks the same in every image is much harder than generating a single picture. With VNCCS, it's as simple as pressing a button (just 4 times).
+Many people want to use neural networks to create graphics, but making a unique character that looks the same in every image is much harder than generating a single picture. With VNCCS, you can take that character from the first sprite all the way to a finished scene, one step at a time!
 
 ## Installation
 
-For new ComfyUI users: 
+For new ComfyUI users:
 Use [VNCCS Easy Install](https://github.com/AHEKOT/VNCCS_Easy-Install). It installs ComfyUI with a preconfigured setup and working VNCCS nodes.
 
 For experienced users:
-Find `VNCCS - Visual Novel Character Creation Suite` in Custom Nodes Manager and click install latest version
+Find `VNCCS - Visual Novel Character Creation Suite` in ComfyUI-Manager and install the latest version.
 
 Manual install:
-1. Rename the downloaded node folder to `vnccs` and place it into `ComfyUI/custom_nodes/`. The resulting path must be `ComfyUI/custom_nodes/vnccs/`.
-2. Alternatively, in the console: go to `ComfyUI/custom_nodes/` and run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git vnccs`
-3. `cd vnccs`
-4. `pip install -r requirements.txt`
-5. `python install.py`
 
-Run both commands with the Python interpreter that starts ComfyUI. ComfyUI-Manager
-runs `install.py` as its installation hook.
+1. Extract the downloaded node into `ComfyUI/custom_nodes/vnccs/`, or run `git clone https://github.com/AHEKOT/ComfyUI_VNCCS.git vnccs` from `ComfyUI/custom_nodes/`.
+2. Open `ComfyUI/custom_nodes/vnccs/` in your terminal.
+3. Run `python -m pip install -r requirements.txt` with the Python interpreter that starts ComfyUI.
 
-Post install steps:
-Launch ComfyUI and open Comfy Manager
-Click "Install missing custom nodes"
+Launch ComfyUI and open one of the bundled workflows. If it reports missing nodes, open ComfyUI-Manager and choose **Install missing custom nodes**. Install or enable **VNCCS-Utils** for Pose Manager and CG Creator, then restart ComfyUI.
 
-## VNCCS 3.2 Workflow
+## VNCCS 3.4 Workflow
 
 Hi! My name is V-chan, and I am going to show you how to use the new VNCCS!
 
@@ -56,7 +50,7 @@ We got a BIIIIIIG update, and now everything is completely new, so listen carefu
 
 Open the workflow:
 
-`VNCCS_3.2_Step1_CharacterCreator.json`
+`VNCCS_3.4_Step1_CharacterCreator.json`
 
 Let's start from the very beginning. The first thing you need to do, besides opening the workflow, silly, is figure out the **VNCCS Control Center**.
 ![Header](images/v3/ReadMe1.png)
@@ -69,7 +63,7 @@ Inside it, you will find the models that turn your character into different pose
 
 Choose wisely, but in the end nobody is stopping you from trying them all and deciding later.
 
-And then, at the very bottom of the widget, you can click the big **Download** button and the magic will do everything by itself.
+And then, at the very bottom of the widget, you can click the big **Download / Update** button and the magic will do everything by itself.
 
 <table>
 <tr>
@@ -103,9 +97,11 @@ Done? Good job! Now you have two paths:
 1. Enter character descriptions or use the pencil buttons to choose curated presets for race, skin tone, body type, face, hair, eyes, and details. Choose sex, age, and generation type. The **NSFW** switch controls whether the base character will have clothes or not :3
 2. Press **CHARACTER WIZZARD**, describe the character you want, and after a little magic the system will set all the needed options by itself. Do not forget to check them!
 
+The Character Wizzard, **Analyze Captions**, and Clothes Wizzard use ComfyUI's text generation. They can reuse your installed Qwen Image 2.1 text encoder. If they need the fallback model, the first run downloads `Qwen3.5-4B_int8_convrot.safetensors` into ComfyUI's text encoders. Give it a moment!
+
 Race presets include natural-language descriptions of their distinctive anatomy, added automatically to generation prompts in Illustrious, Anima, and Qwen Image 2.1. Select multiple species for hybrids, or enter custom traits; the prompt gives explicit character traits priority over preset defaults. Existing character fields and custom text remain supported. Breast-size presets retain their original tags. Creator V2 uses `character_template/character_presets_v2.json`; the legacy catalog remains available to Character Cloner.
 
-Click the **Style** card to open the style library. Built-in styles and their 1024×1024 WebP previews ship with the node in `character_template/character_styles.json` and `character_template/style_previews/`. Style prompts describe artistic rendering; background, pose and framing remain separate Creator settings.
+Click the **Style** card to open the style library. The bundled catalogs are `character_template/character_styles.json` and `character_template/anima_styles.json`, with 720×720 WebP previews in `character_template/style_previews/`. Style prompts describe artistic rendering. Background, pose, and framing have their own Creator settings.
 
 <table>
 <tr>
@@ -137,13 +133,11 @@ Browse the style previews, search by name, or narrow the library with the catego
 </tr>
 </table>
 
-Choose **Custom style** or **New style** to enter a name, short description, reference and style prompt. **Save style** adds it to **My styles**; **Generate preview** saves it and renders only that style using the current character tags and generation settings, a square portrait and seed 0. **Resolution scale** controls the render quality before the preview is resized to 1024×1024. Previews are composited onto the same dark gradient as the style cards and saved as opaque WebP at quality 90 directly inside the node, rather than ComfyUI's output directory. User styles live in `character_template/character_styles.user.json`, with `user_*.webp` previews alongside the built-in images; these user files are excluded from Git and packaged updates.
+Choose **Custom style** or **New style** to enter a name, short description, reference, and style prompt. **Save style** adds it to **My styles**. **Generate preview** saves it and renders only that style using the current character tags and generation settings, a square portrait, and seed 0. **Resolution scale** controls the render quality, and saved previews are capped at 1024×1024. Transparent areas are composited onto the same dark gradient as the style cards. Previews are saved as opaque WebP at quality 90. User styles live in `character_template/character_styles.user.json`, with `user_*.webp` previews alongside the built-in images. Git and packaged updates exclude these user files.
 
 The **×** button in the upper-right corner of a user style card opens a deletion confirmation. Confirming removes its library entry and preview, if present. Built-in styles cannot be deleted. Deleting the selected style switches the Creator to its default style.
 
-Style edits carry the `revision` returned by `/vnccs/character_styles`. A stale edit returns HTTP 409 and keeps the editor draft open. Keep any draft text before reloading the current style.
-
-If a user style changes during preview generation, the render returns HTTP 409 and preserves the previous preview. Generate the preview again for the updated style.
+You can save changes to an existing user style directly from its editor. If a user style changes during preview generation, the render returns HTTP 409 and preserves the previous preview. Generate the preview again for the updated style.
 
 A new little feature is the **GENERATE PREVIEW** button. It lets you see what the character will look like without restarting the whole generation. So press it already, and if you like everything, move on. If you want to make changes, edit the descriptions and press it again!
 
@@ -161,16 +155,15 @@ Press <strong>GENERATE PREVIEW</strong> and watch the character appear in the Cr
 
 Creator and Cloner run with the character settings restored from the workflow and save them to the selected character's profile. Restoring a workflow keeps its draft fields; it does not require a profile version. Storage locks and atomic writes protect the save, while unreadable configurations and metadata belonging to another character are rejected.
 
-## VNCCS Pose Studio
+## VNCCS Pose Manager
 
-The next key node is **VNCCS Pose Studio**.
-![Header](images/v3/ReadMe3.png)
+The next key node is **VNCCS Pose Manager**. It uses Pose Studio from my second project, **VNCCS-Utils**, so do not forget to install that too! The picture below shows the earlier Pose Studio interface.
 
-It is downloaded from my second project, **VNCCS-Utils**, so do not forget to install that too!
+![Pose grid in the earlier Pose Studio interface](images/v3/ReadMe3.png)
 
-Here, the most important thing is to choose the poses you need and how many of them there should be. You can control the model however you want and make absolutely any poses. Also, using the **Import** button, you can load any picture with a character and get a pose just like the one in the picture!
+Here, the most important thing is to choose the poses you need and how many of them there should be. Open **Library** above the pose grid to load a whole set, or click **Library** on a pose card to change just that pose. You can pose the mannequin yourself or use **Capture pose from image** in the card library. Already have a favourite set? Save it to your library so you can use it again!
 
-It is also very important that the body proportions of the model fit your character. Age will be set automatically from the previous step, but nobody will stop you from setting it manually. Also choose height and body type, the result will be much better that way.
+It is also very important that the body proportions of the mannequin fit your character. Try automatic proportion analysis, then check the age, height, and body type yourself. A little adjustment here can make a big difference later!
 
 In **VNCCS Character Generator**, you do not really need to worry about the settings, but if you want, you can choose the upscaler model or even turn it off.
 ![Header](images/v3/ReadMe4.png)
@@ -198,9 +191,9 @@ After you press <strong>Run</strong>, the generation preview shows the pose guid
 
 Open the workflow:
 
-`VNCCS_3.2_Step1_CharacterCloner.json`
+`VNCCS_3.4_Step1_CharacterCloner.json`
 
-This workflow is basically a complete copy of Character Creator, but it is made for cloning existing character images.
+The steps here will feel familiar. This time, you already have a character image to start from!
 
 Did you generate the character with another model? Download it from the internet? Take a screenshot from your favorite anime? Draw it yourself, with your own hands? Good job!
 
@@ -208,7 +201,7 @@ Try to make sure the picture is good quality and that the character is full body
 
 ![Header](images/v3/ReadMe6.png)
 
-Now load it into **VNCCS Character Cloner**, write tags or press **ANALYZE CAPTIONS**, set up everything you need in **VNCCS Pose Studio**, and do not forget to choose whether you need separate undressed sprites with the **NSFW** button. They are not mandatory, but dressing these characters later will be MUCH easier!
+Now load it into **VNCCS Character Cloner**, write tags or press **Analyze Captions**, set up everything you need in **VNCCS Pose Manager**, and choose whether you need separate undressed sprites with the **NSFW** button. These sprites make it MUCH easier to dress your character later!
 
 Also try to choose a background color that appears the least in the character. Look at the eyes and hair. If they are green, choose blue. Or the other way around.
 
@@ -218,7 +211,7 @@ Now press **Run** and look at the result!
 
 Open the workflow:
 
-`VNCCS_3.2_Step2_CharacterClothes.json`
+`VNCCS_3.4_Step2_CharacterClothes.json`
 
 Now we move to the tastiest part! In this workflow, you will make clothes for the character. As many sets as you think you need.
 
@@ -247,13 +240,13 @@ Choose your character, press <strong>New</strong>, and give the costume a name. 
 </tr>
 </table>
 
-And that is all! Again, do not forget about **VNCCS Pose Studio**, and press **Run**!
+And that is all! Check the poses in **VNCCS Pose Manager**, then press **Run**!
 
 When you finish the first set, you can press **New** again and create as many outfits as you want!
 
-Costume saves detect changes made in another editor. A conflicting save preserves your local draft instead of replacing newer metadata or recreating a deleted costume. Reload the costume before retrying; retain any draft text you want to apply to the current version.
+If the costume was deleted while you were editing it, Clothes Designer keeps your local draft. Select an existing costume or create a new one before saving it.
 
-API clients must read `/vnccs/get_costume` and send its `ETag` header as the `revision` field when posting an edit to `/vnccs/save_costume`. Successful saves return the next `revision`; stale edits return HTTP 409, and edits without a revision return HTTP 428. Creating a new costume uses `create_only: true`.
+API clients can post edits to `/vnccs/save_costume` with the character, costume, and `info`. Successful saves return the current `revision`. Editing a missing costume returns HTTP 404. To create a new costume, send `create_only: true`. An existing or reserved name returns HTTP 409.
 
 Deleting and recreating a costume changes its version even when its name and fields are identical. Clothes Generator rejects the protected `Naked` and `Original` sets and requires an editable costume.
 
@@ -294,7 +287,7 @@ After that, you again need to decide which model will do the generation.
 ![Header](images/v3/ReadMe9.png)
 
 
-If you chose **Illustrious** or **Anima**, the most important setting in **VNCCS Emotions Generator** is **Face Detailer Denoise**. It will suggest optimal values by itself, but remember one basic idea: the higher the denoise, the more the original image changes.
+If you chose **Illustrious** or **Anima**, the most important setting in **VNCCS Emotions Generator** is **Face Detailer Denoise**. Start with the default value and remember that higher denoise changes more of the original image.
 
 More denoise means a brighter emotion, but the character may stop looking like themselves.
 
@@ -318,9 +311,48 @@ Here, <strong>Qwen Image 2.1</strong> applies the selected <strong>yandere-smile
 </tr>
 </table>
 
-At this point, the current VNCCS features end, but not for long! Planned features include animations, 3D environments and CG image creation inside them, character voice generation, and music track generation for your game or project.
+### Need a few more poses?
 
-You will find all your sprites inside ComfyUI in:`ComfyUI\output\VNCCS\Characters\` folder
+Open `VNCCS_3.4_AdditionalPoses.json`. In **VNCCS Additional Poses**, pick your character, costume, and emotion, then choose the sprite you want to use as a reference. Set up the new poses in **VNCCS Pose Manager** and press **Run**. The new sprites join the ones you already made for that costume and expression!
+
+## Step 4: Background Creator
+
+Open the workflow:
+
+`VNCCS_3.4_Step4_BackgroundCreator.json`
+
+Now your characters need somewhere to go! A little café, a rainy street, maybe a castle with a suspiciously large number of doors? In **VNCCS Background Creator**, press **New** and give the location a name.
+
+You have two paths again:
+
+1. Choose **Interior** or **Exterior** and pick a style. Describe the scene and what goes in the **Front**, **Back**, **Left**, and **Right**. Or open **Background wizard**, give it a short idea, and press **FILL FIELDS**. Check what it wrote, choose **Qwen Image 2.1** or **Moss**, set the aspect ratio you want, and press **Generate background**.
+2. Already have the perfect picture? Press **Upload image** and use it as your source.
+
+The Qwen model card can download the required files. If you choose **Moss**, install its model files locally first. The widget shows which files are missing.
+
+Now look at **Variants**. **Morning**, **Evening**, and **Night** are there to get you started. Edit their time, weather, or additional details, or press **Add variant** and make your own. Try the same street in the rain and in the sunshine. It's still the same place, so your characters won't get lost!
+
+Ready? Pick the model you want to use for the variants in **VNCCS Control Center** and press **Run**. **VNCCS Background Generator** upscales the original with SeedVR2 first, then generates the variants. Set **Upscaler** to **OFF** to skip the final upscale of the variants. Check them as they appear in the gallery. If just one needs another try, you can regenerate that one.
+
+## Step 5: CG Creator
+
+Open the workflow:
+
+`VNCCS_3.4_Step5_CG_Creator.json`
+
+This is where your characters finally step into the scene! In **VNCCS CG Creator**, choose a saved background and pick the original or one of its variants. CG Creator uses **3D Factory** from **VNCCS-Utils**, so make sure it's enabled.
+
+Before you start, have the MoGe model and Qwen Image 2.1 files ready. Both scene builders start with MoGe and use Qwen Image 2.1 with **VNCCS Lucid Dreams QI2** to refine the camera views. You can get the LoRA from **VNCCS Control Center**.
+
+Pick **WorldMirror** to build a scene from Gaussian splats, or **MoGe** for a textured mesh. Press **Generate model** and give it a moment to build the scene. Then drag to look around, middle-drag to pan, and scroll to move. Play with **FOV** until you like the framing, or press **Recenter** to go back to the starting view.
+
+Want to bring your characters in? Press **Add Character**, then choose a character, costume, emotion, and sprite. Use **Pose**, **Move**, and **Rotate** to put the mannequin where you want it. You can adjust its size and lighting or give it a **Character prompt**. Add another character if the scene needs company. Each mannequin has its own colour so Qwen can tell which sprite belongs to whom!
+
+If the new camera angle reveals a part of the scene you want to fill in, try **Expand Scene**. Compare the captured view with the refined one, press **Rebuild Scene**, and use **Save Scene** if you like the result.
+
+Happy with the shot? Press **Generate CG** and enter a scene name. Qwen Image 2.1 uses the background, the camera view, and any character references you chose to render the final image. The finished image appears in the gallery. Select it and press **Run** to output it from the node. Look at that, your characters are in the story!
+
+You will find your sprites in `ComfyUI/output/VNCCS/Characters/` and your backgrounds and CGs in `ComfyUI/output/VNCCS/Backgrounds/`, under the default ComfyUI output folder.
 
 Be careful with them, and do not delete them by accident while cleaning your disk!
 ![Header](images/v3/footer.png)

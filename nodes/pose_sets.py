@@ -140,7 +140,7 @@ def save_set(data):
                     raise ValueError(f"The selected character is missing sprite {index}")
                 with Image.open(paths[index]) as image:
                     record["previews"].append(thumbnail(image))
-    record = validate_record(record)
+    record = record_fields(record) if selection else validate_record(record)
     with character_storage_lock(str(ROOT)):
         write_json(library_path("local", record["id"]), record)
     return record

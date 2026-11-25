@@ -127,11 +127,27 @@ def test_background_generator_owns_workspace_until_failure_and_releases_it(pipel
     assert set(p.node.INPUT_TYPES()["required"]) == {"pipe", "background", "prompt", "widget_data"}
 
 
-def test_regenerating_one_variant_uses_caches_and_preserves_the_others(pipeline):
+def test_regenerating_one_variant_uses_caches_and_preserves_the_others(pipeline, monkeypatch):
     p = pipeline
+    calls = []
+    convert, encode = p.node._tensor_item_to_pil, backgrounds._image_bytes
+
+    def convert_frame(image):
+        calls.append("convert")
+        return convert(image)
+
+    def encode_frame(image):
+        calls.append("encode")
+        return encode(image)
+
+    monkeypatch.setattr(p.node, "_tensor_item_to_pil", convert_frame)
+    monkeypatch.setattr(backgrounds, "_image_bytes", encode_frame)
     first = p.node.process(object(), tensor(), p.prompts, unique_id="node-7")[0]
+    assert calls == ["convert", "encode"] * len(first)
+    calls.clear()
     p.encodes.clear(); p.upscales.clear()
     result = p.node.process(object(), tensor(), p.prompts, json.dumps({"regenerate_from": "background_generation", "regenerate_index": 2}), "node-7")[0]
+    assert calls == ["convert", "encode"]
     assert not p.upscales and len(p.encodes) == 1
     assert "to evening." in p.encodes[0][1]
     for index in [0, 1, 3]:

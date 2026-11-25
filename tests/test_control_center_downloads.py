@@ -253,6 +253,43 @@ def test_worker_keeps_installed_model_when_tensor_data_is_truncated(monkeypatch,
     assert set(tmp_path.iterdir()) == {cached, target}
 
 
+@pytest.mark.parametrize("existing,skip_existing", [(True, False), (False, False), (False, True)])
+def test_failed_version_publish_rolls_back_model(monkeypatch, tmp_path, existing, skip_existing):
+    target = tmp_path / "model.gguf"
+    cached = tmp_path / "cached.gguf"
+    registry = tmp_path / "installed.json"
+    previous = b"previous model"
+    if existing:
+        target.write_bytes(previous)
+    cached.write_bytes(b"GGUF" + b"new" * 1024)
+    registry.write_text('{"other model": "1.0"}')
+    tasks = queue.Queue()
+    tasks.put(("public/models", "model", {"local_path": "models/unet/model.gguf", "hf_path": "model.gguf",
+                                         "skip_existing": skip_existing}))
+    tasks.put(None)
+    monkeypatch.setattr(cc, "_DOWNLOAD_QUEUE", tasks)
+    monkeypatch.setattr(cc, "_DOWNLOAD_STATUS", {})
+    monkeypatch.setattr(cc, "_resolve_model_download_path", lambda path: str(target))
+    monkeypatch.setattr(cc, "_find_model_on_disk", lambda path: (str(target), target.exists()))
+    monkeypatch.setattr(cc, "_download_with_progress", lambda *args, **kwargs: str(cached))
+    monkeypatch.setattr(cc, "_control_center_data_path", lambda *args, **kwargs: str(registry))
+    replace = cc.os.replace
+
+    def fail_registry_write(source, destination):
+        if destination == str(registry):
+            assert target.read_bytes() == cached.read_bytes()
+            raise OSError("Registry unavailable")
+        return replace(source, destination)
+
+    monkeypatch.setattr(cc.os, "replace", fail_registry_write)
+    cc._download_worker_loop()
+    assert cc._DOWNLOAD_STATUS["model"] == {"status": "error", "message": "Registry unavailable"}
+    assert registry.read_text() == '{"other model": "1.0"}'
+    if existing:
+        assert target.read_bytes() == previous
+    assert set(tmp_path.iterdir()) == ({cached, registry, target} if existing else {cached, registry})
+
+
 @pytest.mark.parametrize("created_during_download", [False, True])
 def test_node_card_download_never_replaces_an_existing_file(monkeypatch, tmp_path, created_during_download):
     target = tmp_path / "model.gguf"

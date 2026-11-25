@@ -1,3 +1,63 @@
+# VNCCS 3.4.0 Changelog
+
+VNCCS 3.4.0 adds background creation and variation generation, 3D scene composition and CG rendering, a Pose Manager with pose libraries, and a way to append poses to existing characters. This draft compares the 3.4.0 release working tree with `main` (`3.3.4`).
+
+## Background Creator
+
+- Added **VNCCS Background Creator** to create named backgrounds, generate or upload a source image, and edit the scene and its variants in one widget. The node outputs the source image and a list of variant prompts. Queued runs reuse a current generated preview, regenerate it when settings change, or pass through an uploaded source.
+- Added scene fields for Interior or Exterior, the overall description, and the front, back, left, and right of the composition. The Background Wizard expands a short brief into those fields while retaining the selected style and scene type. Art direction, prompt enhancement, and the negative prompt have their own controls.
+- Added a searchable visual library of 25 bundled background styles with WebP previews. Custom styles can be saved, edited, and given their own generated covers. Covers use the current generation settings, a square composition, and seed 0.
+- Added Qwen Image 2.1 and Moss generation profiles with independent settings. The editor exposes aspect ratio, resolution in megapixels, sampler, scheduler, steps, CFG, fixed or randomized seed, and a LoRA stack. Qwen also exposes cache device and precision, with support for the Turbo checkpoint and the six-step Viggle Turbo adapter.
+- Added editable variation cards for time of day, weather, and additional details. New backgrounds start with Morning, Evening, and Night cards. Variant prompts ask the model to preserve the scene, viewpoint, framing, architecture, and objects.
+- Added full-size previews, in-place generation progress, and confirmed permanent deletion. The last available source remains visible while a replacement is pending. Creating a new background resets the editor to its defaults.
+
+## Background Generator and Storage
+
+- Added **VNCCS Background Generator**. It upscales the original with SeedVR2, generates the requested variants using the Control Center model, and optionally upscales the generated variants. The gallery shows the Original and named variants as they finish. Results are exposed as a complete background list, the upscaled source, and a variation list.
+- Added regeneration from a selected stage or for an individual result. The generator reuses unaffected images and checks the source fingerprint and variant definitions before publishing a partial rerun. Only the images being written are converted for publication during a partial rerun.
+- Backgrounds live under `output/VNCCS/Backgrounds`. Source images, editor settings, generated sets, models, and CG results are organized by background. Generated background sets are published as complete batches, with earlier versions retained in numbered archives.
+- Added recovery for interrupted background and CG writes, migration of older background layouts, and read-only recovery for existing assets when metadata cannot be safely rewritten. A failed initial background write cleans up the empty folder so creation can be retried.
+- Background edits, uploads, and deletion share a job lock with generation and CG work. Changes cannot slip in between the busy check and the write. Background generator caches now participate in the same pruning as pose generator caches.
+
+## CG Creator and 3D Reconstruction
+
+- Added **VNCCS CG Creator**. Select a saved background or generated variant, reconstruct it in 3D, position the camera, and generate a named CG from the captured view. Running the node outputs the selected finished CG as an image.
+- CG Creator reuses the registered VNCCS Utils 3D Factory runtime and viewer. The editor supports camera navigation, field-of-view controls, recentering, and inline source and result previews. Background selection, camera, model settings, character edits, and the selected CG persist with the node.
+- WorldMirror V2 generates a Gaussian splat stored as PLY. MoGe generates a textured GLB mesh. Both reconstruct from multiple views refined with Qwen Image 2.1. WorldMirror supports supplied or predicted cameras, and MoGe supports calibrated cameras or optional COLMAP estimation.
+- MoGe aligns depth between views and blends the reconstructed surfaces while preserving reference coverage. QI2 refinement keeps the calibrated pixel grid aligned with its depth and masks, including when adding a view to an existing scene.
+- Saved scenes can be expanded from a new camera position. Compare the captured and refined frames, rebuild the scene with the additional view, and save or discard the reconstruction preview.
+- Added standalone **WorldMirror V2 Model Loader** and **WorldMirror V2 3D Reconstruction** nodes. They expose BF16, INT8 ConvRot, and INT4 ConvRot weights, optional CPU offload and low-VRAM inference, camera and depth priors, sky masking, and splat controls. Reconstruction also provides depth, normals, camera data, and masks.
+- Add multiple color-coded mannequins to a scene and adjust placement, scale, rotation, pose, and lighting. Each mannequin can reference a saved character, costume, emotion, and sprite, with an optional character-specific prompt. QI2 matches each color to its corresponding sprite reference during rendering.
+- Added **VNCCS Lucid Dreams QI2** to the Control Center catalog for CG rendering. CG Creator supports standard and Turbo QI2 checkpoints, Viggle Turbo, and additional LoRAs. Generated CGs also save their prompt and control images alongside the result in `output/VNCCS/QI2_CG_Dataset`.
+- CG jobs report progress and can be cancelled. The widget can recover the status of a submitted job, keeps previews in place while images load, and shows the newest CGs first. Confirmed CG deletion removes the entry from the gallery while preserving the saved image. Rebuilding the model for the same source variant replaces the active model, with rollback if publication fails.
+
+## Pose Manager and Pose Libraries
+
+- Added **VNCCS Pose Manager**, a VNCCS-specific interface backed by the installed VNCCS Utils Pose Studio. It provides a pose grid, per-pose editors, framing and reset controls, and progress feedback for character proportion analysis.
+- Pose cards use live previews that refresh during edits. Picking a library pose on a card updates that pose, and exporting waits for the current captures. Pose Manager still uses the preview lighting for rendering and omits the automatic lighting descriptions from generated pose prompts.
+- Added separate libraries for individual poses and complete pose sets. The single-pose picker can load a sprite pose or capture a pose from an uploaded image. Manager repositories can be added, refreshed, enabled, disabled, and removed independently of Pose Studio's repositories.
+- The set library includes **Default Male Poses** and **Default Female Poses**, with 12 poses each. Users can browse and load sets, or save the current set with a name, description, prompts, and previews. Previews can use the current mannequins or sprites from a selected character and costume. Character previews are encoded once when saving the set.
+- Added support for public Hugging Face pose and pose-set repositories. Downloads use a shallow Git import with Dulwich and resolve Git LFS assets at the same revision. Sprite pose files and previews are checked against their manifest checksums. `PoseSetLibrary/` holds local sets and repository data and is excluded from Git and Registry packages.
+
+## Additional Poses
+
+- Added **VNCCS Additional Poses** and **VNCCS Additional Poses Generator**. Pick an existing character, costume, emotion, and active sprite as the reference, then generate extra poses into that same group. The selector uses the saved character background setting.
+- New sprites are appended with unique pose filenames, preserving the existing sprites and archives. Archived versions are excluded from the reference picker. The picker refreshes after generation so the new sprites are immediately available.
+
+## Character and Clothes Wizards
+
+- Character Creator, Character Cloner, and Clothes Designer now use ComfyUI's native `TextGenerate` node for their Qwen wizards. They reuse the installed Qwen Image 2.1 text encoder when its matching model is available, with `Qwen3.5-4B_int8_convrot.safetensors` as the fallback in ComfyUI's text encoder directory.
+- Replaced the GGUF and `llama-cpp-python` wizard runtime and removed the automatic `install.py` hook. The three wizards share the fallback model download flow, file validation, and progress feedback. Cloner sends an orientation-corrected, transparency-composited reference and extracts physical character traits from the response.
+- QI2 clothing prompt enhancement now carries the character's saved art style into the outfit render. The final prompt preserves identity, face, hair, body, skin, pose, and framing. Preview cache keys include the character style so a style change invalidates the previous preview.
+- Existing costume and custom style edits can be saved without a matching revision from the editor. Saving a deleted item still fails, and style preview generation still checks the style revision before saving its image.
+
+## Generator Reliability, Control Center, and Security
+
+- Generator stages and saved image inputs now use staged PNG batches in place of serialized PyTorch tensors. The cache supports RGB and RGBA images, 16-bit grayscale masks, and lists of references with different dimensions. A failed cache write keeps the previous complete batch available.
+- Background and CG generation use the shared inference lock and retain QI2 cache settings. Supported generator runs now check the selected SeedVR2 diffusion model and VAE before queueing. Gallery tiles use a shared layout that fits the available area and retains image proportions.
+- Control Center hides the download slot once a Turbo adapter is installed while keeping the model card and toggle available. If a download cannot update the installed-version record, it restores the previous model file or removes the incomplete new installation.
+- Character and costume creation now use privileged `POST` requests. The release security scan checks for unsafe deserialization, automatic code installation, and file-changing operations exposed through `GET` or `HEAD` routes.
+
 # VNCCS 3.3.4 Changelog
 
 ## Control Center updates

@@ -880,12 +880,13 @@ def empty_contexts(monkeypatch):
     return context
 
 
-def test_disk_retention_bounds_workflows_without_touching_final_outputs(empty_contexts, tmp_path):
+@pytest.mark.parametrize('cache_group', ['poses', 'generator'])
+def test_disk_retention_bounds_workflows_without_touching_final_outputs(empty_contexts, tmp_path, cache_group):
     import sys
     from pathlib import Path
     context = empty_contexts
     snapshots = sys.modules[context.expire_cache_progress.__module__]
-    base = tmp_path / 'Alice' / 'cache' / 'poses' / '5'
+    base = tmp_path / 'Alice' / 'cache' / cache_group / '5'
     final = tmp_path / 'Alice' / 'Sprites' / 'result.png'
     final.parent.mkdir(parents=True)
     final.write_bytes(b'final character image')
