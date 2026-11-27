@@ -416,6 +416,34 @@ test("failed or malformed restore preserves original bytes and blocks workflow e
     assert.throws(() => h.data.beforeQueued(), /restoring/i);
 });
 
+test("a missing saved background restores the first available background or an empty selection", async () => {
+    const missing = "f".repeat(32);
+    const raw = JSON.stringify(state({ background_id: missing, background_name: "Missing room", revision: 17 }));
+    for (const available of [true, false]) {
+        const h = harness(raw);
+        if (!available) h.documents.clear();
+        h.api.handle = path => path.endsWith(`/backgrounds/${missing}`) ? response({ error: "Background does not exist" }, 404) : undefined;
+        await h.ready();
+        const restored = JSON.parse(h.data.value);
+        assert.equal(restored.background_id, available ? A : "");
+        assert.equal(restored.background_name, available ? h.documents.get(A).name : "");
+        assert.equal(restored.selected_image_id, available ? IMAGE : "");
+        assert.equal(restored.revision, available ? h.documents.get(A).revision : undefined);
+        assert.equal(h.widget.restoreFailed, false);
+        assert.doesNotThrow(() => h.data.beforeQueued());
+        assert.equal(h.calls.some(call => call.options.method === "PATCH"), false);
+    }
+});
+
+test("an available background retains its editor when the saved image is missing", async () => {
+    const editor = editorDefaults({ scene_description: "Keep this restored description" });
+    const h = harness(JSON.stringify(state({ selected_image_id: "f".repeat(32), editor })));
+    await h.ready();
+    const restored = JSON.parse(h.data.value);
+    assert.equal(restored.selected_image_id, IMAGE);
+    assert.equal(restored.editor.scene_description, editor.scene_description);
+});
+
 test("an obsolete restore cannot overwrite a later configured background or description", async () => {
     const h = harness(JSON.stringify(state())), first = deferred(); let intercepted = false;
     h.api.handle = path => { if (path === `${BASE}/config` && !intercepted) { intercepted = true; return first.promise; } };

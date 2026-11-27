@@ -100,7 +100,7 @@
       "hf_path": "split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors",
       "local_path": "models/text_encoders/qwen_3_8b_fp8mixed.safetensors",
       "version": "1.0",
-      "description": "Qwen 3 8B text encoder for FLUX.2 Klein 9B.",
+      "description": "Qwen 3 8B text encoder.",
       "type": "TextEncoder",
       "kind": "Klein9b"
     },
@@ -111,7 +111,7 @@
       "hf_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
       "local_path": "models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
       "version": "1.0",
-      "description": "Qwen3-VL 32B NVFP4 text encoder for MiniMax H3.",
+      "description": "Qwen3-VL 32B NVFP4 text encoder.",
       "type": "TextEncoder",
       "kind": "minimaxh3"
     },
@@ -123,7 +123,7 @@
       "hf_path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
       "local_path": "models/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
       "version": "1.0",
-      "description": "Qwen3-VL 8B text encoder for Qwen Image 2.1.",
+      "description": "Qwen3-VL 8B text encoder.",
       "kind": "QI2"
     },
     {
@@ -245,39 +245,39 @@
       "name": "VNCCS Pose Studio QI2",
       "type": "Helper",
       "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.1.safetensors",
-      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.1.safetensors",
-      "version": "1.1",
+      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV3.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV3.safetensors",
+      "version": "3.0",
       "description": "Pose Studio LoRA for Qwen Image 2.1.",
-      "kind": "QI2"
-    },
-    {
-      "name": "VNCCS Lucid Dreams QI2",
-      "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_LucidDreamsV1.safetensors",
-      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_LucidDreamsV1.safetensors",
-      "version": "1.0",
-      "description": "QI2 LoRA for creating CG images.",
-      "type": "Helper",
       "kind": "QI2"
     },
     {
       "name": "VNCCS Overhaul QI2",
       "type": "Helper",
       "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV2.safetensors",
-      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV2.safetensors",
-      "version": "2.0",
+      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV2.1.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_AnimeOverhaulV2.1.safetensors",
+      "version": "2.1",
       "description": "Overhaul for Character Creator",
       "kind": "QI2"
     },
     {
       "name": "VNCCS Clothes Core QI2",
       "hf_repo": "MIUProject/VNCCS_v3.0",
-      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_ClothesCoreV2.6.safetensors",
-      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_ClothesCoreV2.6.safetensors",
-      "version": "2.6",
+      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_ClothesCoreV3.1.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_ClothesCoreV3.1.safetensors",
+      "version": "3.1",
       "description": "QI2 LoRA for clothing consistency.",
+      "type": "Helper",
+      "kind": "QI2"
+    },
+    {
+      "name": "VNCCS Lucid Dreams QI2",
+      "hf_repo": "MIUProject/VNCCS_v3.0",
+      "hf_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_LucidDreamsV1.2.safetensors",
+      "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_LucidDreamsV1.2.safetensors",
+      "version": "1.2",
+      "description": "QI2 LoRA for creating CG images.",
       "type": "Helper",
       "kind": "QI2"
     },

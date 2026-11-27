@@ -11,6 +11,7 @@ const NODE = "VNCCS_AdditionalPoses";
 const WIDGET = "additional_poses_ui";
 const CATALOG = "/vnccs/additional_poses/catalog";
 const FIELDS = ["character", "costume", "emotion"];
+const availableSelection = (choices, saved) => choices.includes(saved) ? saved : choices[0] || "";
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 ${SAKURA_INTERACTION_CSS}
@@ -240,47 +241,51 @@ class AdditionalPosesWidget {
             const { characters } = await checkedJSON(CATALOG);
             if (!current()) return;
             this.characters = characters;
-            const previous = { ...this.state };
-            const character = this.state.character ||= this.restoreError ? "" : characters[0] || "";
+            const character = this.restoreError ? "" : availableSelection(characters, this.state.character);
             this.renderChoices();
+            let costumes = [], costume = "", emotions = [], profile = null;
             if (character) {
                 const query = new URLSearchParams({ character });
-                const [{ costumes }, profile] = await Promise.all([
+                [{ costumes }, profile] = await Promise.all([
                     checkedJSON(`${CATALOG}?${query}`),
                     checkedJSON(`/vnccs/character_info?${query}`).catch(() => null),
                 ]);
                 if (!current()) return;
-                if (profile) {
-                    const { age } = profile;
-                    const savedAge = typeof age === "number" || typeof age === "string" ? Number(age) : NaN;
-                    const poseAge = Number.isFinite(savedAge) && savedAge > 0
-                        ? Math.max(1, Math.min(90, Math.round(savedAge))) : NaN;
-                    const sex = String(profile.sex || profile.gender || "").trim().toLowerCase();
-                    const gender = sex === "male" ? 1 : sex === "female" ? 0 : NaN;
-                    const values = Number.isFinite(poseAge) || Number.isFinite(gender) ? {
-                        age: poseAge,
-                        gender,
-                        signature: `${Number.isFinite(poseAge) ? poseAge : "?"}|${Number.isFinite(gender) ? gender : "?"}`,
-                    } : null;
-                    if (values?.signature !== this.poseStudioValues?.signature) {
-                        this.poseStudioValues = values;
-                        this.syncPoseStudioValues();
-                    }
-                }
-                this.costumes = costumes;
-                const costume = this.state.costume ||= costumes[0] || "";
-                this.renderChoices();
+                costume = availableSelection(costumes, character === this.state.character ? this.state.costume : "");
                 if (costume) {
                     query.set("costume", costume);
-                    const { emotions } = await checkedJSON(`${CATALOG}?${query}`);
-                    if (!current() || this.state.character !== character || this.state.costume !== costume) return;
-                    this.emotions = emotions;
-                    if (!this.state.emotion && emotions.length) this.state.emotion = emotions[0].name;
-                    this.selectFirstSprite();
-                    this.renderChoices();
+                    ({ emotions } = await checkedJSON(`${CATALOG}?${query}`));
+                    if (!current()) return;
+                }
+            }
+            const previous = this.state;
+            const sameCharacter = character === previous.character;
+            const sameCostume = sameCharacter && costume === previous.costume;
+            const emotion = availableSelection(emotions.map(item => item.name), sameCostume ? previous.emotion : "");
+            const sprites = emotions.find(item => item.name === emotion)?.sprites || [];
+            const sprite = availableSelection(sprites.map(item => item.name), sameCostume && emotion === previous.emotion ? previous.sprite : "");
+            this.costumes = costumes;
+            this.emotions = emotions;
+            this.state = { character, costume, emotion, sprite };
+            if (profile || !sameCharacter) {
+                const age = profile?.age;
+                const savedAge = typeof age === "number" || typeof age === "string" ? Number(age) : NaN;
+                const poseAge = Number.isFinite(savedAge) && savedAge > 0
+                    ? Math.max(1, Math.min(90, Math.round(savedAge))) : NaN;
+                const sex = String(profile?.sex || profile?.gender || "").trim().toLowerCase();
+                const gender = sex === "male" ? 1 : sex === "female" ? 0 : NaN;
+                const values = Number.isFinite(poseAge) || Number.isFinite(gender) ? {
+                    age: poseAge,
+                    gender,
+                    signature: `${Number.isFinite(poseAge) ? poseAge : "?"}|${Number.isFinite(gender) ? gender : "?"}`,
+                } : null;
+                if (values?.signature !== this.poseStudioValues?.signature) {
+                    this.poseStudioValues = values;
+                    this.syncPoseStudioValues();
                 }
             }
             if (!this.restoreError && [...FIELDS, "sprite"].some(field => previous[field] !== this.state[field])) this.persist();
+            this.renderChoices();
             this.showPreview();
         } catch (error) {
             if (!current()) return;
@@ -295,7 +300,6 @@ class AdditionalPosesWidget {
         if (this.restoreError) message = "Could not restore the saved selection. Choose a character to continue.";
         else if (!this.state.character) message = "No saved characters.";
         else if (!this.state.costume) message = "No saved costumes.";
-        else if (this.state.sprite) message = `Sprite '${this.state.sprite}' is missing.`;
         else message = "No sprites in this costume.";
         this.navigator.loadList(this.state.character || "", sprites.map(sprite => sprite.url), index, message);
     }

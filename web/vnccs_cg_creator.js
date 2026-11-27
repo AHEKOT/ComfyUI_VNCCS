@@ -1206,9 +1206,22 @@ class CGCreatorWidget {
                     delete state.job; if (state.preview?.kind === "pending") delete state.preview;
                 }
                 if (state.background_id) {
-                    const document = await this.request(`/backgrounds/${state.background_id}`);
+                    const savedId = state.background_id;
+                    const document = await this.request(`/backgrounds/${savedId}`).catch(error => {
+                        if (error.status !== 404) throw error;
+                        return null;
+                    });
                     if (this.disposed || epoch !== this.epoch) return;
-                    await this.acceptDocument(document, false, epoch, { deferModel: true });
+                    if (document) await this.acceptDocument(document, false, epoch, { deferModel: true });
+                    else {
+                        this.catalog = this.catalog.filter(item => item.background_id !== savedId);
+                        Object.assign(state, { background_id: "", selected_image_id: "", selected_variant: null,
+                            model_id: "", selected_cg_id: "", camera: null, frame: null });
+                        delete state.job;
+                        delete state.preview;
+                        this.modelError = "";
+                        if (this.catalog.length) await this.acceptDocument(this.catalog[0], true, epoch);
+                    }
                 }
                 if (this.disposed || epoch !== this.epoch) return;
                 this.render();

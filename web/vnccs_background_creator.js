@@ -474,12 +474,29 @@ export class BackgroundCreatorWidget {
                 this.render();
                 this.cc.fetchConfig().catch(error => { if (!this.disposed) this.message("Model catalog unavailable: " + error.message + ". Local model choices are retained.", true); });
                 if (state.background_id) {
-                    const document = await this.request(`/backgrounds/${state.background_id}`);
+                    const savedId = state.background_id;
+                    const document = await this.request(`/backgrounds/${savedId}`).catch(error => {
+                        if (error.status !== 404) throw error;
+                        return null;
+                    });
                     if (epoch !== this.epoch || this.disposed) return;
-                    if (!stored.editor) state.editor = editorDefaults(document.editor);
-                    state.selected_image_id ||= document.selected_image_id;
-                    state.revision = document.revision;
-                    await this.acceptDocument(document, false, epoch);
+                    if (document) {
+                        if (!stored.editor) state.editor = editorDefaults(document.editor);
+                        if (!document.images.some(image => image.image_id === state.selected_image_id)) {
+                            state.selected_image_id = document.selected_image_id || document.images[0]?.image_id || "";
+                        }
+                        state.revision = document.revision;
+                        await this.acceptDocument(document, false, epoch);
+                    } else {
+                        this.document = null;
+                        this.catalog = this.catalog.filter(item => item.background_id !== savedId);
+                        const first = this.catalog[0];
+                        if (first) await this.acceptDocument(first, true, epoch);
+                        else {
+                            Object.assign(state, { background_id: "", background_name: "", selected_image_id: "" });
+                            delete state.revision;
+                        }
+                    }
                 }
                 if (epoch !== this.epoch || this.disposed) return;
                 this.restoring = false; this.render();

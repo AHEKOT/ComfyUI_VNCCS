@@ -1116,6 +1116,31 @@ test("failed restoration can retry without losing the original workflow bytes", 
     h.data.beforeQueued();
 });
 
+test("a missing saved background restores the first available background or an empty selection", async () => {
+    const missing = "f".repeat(32);
+    const raw = JSON.stringify(state({ background_id: missing,
+        selected_variant: { set_id: "e".repeat(32), index: 1, name: "Morning" },
+        job: { id: missing, action: "cg", name: "Pending CG" }, preview: { kind: "pending", zoom: 1, center: [0, 0] },
+        settings: { prompt: "Keep the node settings" } }));
+    for (const available of [true, false]) {
+        const h = harness(raw);
+        if (!available) h.documents.clear();
+        h.api.handle = path => path.endsWith(`/backgrounds/${missing}`) ? response({ error: "Background does not exist" }, 404) : undefined;
+        await h.ready();
+        const restored = JSON.parse(h.data.value);
+        assert.equal(restored.background_id, available ? A : "");
+        assert.equal(restored.selected_image_id, available ? IMAGE : "");
+        assert.equal(restored.selected_variant, null);
+        assert.equal(restored.model_id, available ? MODEL : "");
+        assert.equal(restored.selected_cg_id, available ? CG : "");
+        assert.equal(restored.job, undefined);
+        assert.equal(restored.preview, undefined);
+        assert.equal(restored.settings.prompt, "Keep the node settings");
+        assert.equal(h.widget.restoreFailed, false);
+        assert.doesNotThrow(() => h.data.beforeQueued());
+    }
+});
+
 test("the shared connection watcher updates the library without a refresh button or resetting authored state", async () => {
     const h = harness(JSON.stringify(state())); await h.ready();
     assert.equal(h.control('[data-refresh]'), null);
