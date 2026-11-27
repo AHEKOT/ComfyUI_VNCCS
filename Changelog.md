@@ -1,3 +1,11 @@
+# VNCCS 3.4.1 Changelog
+
+## Saved Selections
+
+- **CG Creator** and **Background Creator** now open workflows that reference a missing background. They select the first available background or leave the selection empty when the library is empty. CG Creator also clears the old scene, preview, and pending job references when it switches backgrounds.
+- **Background Creator** falls back to an available source image when the saved image is missing, preserving the editor settings for that background.
+- **Additional Poses** restores valid character, costume, emotion, and sprite selections. If an entry is missing, it selects the first available option at that level and resolves the dependent selections from it. Empty lists leave the corresponding selection blank.
+
 # VNCCS 3.4.0 Changelog
 
 VNCCS 3.4.0 adds background creation and variation generation, 3D scene composition and CG rendering, a Pose Manager with pose libraries, and a way to append poses to existing characters. This draft compares the 3.4.0 release working tree with `main` (`3.3.4`).

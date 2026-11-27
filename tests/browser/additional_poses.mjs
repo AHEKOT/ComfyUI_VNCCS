@@ -106,6 +106,7 @@ const app = `export const app = {extensions:[],submissions:0,async queuePrompt()
 const api = `export const api = new EventTarget(); api.apiURL = url => url; api.fetchApi = (url, options) => fetch(url, options);`;
 const sprite = name => ({ name, url: `/view?filename=${name}` });
 const happy = [sprite("happy_1.png"), sprite("happy_2.png")];
+let characters = ["Ada", "Bea", "Retired"];
 const seedvrModel = "seedvr2_3b_fp8_e4m3fn.safetensors";
 const seedvrVae = "ema_vae_fp16.safetensors";
 const availableFiles = { UNETLoader: [], VAELoader: [seedvrVae] };
@@ -121,7 +122,7 @@ await page.route("**/*", async route => {
             contentType: url.pathname.endsWith(".png") ? "image/png" : "text/javascript" });
     }
     if (url.pathname === "/vnccs/additional_poses/catalog") {
-        if (!url.searchParams.has("character")) return route.fulfill({ json: { characters: ["Ada", "Bea", "Retired"] } });
+        if (!url.searchParams.has("character")) return route.fulfill({ json: { characters } });
         if (url.searchParams.get("character") === "Retired") return route.fulfill({ status: 404, json: { error: "Character configuration is missing." } });
         if (!url.searchParams.has("costume")) return route.fulfill({ json: { costumes: ["Coat", "Empty", "A long costume name for a narrow node"] } });
         const emotions = url.searchParams.get("costume") === "Coat"
@@ -291,12 +292,20 @@ try {
     await page.locator("#generator .vnccs-pipe-img-content").first().waitFor({ state: "visible" });
     await page.locator("#generator").screenshot({ path: join(output, "generator.png") });
 
-    await page.evaluate(raw => restore(JSON.stringify({ ...JSON.parse(raw), sprite: "missing.png" })), saved);
-    await page.getByText("Sprite 'missing.png' is missing.").waitFor();
-    await layout("missing-sprite");
-    assert.equal(await page.evaluate(() => selectState().sprite), "missing.png");
-    await page.getByRole("button", { name: "Previous sprite" }).click();
-    await shown("happy_1.png");
+    for (const [field, name] of [["character", "Retired from catalog"], ["costume", "Removed costume"],
+        ["emotion", "Removed emotion"], ["sprite", "missing.png"]]) {
+        await page.evaluate(({ raw, field, name }) => restore(JSON.stringify({ ...JSON.parse(raw), [field]: name })), { raw: saved, field, name });
+        const expected = field === "sprite" ? { ...JSON.parse(saved), sprite: "happy_1.png" }
+            : { character: "Ada", costume: "Coat", emotion: "Neutral", sprite: "neutral.png" };
+        await shown(expected.sprite);
+        assert.deepEqual(await page.evaluate(() => selectState()), expected);
+    }
+    await layout("restored-missing-selection");
+    characters = [];
+    await page.evaluate(raw => restore(raw), saved);
+    await page.getByText("No saved characters.").waitFor();
+    assert.deepEqual(await page.evaluate(() => selectState()), { character: "", costume: "", emotion: "", sprite: "" });
+    await layout("empty-library");
     await page.evaluate(() => { source.onRemoved();target.onRemoved(); });
     assert.deepEqual(errors, []);
     console.log(`Additional Poses layouts and selection checks passed. Screenshots: ${output}`);
